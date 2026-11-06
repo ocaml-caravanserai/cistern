@@ -172,6 +172,7 @@ CI jobs:
 ```
 cistern/
   flake.nix, flake.lock, dune-project, Makefile, test/certgen
+  names/    (cistern.names)   The rules of names, the names of indexes (only the stdlib)
   core/     (cistern.core)    Value, Dialect, literals, Schema, model AST, Decoder, Error, Event, MODEL
   sql/      (cistern.sql)     SQL AST, compiler from the model AST, serializer for each dialect, DDL
   mysql/    (cistern.mysql)   Config and URL parser, connect, TLS, authentication, text protocol, sessions
@@ -180,7 +181,8 @@ cistern/
   test/  unit, prop, stateful, expect, sim, integration, nounix, readme, typeerror, ocaml55
 ```
 
-- Two opam packages: `cistern` (the four libraries) and `ppx_cistern`. An application links `cistern`.
+- Two opam packages: `cistern` (the five libraries) and `ppx_cistern`.
+- `cistern.names` has an empty `libraries` field, thus dune refuses a dependency. The ppx of phase 3 can link it with no weft and no ptime. An application links `cistern`.
 - With one client, version 1 has no `CONN` interface and no `Driver.t`. A later PostgreSQL driver brings the abstraction back.
 
 ## User API
@@ -215,7 +217,7 @@ and todo = {
 | `[@index]` | Index. Generates `filter_by_<field>`. |
 | `[@has_many]`, `[@belongs_to { key; references }]` | Relations. The field type is `'a Deferred.t`. `belongs_to` makes a `FOREIGN KEY ... ON DELETE RESTRICT`, and it acts as `[@index]` on the key field (one index, and `filter_by_<key>`). An explicit `[@index]` on that field adds no second index. In version 1, `references` must be the `[@key]` field of the other model. |
 | `[@default v]` | The create argument becomes optional. The client puts the default in the `INSERT`. The DDL has no `DEFAULT` clauses. |
-| `[@column "x"]`, `[@@table "x"]` | Names in the database. The default table name is the type name. The ppx refuses a name with a backquote or a NUL, and a name of more than 64 characters. |
+| `[@column "x"]`, `[@@table "x"]` | Names in the database. The default table name is the type name. The rules (`Cistern_names.valid_identifier`): valid UTF-8, 1 to 64 characters (not bytes), each in U+0001 to U+FFFF (the servers keep names in utf8mb3), no backquote, and no ASCII white space at the end. A table name is also a file name: InnoDB encodes each character other than `[0-9A-Za-z_]` in 3 or 5 bytes, with a limit of 251 bytes. `Cistern_names.valid_table_name` counts 5 bytes for each such character, thus 64 × `€` is a valid column name but not a valid table name. A table name must not start with `#mysql50#`: MariaDB 11.4 refuses it (1103), and MariaDB 11.8 uses another table. The ppx and `Schema.check` apply these rules. |
 
 The ppx refuses field names that clash with generated names:
 
@@ -526,7 +528,7 @@ No value from a user is ever between quotes:
 
 - `CREATE TABLE IF NOT EXISTS ... ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=<collation> ROW_FORMAT=DYNAMIC`. `ROW_FORMAT=DYNAMIC` permits unique indexes on `VARCHAR(255)` in `utf8mb4` (1020 bytes).
 - Collation: binary with no trailing-space padding. MySQL: `utf8mb4_0900_bin`. MariaDB: `utf8mb4_nopad_bin`.
-- Indexes and foreign keys are inside `CREATE TABLE`, because MySQL has no `CREATE INDEX IF NOT EXISTS`. Each foreign key has an explicit index with a known name. Index and constraint names have at most 64 characters, with a hash suffix.
+- Indexes and foreign keys are inside `CREATE TABLE`, because MySQL has no `CREATE INDEX IF NOT EXISTS`. Each foreign key has an explicit index with a known name. The name of an index or a constraint (`Cistern_names.index_name`) is `<table>_<column>_<kind>`, with the kind `key` (unique), `idx` (plain) or `fk` (foreign key), for example `user_email_key`, `todo_user_id_idx` and `todo_user_id_fk`. If this name has more than 64 characters or a non-ASCII character, it becomes `<prefix>_<kind>_<hash>`: `<hash>` is the 8 lowercase hex digits of the FNV-1a 32 hash of the full name, and `<prefix>` is `<table>_<column>`, cut on a character boundary to 64 characters in total. The hash on non-ASCII names prevents equal names on MySQL, which compares constraint names with no accents.
 - No `DEFAULT` clauses (MySQL refuses them on `MEDIUMTEXT` and `MEDIUMBLOB`). `[@default]` works on the client.
 - `push_schema` runs on its own connection with `SET foreign_key_checks = 0`, so the order of the tables and cycles of references do not matter (mysqldump uses the same method). The connection is closed after the DDL. This connection is outside `pool_size`, so the pool can have one more session during `push_schema` (documented).
 - `push_schema` never changes a table that exists. To change a table, use a raw `ALTER TABLE`, then `check_schema` (documented).
@@ -753,7 +755,7 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: close the connection
 - `Error.t` keeps the full server message for the program. A server message can hold a value of a row, for example 1062 "Duplicate entry 'x' for key 'email'". `Error.pp_summary` prints only the constructor, the kind of a constraint and the error number. The printer of the exception `Cistern_error`, which logging libraries call through `Printexc.to_string`, uses `Error.pp_summary`. Only an explicit `Error.pp` or `Error.to_string` gives the full message.
 - `Event.pp`, and any default log output of events, prints only the kind of the event, the duration, the number of rows, the address, the redacted SQL and `Error.pp_summary`. Thus no server message and no value goes to the logs (decision Q9 of phase 0). The producer of a `Query` event puts only redacted SQL in it: each literal is `?`. A query has the outcome `Done` (with the rows), `Failed` (with the error) or `Cancelled` (with a flag: was the statement sent).
 - The events of `KILL` (`Kill`, `Kill_dropped`, `Kill_off`) come with the killer in phase 1.5. Their reasons are variants, not text, so that an event holds no free text. A `KILL` that gives 1094 (the query is already gone) is a success.
-- No stdlib I/O: Cistern does not call `Unix`, `open_in` or `Sys.time`. The guard `test/nounix` links the four libraries of the package `cistern` (not `ppx_cistern`, which runs in the compiler) with the list of caravan's `test/nounix/dune`: `(forbidden_libraries unix threads.posix weft.posix weft.sim weft.os)`.
+- No stdlib I/O: Cistern does not call `Unix`, `open_in` or `Sys.time`. The guard `test/nounix` links the five libraries of the package `cistern` (not `ppx_cistern`, which runs in the compiler) with the list of caravan's `test/nounix/dune`: `(forbidden_libraries unix threads.posix weft.posix weft.sim weft.os)`.
 
 ## Tests (windtrap)
 

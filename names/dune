@@ -1,0 +1,10 @@
+; DESIGN.md, "Libraries". The rules of names use only the stdlib, so that the
+; ppx of phase 3 can link this library. The empty libraries field keeps this
+; rule: dune refuses a module of another library here.
+
+(library
+ (name cistern_names)
+ (public_name cistern.names)
+ (libraries)
+ (instrumentation
+  (backend ppx_windtrap.mutate)))

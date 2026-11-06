@@ -2,7 +2,7 @@
    v. 2.0. If a copy of the MPL was not distributed with this file, You can
    obtain one at https://mozilla.org/MPL/2.0/. *)
 
-(* The property suite of cistern.core. *)
+(* The property suite of cistern.core and cistern.names. *)
 
 let () =
   exit
@@ -12,4 +12,5 @@ let () =
        ; Prop_decoder.tests
        ; Prop_error.tests
        ; Prop_mapping.tests
-       ; Prop_event.tests ] )
+       ; Prop_event.tests
+       ; Prop_names.tests ] )

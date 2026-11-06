@@ -2,7 +2,7 @@
    v. 2.0. If a copy of the MPL was not distributed with this file, You can
    obtain one at https://mozilla.org/MPL/2.0/. *)
 
-(* The unit suite of cistern.core. *)
+(* The unit suite of cistern.core and cistern.names. *)
 
 let () =
   exit
@@ -14,4 +14,5 @@ let () =
        ; Test_error.tests
        ; Test_mapping.tests
        ; Test_event.tests
-       ; Test_dialect.tests ] )
+       ; Test_dialect.tests
+       ; Test_names.tests ] )

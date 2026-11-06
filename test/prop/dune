@@ -1,8 +1,8 @@
-; The property suite of cistern.core (DESIGN.md, "Tests"). -linkall puts each
-; module of the library in the catalogue of the mutation gate (make
+; The property suite of cistern.core and cistern.names (DESIGN.md, "Tests"). -linkall puts each
+; module of the libraries in the catalogue of the mutation gate (make
 ; check-scope).
 
 (test
  (name test_prop)
- (libraries cistern.core windtrap)
+ (libraries cistern.core cistern.names windtrap)
  (link_flags (-linkall)))
