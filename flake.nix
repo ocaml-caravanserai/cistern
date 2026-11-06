@@ -90,13 +90,17 @@
           lib,
           buildDunePackage,
           weft,
+          ptime,
         }:
         buildDunePackage {
           pname = "cistern";
           inherit version;
           minimalOCamlVersion = "5.5";
           src = source lib ([ ./cistern.opam ] ++ libraryDirs);
-          propagatedBuildInputs = [ weft ];
+          propagatedBuildInputs = [
+            weft
+            ptime
+          ];
           doCheck = false;
           meta = meta lib // {
             description = "An ORM for OCaml 5.5 on weft, for MySQL and MariaDB";

@@ -18,6 +18,8 @@
   (ocaml
    (>= 5.5))
   weft
+  (ptime
+   (>= 1.2.0))
   (windtrap
    (and
     :with-test
