@@ -1,0 +1,72 @@
+{
+  "nodes": {
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1793726008,
+        "narHash": "sha256-jQp1wKvbwWdLBASTXkSi/VYmDJ5AbBi1WvcMt9HWJC8=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "1d060086d60cb76a40cf37109f979d88a5bd6396",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "nixpkgs": "nixpkgs",
+        "weft": "weft",
+        "windtrap": "windtrap"
+      }
+    },
+    "weft": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "windtrap": [
+          "windtrap"
+        ]
+      },
+      "locked": {
+        "lastModified": 1793990270,
+        "narHash": "sha256-MQv0XOb7WATzL8kv4FYapsNliVYdVWd74awkgrsUr10=",
+        "owner": "ocaml-caravanserai",
+        "repo": "weft",
+        "rev": "5e5026dae4a1dd071f7f4e5ea85e9655d5db0a11",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ocaml-caravanserai",
+        "repo": "weft",
+        "type": "github"
+      }
+    },
+    "windtrap": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1793764126,
+        "narHash": "sha256-mvLyZEB8J+GKgEFTUnTeiLUG8KY5S9B3o2QQRpXtv10=",
+        "owner": "ocaml-caravanserai",
+        "repo": "windtrap",
+        "rev": "a851bdaad59fedbf86b3117aab502865ccc2b18c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ocaml-caravanserai",
+        "repo": "windtrap",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

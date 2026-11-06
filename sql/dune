@@ -1,0 +1,8 @@
+; DESIGN.md, "Libraries".
+
+(library
+ (name cistern_sql)
+ (public_name cistern.sql)
+ (libraries cistern.core)
+ (instrumentation
+  (backend ppx_windtrap.mutate)))

@@ -2,3 +2,5 @@ _build/
 .db/
 .direnv/
 *.install
+result
+result-*

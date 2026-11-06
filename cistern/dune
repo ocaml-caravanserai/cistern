@@ -1,0 +1,8 @@
+; DESIGN.md, "Libraries".
+
+(library
+ (name cistern)
+ (public_name cistern)
+ (libraries cistern.core cistern.sql cistern.mysql weft)
+ (instrumentation
+  (backend ppx_windtrap.mutate)))
