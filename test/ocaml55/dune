@@ -1,0 +1,14 @@
+; The check of DESIGN.md, "OCaml 5.5 features": ppx_windtrap.mutate (a ppxlib
+; driver) instruments a file with module-dependent function types and a
+; polymorphic parameter. The library has no other use.
+
+(library
+ (name ocaml55)
+ (modules ocaml55)
+ (instrumentation
+  (backend ppx_windtrap.mutate)))
+
+(test
+ (name test_ocaml55)
+ (modules test_ocaml55)
+ (libraries ocaml55 windtrap))
