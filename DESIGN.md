@@ -133,8 +133,8 @@ inputs = {
 ```
 
 - All dependencies come from the flake. Cistern does not use `opam install` or Docker. dune makes the `.opam` files only for the package metadata.
-- The OCaml scope is `ocaml-ng.ocamlPackages_5_5.overrideScope` with `weft = callPackage weft.lib.package {}`, `windtrap = callPackage windtrap.lib.windtrap {}`, `ppx_windtrap = callPackage windtrap.lib.ppx_windtrap {}`. This is the pattern of `~/projects/caravan/flake.nix`. Phase 1.4 (TLS) adds `weft-tls = callPackage weft.lib.tlsPackage {}`, a new output of weft PR 1c. Before phase 1.4, the flake does not refer to `lib.tlsPackage`, because weft does not have it (weft `flake.nix` has `lib = { inherit package; }`).
-- The `weft` input is the main branch of weft. weft PRs 1a and 1b are merged, and `flake.lock` pins one commit. If the codec of phase 1.1 needs a change of `Reader` or `Writer`, a normal weft PR makes it, and an update of `flake.lock` takes it. Phase 1.4 takes `lib.tlsPackage` from weft main after weft PR 1c merges.
+- The OCaml scope is `ocaml-ng.ocamlPackages_5_5.overrideScope` with `weft = callPackage weft.lib.package {}`, `windtrap = callPackage windtrap.lib.windtrap {}`, `ppx_windtrap = callPackage windtrap.lib.ppx_windtrap {}`. This is the pattern of `~/projects/caravan/flake.nix`. Phase 1.4 (TLS) adds `weft-tls = callPackage weft.lib.tlsPackage {}`, the output of weft PR 1c (weft main has `lib = { inherit package tlsPackage; }`). Before phase 1.4, the flake does not refer to `lib.tlsPackage`, because no code of Cistern uses TLS before then.
+- The `weft` input is the main branch of weft. weft PRs 1a and 1b are merged, and `flake.lock` pins one commit. If the codec of phase 1.1 needs a change of `Reader` or `Writer`, a normal weft PR makes it, and an update of `flake.lock` takes it. weft PR 1c is merged. Phase 1.4 updates `flake.lock` and takes `lib.tlsPackage` from weft main.
 - Systems: `x86_64-linux`, `aarch64-linux`, `aarch64-darwin`. nixpkgs dropped `x86_64-darwin`.
 - OCaml libraries from nixpkgs: `ppxlib`, `digestif` (SHA-1 and SHA-256), `mirage-crypto-rng`, `ptime`, `fmt`. `weft-tls` brings `tls` and `x509`. The tests also use `mirage-crypto-ec` (test certificates).
 - Outputs: `lib.package`, `lib.ppxPackage`, `overlays.default`, `packages.<system>.cistern`, `packages.<system>.ppx_cistern`, `devShells.default`, `checks` (build and tests that need no database server), and `packages.<system>.server-mysql84`, `server-mariadb114` and `server-mariadb118` (the nixpkgs servers `mysql84` 8.4.11, `mariadb_114` 11.4.13 and `mariadb_118` 11.8.8, verified on 2026-11-06). The servers are not in the dev shell, so a `nix develop` does not download them. The server outputs come in phase 0 with `test/certgen` and the `db-up` targets, not with the first flake.
@@ -440,13 +440,17 @@ module Error : sig
     | Outcome_unknown of [ `Statement | `Commit ]   (* a write was sent, and no reply came *)
     | Implicit_commit       (* in a Tx, the server committed the transaction before its end *)
     | Connection_lost       (* before a write was sent, or during a read *)
-    | Read_only             (* 1290 with a read-only message, 1792 *)
+    | Read_only             (* 1290 with --read-only or --super-read-only, 1792, 1836, 1874 *)
     | Connect of string     (* the last connect error of the pool *)
     | Decode of string
     | Driver of { code : int; sqlstate : string; message : string }
-  val pp : Format.formatter -> t -> unit
+  val interrupts : Dialect.t -> int -> bool      (* 1053, 1317; 4031 on MySQL; 1927 on MariaDB *)
+  val of_server : Dialect.t -> code:int -> sqlstate:string -> message:string -> t
+  val pp_summary : Format.formatter -> t -> unit   (* no message: for logs *)
+  val pp : Format.formatter -> t -> unit           (* the summary and the message *)
+  val to_string : t -> string                      (* the text of pp *)
 end
-exception Cistern_error of Error.t   (* with a printer from Printexc.register_printer *)
+exception Cistern_error of Error.t   (* its printer (Printexc.register_printer) prints the summary *)
 ```
 
 Rules:
@@ -460,7 +464,8 @@ Rules:
 
 Order of the error rules:
 
-- A write (`INSERT`, `UPDATE`, `DELETE`, any raw statement, `COMMIT`) that was sent with no clear reply gives `Outcome_unknown`. "No clear reply" is a deadline, the end of the stream, or error 1053, 1927, 1317 or 4031 followed by the end of the stream. This rule is the same for `COMMIT` and for a write in autocommit mode. The user must not retry it blindly.
+- A write (`INSERT`, `UPDATE`, `DELETE`, any raw statement, `COMMIT`) that was sent with no clear reply gives `Outcome_unknown`. "No clear reply" is a deadline, the end of the stream, or an error for which `Error.interrupts` is true followed by the end of the stream: 1053 or 1317 (the two servers), 4031 (MySQL) or 1927 (MariaDB). This rule is the same for `COMMIT` (it gives `Outcome_unknown `Commit`) and for a write in autocommit mode. The user must not retry it blindly.
+- `Error.of_server` gives `Connection_lost` for such an error also when the stream did not end. Then the client closes the connection, because its state is not known, and a write that it sent gives `Outcome_unknown`.
 - `Timeout` and `Connection_lost` are only for reads and for statements that were not sent.
 - At the level of `Db.transaction`: if the client closed the connection before it sent `COMMIT`, the server rolled back. Then `Db.transaction` gives `Timeout` or `Connection_lost`, not `Outcome_unknown `Statement`, because a retry of the whole transaction is safe.
 
@@ -468,19 +473,22 @@ Error mapping. The key is (server, error number). A number that the table does n
 
 | Error | MySQL | MariaDB |
 |---|---|---|
-| `Unique` | 1062, 1586, 1022 | 1062, 1586, 1022 |
+| `Unique` | 1062, 1586, 1022, 1169, 1859, 1761, 1762 | the same |
 | `Foreign_key` | 1451, 1452, 1216, 1217 | 1451, 1452, 1216, 1217 |
-| `Not_null` | 1048, 1364 | 1048, 1364 |
+| `Not_null` | 1048, 1364, 3673 (`ER_BAD_NULL_ERROR_NOT_IGNORED`) | 1048, 1364 |
 | `Check` | 3819 | 4025 (`ER_CONSTRAINT_FAILED`, verified in round 5) |
-| `Invalid_value` | 1406, 1264, 1366, 1292, 1690, 1367, 1301, and 1153 (see the note that follows) | the same |
+| `Invalid_value` | 1406, 1264, 1265, 1365, 1366, 1292, 1690, 1367, 1301, and 1153 (see the note that follows) | the same |
 | `Retryable `Deadlock` | 1213 | 1213 |
-| `Retryable `Lock_timeout` | 1205 | 1205 |
+| `Retryable `Lock_timeout` | 1205 | 1205 (also for `NOWAIT`, not verified) |
+| `Retryable `Rolled_back` | 3101 (`ER_TRANSACTION_ROLLBACK_DURING_COMMIT`) | none (3101 is a placeholder number) |
 | `Statement_timeout` | 3024 | 1969 (`ER_STATEMENT_TIMEOUT`, verified in round 5) |
 | `Connection_lost` (a read or an unsent statement; a sent write gives `Outcome_unknown`) | 4031, 1053, end of stream | 1927, 1053, end of stream |
-| `Read_only` | 1290 when the message names `read-only` or `super-read-only`, 1792 | the same |
-| `Driver` | all others, also 1317 and 1290 for other options | the same |
+| `Read_only` | 1290 when the message names the option `--read-only` or `--super-read-only`, 1792, 1836 (`ER_READ_ONLY_MODE`), 1874 (`ER_INNODB_READ_ONLY`) | the same |
+| `Driver` | all others, also 1317, 1052 (`ER_NON_UNIQ_ERROR`, an ambiguous column, with SQLSTATE 23000), 1290 for other options, 1036 (`ER_OPEN_AS_READONLY`, one table) and 3572 (`ER_LOCK_NOWAIT`) | the same, with no 3572 |
 
 The server gives no structured constraint name, so `Constraint_violation` has only the message.
+
+`perror` of the pinned packages (MySQL 8.4.11, MariaDB 11.4.13 and 11.8.8) confirmed each number of the table and its name on 2026-11-06. A number of one server is another error on the other server (MySQL 4025, MariaDB 3024, 3101 and 4031), or no error (MySQL 1927 and 1969, MariaDB 3819 and 3572). Thus the key is the pair. 2013 and 2006 are codes of the client library: a server never sends them. `Error.of_server` gives the meaning of an error packet alone. The rules that need the state of the connection ("Order of the error rules", "Transactions") are in the client.
 
 Error 1153 (packet too large): the server did not run the statement, but it closes the connection after the error. Thus the client gives `Invalid_value`, closes the connection, and fails the `Tx` (if any). The client size check (see "Limits and defaults") prevents this error in most cases.
 
@@ -729,8 +737,8 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: close the connection
 - `COMMIT` and `ROLLBACK` run in `Fiber.shield` with their own deadline (see "Limits and defaults"), so the shield always has a time limit.
 - Replies to `COMMIT`:
   - OK: success.
-  - 1213, 1205, 1180: `Retryable `Rolled_back`.
-  - 1053, 1927, 4031, or 1317 followed by the end of the stream, or no reply: `Outcome_unknown `Commit`, and the connection closes.
+  - 1213, 1205, 1180 (the two servers), 3101 (MySQL): `Retryable `Rolled_back`.
+  - An error for which `Error.interrupts` is true (1053 or 1317; 4031 on MySQL; 1927 on MariaDB) followed by the end of the stream, or no reply: `Outcome_unknown `Commit`, and the connection closes.
   - Another error: `ROLLBACK`, and `Driver`.
 - The cleanup uses `match ... with exception`, not `Fun.protect`, so that a failed `ROLLBACK` does not become `Fun.Finally_raised`.
 
@@ -740,6 +748,9 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: close the connection
 - `on_query` gets events with a kind (`Query`, `Connect`, `Kill`, `Kill_dropped`, `Kill_off`), the redacted SQL, the duration, the number of rows and the error. Cistern catches its exceptions.
   - `Query` events outside a `Tx` run after the checkin, in the fiber of the statement. In a `Tx`, they run after each statement. An event never changes the result of the statement.
   - `Connect` events run in the connect fiber. `Kill` events run in the killer, outside its shields.
+- `Error.t` keeps the full server message for the program. A server message can hold a value of a row, for example 1062 "Duplicate entry 'x' for key 'email'". `Error.pp_summary` prints only the constructor, the kind of a constraint and the error number. The printer of the exception `Cistern_error`, which logging libraries call through `Printexc.to_string`, uses `Error.pp_summary`. Only an explicit `Error.pp` or `Error.to_string` gives the full message.
+- `Event.pp`, and any default log output of events, prints only the kind of the event, the duration, the number of rows, the address, the redacted SQL and `Error.pp_summary`. Thus no server message and no value goes to the logs (decision Q9 of phase 0). The producer of a `Query` event puts only redacted SQL in it: each literal is `?`. A query has the outcome `Done` (with the rows), `Failed` (with the error) or `Cancelled` (with a flag: was the statement sent).
+- The events of `KILL` (`Kill`, `Kill_dropped`, `Kill_off`) come with the killer in phase 1.5. Their reasons are variants, not text, so that an event holds no free text. A `KILL` that gives 1094 (the query is already gone) is a success.
 - No stdlib I/O: Cistern does not call `Unix`, `open_in` or `Sys.time`. The guard `test/nounix` links the four libraries of the package `cistern` (not `ppx_cistern`, which runs in the compiler) with the list of caravan's `test/nounix/dune`: `(forbidden_libraries unix threads.posix weft.posix weft.sim weft.os)`.
 
 ## Tests (windtrap)
@@ -766,7 +777,7 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: close the connection
   - Protocol faults: a peer fiber plays a transcript that a test packet encoder makes, so a change of the protocol code needs no new recording. Version 1 has no recorder of real server traffic; the integration tests cover the real servers. The test injects resets, short reads, latency, and an error 4031 on an idle connection.
   - TLS: `Weft_tls.server` with test certificates from `test/certgen`.
 - Integration tests (`Weft_os`): `suite : (module S : SERVER) -> Windtrap.test` runs the tests through the typed API on each server. The `Tx.exec` runner runs on MySQL 8.4 and MariaDB 11.8.
-- Verification of claims (phase 1.1), on the real servers: the MariaDB default plugins; the implicit commit of `START TRANSACTION` in a transaction; `COM_RESET_CONNECTION` and the database; `SERVER_STATUS_IN_TRANS` in the OK of `COM_PING` on MariaDB; the exact start time from one identity `SELECT` on the two servers; 1053 and 1927 after an autocommit write; `FOR SHARE` on MariaDB; the text forms of `DOUBLE` that the decoders read (the `my_gcvt` model of `test/prop/server_text.ml`); the literals `-0e0` (the sign stays), `5e-324` and `-9223372036854775808` on a `DOUBLE` and a `BIGINT` column; if a `utf8mb4` column can store an encoded surrogate (`ED A0 80`), which `Decoder.string` refuses. Round 5 verified in the source code: error numbers 4025 and 1969, the read rights for `performance_schema.global_status`, and `COM_PING` on MySQL. The tests check these too.
+- Verification of claims (phase 1.1), on the real servers: the MariaDB default plugins; the implicit commit of `START TRANSACTION` in a transaction; `COM_RESET_CONNECTION` and the database; `SERVER_STATUS_IN_TRANS` in the OK of `COM_PING` on MariaDB; the exact start time from one identity `SELECT` on the two servers; 1053 and 1927 after an autocommit write; `FOR SHARE` on MariaDB; the text forms of `DOUBLE` that the decoders read (the `my_gcvt` model of `test/prop/server_text.ml`); the literals `-0e0` (the sign stays), `5e-324` and `-9223372036854775808` on a `DOUBLE` and a `BIGINT` column; if a `utf8mb4` column can store an encoded surrogate (`ED A0 80`), which `Decoder.string` refuses; the errors 1874 (`--innodb-read-only`), 1836 (`ER_READ_ONLY_MODE`), 1265 and 1365 (in strict mode) on the two servers, 3101 on MySQL, and 1205 for `NOWAIT` on MariaDB; the errors 1052, 1169, 1859, 1761 and 1762 on the two servers, and 3673 on MySQL. 1557 (`ER_FOREIGN_DUPLICATE_KEY_OLD_UNUSED` on MySQL, `ER_UNUSED_4` on MariaDB) has no row: the servers do not send it. Round 5 verified in the source code: error numbers 4025 and 1969, the read rights for `performance_schema.global_status`, and `COM_PING` on MySQL. The tests check these too.
 
 ## Prerequisite PRs
 
@@ -776,7 +787,7 @@ These PRs move or add generic transport code in weft, so that any protocol on we
 |---|---|---|
 | weft PR 1a | `Flow`, `Tcp`, `Deadline` from caravan into the library `weft.flow`. `Tcp.Listener` takes a constant backlog instead of caravan's `Config`. `Tcp.connect` gets a keep-alive option. caravan's `Cancel` stays internal to `weft.flow` (weft already has `Fiber.check_cancel`). The flow-level tests move from caravan onto weft's simulator helpers. | — |
 | weft PR 1b | A new binary `Weft_flow.Reader` and `Weft_flow.Writer`: `ensure`, integer reads and writes (`int8` to `int64`, little-endian and big-endian, 3-byte lengths), views at offsets, `consume`, frames with a length field that is filled after the body. Its two users (the MySQL packet codec, and caravan's WebSocket frame headers with 16- and 64-bit big-endian lengths, `caravan/websocket/frame.ml`) are outside weft. Thus the PR has property tests with a model of the two framings. The owner merged it on 2026-11-06 (ocaml-caravanserai/weft#56), before phase 1.1. | 1a |
-| weft PR 1c | The TLS flow (`client`, `server`) in a separate package `weft-tls`, with `weft-tls.opam`, the flake output `lib.tlsPackage`, and `tls`, `x509`, `mirage-crypto-rng` and `mirage-crypto-ec` in weft's dev shell. It includes caravan's `tls_support` (certificates made in code). The `https` and engine tests stay in caravan. | 1a |
+| weft PR 1c | The TLS flow (`client`, `server`) in a separate package `weft-tls`, with `weft-tls.opam`, the flake output `lib.tlsPackage`, and `tls`, `x509`, `mirage-crypto-rng` and `mirage-crypto-ec` in weft's dev shell. It includes caravan's `tls_support` (certificates made in code). The `https` and engine tests stay in caravan. Merged on 2026-11-06 (ocaml-caravanserai/weft#58). | 1a |
 | caravan PR | caravan uses `weft.flow` and `weft-tls`, and moves its WebSocket frames onto the binary `Reader` and `Writer`. caravan keeps its HTTP `Buf_reader` and `Buf_writer`. | 1a, 1b, 1c; not on the critical path of Cistern |
 
 PRs 1b and 1c can run in parallel. Each weft PR includes the work that the weft rules require:
@@ -876,6 +887,6 @@ The reviews of drafts 4 and 5 produced this PostgreSQL design. Keep it for the l
 
 ## Status
 
-Draft 12, 2026-11-06. It fixes the findings of review round 5 on draft 11. You approved it on 2026-11-06. Phase 0 started on 2026-11-06: weft PR 1a (ocaml-caravanserai/weft#55) and weft PR 1b (ocaml-caravanserai/weft#56) are merged. The owner merged PR 1b before phase 1.1, so the flake uses weft main.
+Draft 12, 2026-11-06. It fixes the findings of review round 5 on draft 11. You approved it on 2026-11-06. Phase 0 started on 2026-11-06: weft PR 1a (ocaml-caravanserai/weft#55) and weft PR 1b (ocaml-caravanserai/weft#56) are merged. The owner merged PR 1b before phase 1.1, so the flake uses weft main. weft PR 1c (`weft-tls`) is merged too (ocaml-caravanserai/weft#58, 6f05d17), and weft main has `lib.tlsPackage`. Cistern takes it in phase 1.4.
 
 Round 5 found 3 critical defects. Two of them were in fixes of round 4 (the session reset and the killer drain), and one was a gap from an earlier draft (`Decimal`). Most of the critical and major findings are in the cancel path with `KILL`. Thus phases 1.1 to 1.4 ship without `KILL` (`kill=false`), and phase 1.5 adds it. The remaining risk is in server behavior that only a real server can show (the "not verified" claims). Phase 1.1 tests these claims first.

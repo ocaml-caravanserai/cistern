@@ -79,3 +79,68 @@ let time =
   let+ ps = int64_range 0L 999_999_999_999L in
   let t = Option.get (Ptime.of_date_time ((y, mo, d), ((h, mi, s), 0))) in
   Option.get (Ptime.add_span t (Option.get (Ptime.Span.of_d_ps (0, ps))))
+
+(* A marker of 12 letters. A printer for logs must not print it. *)
+let marker = Gen.string_of ~size:(Gen.constant 12) (Gen.char_range 'a' 'z')
+
+(* An error that holds the message [m] where its constructor has a message. *)
+let error_with m =
+  let open Cistern_core.Error in
+  Gen.one_of
+    [ Gen.of_list
+        [ Not_found
+        ; Retryable `Deadlock
+        ; Retryable `Lock_timeout
+        ; Retryable `Rolled_back
+        ; Statement_timeout
+        ; Timeout
+        ; Pool_exhausted
+        ; Outcome_unknown `Statement
+        ; Outcome_unknown `Commit
+        ; Implicit_commit
+        ; Connection_lost
+        ; Read_only ]
+    ; Gen.map
+        (fun kind -> Constraint_violation {kind; message= m})
+        (Gen.of_list [Unique; Foreign_key; Not_null; Check; Other_constraint])
+    ; Gen.map
+        (fun code -> Invalid_value {code; message= m})
+        (Gen.option (Gen.int_range 0 5000))
+    ; Gen.constant (Connect m)
+    ; Gen.constant (Decode m)
+    ; Gen.map
+        (fun (code, sqlstate) -> Driver {code; sqlstate; message= m})
+        (Gen.pair (Gen.int_range 0 5000)
+           (Gen.string_of (Gen.char_range '0' 'Z')) ) ]
+
+(* An error, and the marker in its message. *)
+let error =
+  let open Gen in
+  let* m = marker in
+  let+ e = error_with ("Duplicate entry '" ^ m ^ "' for key 'email'") in
+  (m, e)
+
+(* [contains s sub] is true if [sub] is a part of [s]. *)
+let contains s sub =
+  let n = String.length s and k = String.length sub in
+  let rec at i = i + k <= n && (String.sub s i k = sub || at (i + 1)) in
+  at 0
+
+(* An event with an error that holds a marker, and the marker. The SQL and the
+   address hold no marker. *)
+let event =
+  let open Gen in
+  let* m, e = error in
+  let* ns = int_range 0 1_000_000 in
+  let* rows = int_range 0 1000 in
+  let* sent = bool in
+  let duration = Weft.Span.ns ns in
+  let+ ev =
+    Gen.of_list
+      [ Cistern_core.Event.Query {sql= "SELECT ?"; duration; outcome= Failed e}
+      ; Query {sql= "SELECT ?"; duration; outcome= Done {rows}}
+      ; Query {sql= "UPDATE t SET a = ?"; duration; outcome= Cancelled {sent}}
+      ; Connect {address= "db:3306"; duration; error= Some e}
+      ; Connect {address= "db:3306"; duration; error= None} ]
+  in
+  (m, ev)

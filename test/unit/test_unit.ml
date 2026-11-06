@@ -10,4 +10,7 @@ let () =
        [ Test_decimal.tests
        ; Test_value.tests
        ; Test_literal.tests
-       ; Test_decoder.tests ] )
+       ; Test_decoder.tests
+       ; Test_error.tests
+       ; Test_mapping.tests
+       ; Test_event.tests ] )
