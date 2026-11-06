@@ -1,0 +1,76 @@
+# The tests on each push to main and on each pull request. The tools come from
+# the dev shell of flake.nix, as on a local machine. No job uses a database
+# server until phase 1.1 adds the integration suites.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the run of the older push. A push to
+# main runs to the end.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# A status line for each test, and a limit for each test: a test that hangs
+# fails with its name.
+env:
+  WINDTRAP_VERBOSE: "1"
+  WINDTRAP_TIMEOUT: "120"
+
+jobs:
+  # Linux and macOS build the code, run the suites and check the flake. The
+  # other steps give the same result on the two systems, thus only Linux runs
+  # them. `!cancelled()` runs a step also after a failure of an earlier step,
+  # so that one failure does not hide the others. A step that needs nix runs
+  # only if the install of nix succeeded.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      # The checkout of a pull request is a merge commit of the pull request
+      # into its base. Its first parent, HEAD^1, is the base at the time of
+      # the event. The mutation gate needs it, thus the depth is 2.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: cachix/install-nix-action@v31
+        id: nix
+      - name: Build
+        run: nix develop -c dune build
+      - name: Test
+        if: ${{ steps.nix.outcome == 'success' && !cancelled() }}
+        run: nix develop -c dune runtest --force
+      # The packages and the checks of flake.nix, in the nix sandbox. A file
+      # that the source of a package does not have gives a failure here.
+      - name: Check the flake
+        if: ${{ steps.nix.outcome == 'success' && !cancelled() }}
+        run: nix flake check -L
+      # dune writes the .opam files from dune-project. A change of
+      # dune-project with no change of the .opam files gives a failure.
+      - name: Opam files
+        if: ${{ steps.nix.outcome == 'success' && !cancelled() && runner.os == 'Linux' }}
+        run: git diff --exit-code -- '*.opam'
+      - name: Format
+        if: ${{ steps.nix.outcome == 'success' && !cancelled() && runner.os == 'Linux' }}
+        run: nix develop -c dune build @fmt
+      - name: Format of flake.nix
+        if: ${{ steps.nix.outcome == 'success' && !cancelled() && runner.os == 'Linux' }}
+        run: nix fmt -- --check flake.nix
+      - name: Mutation backend on OCaml 5.5 syntax
+        if: ${{ steps.nix.outcome == 'success' && !cancelled() && runner.os == 'Linux' }}
+        run: nix develop -c make check-ocaml55
+      # The mutation gate (DESIGN.md, "Tests"): a mutant on a line that the
+      # pull request changes must not survive.
+      - name: Mutation gate
+        if: ${{ steps.nix.outcome == 'success' && !cancelled() && runner.os == 'Linux' && github.event_name == 'pull_request' }}
+        run: nix develop -c make mutate BASE=HEAD^1

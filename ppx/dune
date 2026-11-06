@@ -1,0 +1,7 @@
+; DESIGN.md, "Libraries".
+
+(library
+ (name ppx_cistern)
+ (public_name ppx_cistern)
+ (kind ppx_rewriter)
+ (libraries ppxlib))
