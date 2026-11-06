@@ -1,6 +1,9 @@
 ; The check of DESIGN.md, "OCaml 5.5 features": ppx_windtrap.mutate (a ppxlib
 ; driver) instruments a file with module-dependent function types and a
-; polymorphic parameter. The library has no other use.
+; polymorphic parameter. The library has no other use. make check-ocaml55
+; runs the suite with the mutants of ocaml55.ml only, and requires the exact
+; list of mutant ids of the Makefile, each one killed. Thus a backend that
+; drops a mutant, or puts no mutant on the file, gives a failure.
 
 (library
  (name ocaml55)

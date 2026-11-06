@@ -16,6 +16,8 @@ Version 1 has these features:
 
 All the dependencies come from `flake.nix`. Use `nix develop`, then `dune build` and `dune runtest`.
 
+`make help` lists the mutation targets.
+
 ## License
 
 MPL-2.0. See [LICENSE](LICENSE).

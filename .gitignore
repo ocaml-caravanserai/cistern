@@ -4,3 +4,5 @@ _build/
 *.install
 result
 result-*
+_windtrap/
+.mutate.diff
