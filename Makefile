@@ -89,7 +89,7 @@ check-windtrap:
 	  echo "Start nix develop again, or run direnv reload."; exit 2; }
 
 # The build comes first, thus a compile error stops the target. The run
-# removes the old verdict files.
+# removes the old verdict files. CI runs this target on each pull request.
 mutate: check-windtrap
 	@test -n "$(BASE)" || { \
 	  echo "BASE is empty. Give BASE=<revision>, for example BASE=origin/main."; exit 2; }
