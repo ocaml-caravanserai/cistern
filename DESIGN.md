@@ -231,7 +231,7 @@ Field types in version 1:
 | `bool` | `TINYINT(1)`. Decoding: 0 is `false`, any other value is `true`. |
 | `float` | `DOUBLE` |
 | `bytes` | `VARBINARY(255)` if indexed or a key, else `MEDIUMBLOB` |
-| `Ptime.t` | `DATETIME(6)` in UTC. Timestamps are truncated to 1 µs on the client. |
+| `Ptime.t` | `DATETIME(6)` in UTC. Timestamps are truncated to 1 µs on the client. A timestamp before the year 1000 gives `Invalid_value` on the client, because the documented range of `DATETIME` is the years 1000 to 9999. |
 | `'a option` | nullable |
 
 - A value that is too long or out of range gives `Invalid_value`, because the session uses `STRICT_ALL_TABLES`.
@@ -453,7 +453,7 @@ Rules:
 
 - `Query.update` and `Query.delete` with `offset`, `include_`, `for_update` or `for_share` raise `Invalid_argument` (MySQL has no `UPDATE ... OFFSET`). `count` and `exists` ignore `include_`, `for_update` and `for_share`.
 - A raw statement marks its connection, which then gets a session reset at checkin (see "Session").
-- `Value.t` has `Null`, `Int of int64`, `Float of float`, `Text of string`, `Bytes of string`, `Datetime of Ptime.t`, and `Decimal of Decimal.t` (for raw results such as `SUM`). `Decimal.t` is abstract. `Decimal.of_string` accepts only `-?[0-9]{1,65}(\.[0-9]{1,30})?`, so that `Raw.v (Decimal d)` cannot carry SQL text.
+- `Value.t` has `Null`, `Int of int64`, `Float of float`, `Text of string`, `Bytes of string`, `Datetime of Ptime.t`, and `Decimal of Decimal.t` (for raw results such as `SUM`). `Decimal.t` is abstract. `Decimal.of_string` accepts only `-?[0-9]+(\.[0-9]+)?`, with at most 65 digits in total and at most 38 after the point (the `DECIMAL` limits of the servers: 65 digits, and a scale of at most 38 on MariaDB and 30 on MySQL), so that `Raw.v (Decimal d)` cannot carry SQL text.
 - The exception is `Cistern_error`, not `Error`, so that `open Cistern` does not hide the `Error` constructor of `result`.
 - A cancel of the fiber is never an `Error.t`. weft's `Cancelled` always goes up, also when a write was in flight. Then the `on_query` event of the statement records the unknown outcome, and the `Tx` (if any) fails.
 - A failure in a hook or in the checkin never changes the result of the statement.
@@ -500,12 +500,12 @@ No value from a user is ever between quotes:
 | Value | Literal |
 |---|---|
 | `int64`, `int` | Decimal digits, with a sign. `Int64.min_int` is in the property tests. |
-| `float` | Cistern's own formatter (not `printf`, so that a C locale cannot change the decimal point). Always with an exponent, for example `1.5e0` and `-0e0`, so that the server reads a `DOUBLE` and keeps the sign of `-0`. NaN and infinities give `Invalid_value` on the client. |
+| `float` | Cistern's own method: the shortest correctly rounded `%.{p}e` form that reads back to the same bits. For p from 0 to 16, the client formats the float with `%.{p}e`, takes the sign, the digits and the exponent from the result, skips one byte for the point, and writes its own point. No locale can change the literal, because the OCaml 5.5 runtime formats and reads floats in the "C" locale (`runtime/floats.c`: `caml_format_float` and `caml_float_of_string`, with `USE_LOCALE` and `strtod_l`). Always with an exponent and with no `+`, for example `1.5e0`, `1e-1` and `-0e0`, so that the server reads a `DOUBLE` and keeps the sign of `-0` (not verified). The form is not always the shortest decimal: 2^-1017 gives `7.1202363472230444e-307`. NaN and infinities give `Invalid_value` on the client. |
 | `bool` | `0` or `1` |
 | `string` | `_utf8mb4 X'<hex>'`. The client checks that the string is valid UTF-8 first. |
 | `bytes` | `X'<hex>'` |
-| `Ptime.t` | `'YYYY-MM-DD HH:MM:SS.ffffff'`, made by the client from the number, with no user text |
-| `Decimal.t` (raw only) | The digits that `Decimal.of_string` checked, as they are |
+| `Ptime.t` | `'YYYY-MM-DD HH:MM:SS.ffffff'`, made by the client from the number, with no user text. A timestamp before the year 1000 gives `Invalid_value` on the client. |
+| `Decimal.t` (raw only) | The digits that `Decimal.of_string` checked, as they are. More than 30 digits after the point give `Invalid_value` on the client, because MySQL cuts such a literal with no error. |
 | `None` | `NULL` |
 
 - The literals do not depend on `NO_BACKSLASH_ESCAPES` or another session setting.
@@ -752,6 +752,9 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: close the connection
 - README test: a dune build rule compiles the examples of `README.md`, as in caravan.
 - Mutation tests: `make mutate` as in weft, on the suites unit, prop, stateful, expect and sim. Each phase adds its suites to `SUITES` of the Makefile. `test/ocaml55` stays in `SUITES` as the check of the mutation backend. The integration suites are not in the mutation runs. The rule is the rule of weft (no surviving mutant on changed lines), with `[@mutate off]` and a reason where a mutant cannot be killed.
   - The gate gives the output of `git diff -U0` to windtrap (`--diff`). On a local machine, the base is the merge base with `origin/main`. In CI, the base is `HEAD^1`: the checkout of a pull request is a merge commit, and its first parent is the tip of the base branch at the time of the event.
+  - Unlike weft, a mutant on a changed line that no test reaches fails the gate. Code that no suite can reach gets `[@mutate off]` with a reason.
+  - Each library with the mutation backend and a `.ml` file is in the `libraries` of a test stanza of a suite of `SUITES`, and each such test stanza links with `-linkall`. `make check-scope` examines this, so that the catalogue of the suites has each mutation site. `ppx_cistern` has no mutation backend until phase 3.
+  - Before the mutation run, the suites run with no mutant armed, and a failure stops the gate. In the mutation run, each suite writes a verdict file or tells that no mutant is in its scope. A suite that does neither stopped early, and the gate fails.
 - The integration suites run under their own dune alias, not under `@runtest`. Thus `dune runtest` and the `checks` of the flake never need a database server.
 - Simulator tests (`Weft_sim`):
   - The weft shell of the pool: 1000 fibers, 4 virtual domains, 8 connections, timeouts and cancels at the same time as checkins; a connect fiber that raises does not stop `with_db`.
@@ -763,7 +766,7 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: close the connection
   - Protocol faults: a peer fiber plays a transcript that a test packet encoder makes, so a change of the protocol code needs no new recording. Version 1 has no recorder of real server traffic; the integration tests cover the real servers. The test injects resets, short reads, latency, and an error 4031 on an idle connection.
   - TLS: `Weft_tls.server` with test certificates from `test/certgen`.
 - Integration tests (`Weft_os`): `suite : (module S : SERVER) -> Windtrap.test` runs the tests through the typed API on each server. The `Tx.exec` runner runs on MySQL 8.4 and MariaDB 11.8.
-- Verification of claims (phase 1.1), on the real servers: the MariaDB default plugins; the implicit commit of `START TRANSACTION` in a transaction; `COM_RESET_CONNECTION` and the database; `SERVER_STATUS_IN_TRANS` in the OK of `COM_PING` on MariaDB; the exact start time from one identity `SELECT` on the two servers; 1053 and 1927 after an autocommit write; `FOR SHARE` on MariaDB. Round 5 verified in the source code: error numbers 4025 and 1969, the read rights for `performance_schema.global_status`, and `COM_PING` on MySQL. The tests check these too.
+- Verification of claims (phase 1.1), on the real servers: the MariaDB default plugins; the implicit commit of `START TRANSACTION` in a transaction; `COM_RESET_CONNECTION` and the database; `SERVER_STATUS_IN_TRANS` in the OK of `COM_PING` on MariaDB; the exact start time from one identity `SELECT` on the two servers; 1053 and 1927 after an autocommit write; `FOR SHARE` on MariaDB; the text forms of `DOUBLE` that the decoders read (the `my_gcvt` model of `test/prop/server_text.ml`); the literals `-0e0` (the sign stays), `5e-324` and `-9223372036854775808` on a `DOUBLE` and a `BIGINT` column; if a `utf8mb4` column can store an encoded surrogate (`ED A0 80`), which `Decoder.string` refuses. Round 5 verified in the source code: error numbers 4025 and 1969, the read rights for `performance_schema.global_status`, and `COM_PING` on MySQL. The tests check these too.
 
 ## Prerequisite PRs
 

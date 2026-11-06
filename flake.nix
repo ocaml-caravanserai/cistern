@@ -90,13 +90,17 @@
           lib,
           buildDunePackage,
           weft,
+          ptime,
         }:
         buildDunePackage {
           pname = "cistern";
           inherit version;
           minimalOCamlVersion = "5.5";
           src = source lib ([ ./cistern.opam ] ++ libraryDirs);
-          propagatedBuildInputs = [ weft ];
+          propagatedBuildInputs = [
+            weft
+            ptime
+          ];
           doCheck = false;
           meta = meta lib // {
             description = "An ORM for OCaml 5.5 on weft, for MySQL and MariaDB";
@@ -219,12 +223,15 @@
               ocamlPackages.dune_3
               ocamlPackages.findlib
             ];
-            buildInputs = [
-              ocamlPackages.weft
-              ocamlPackages.ppxlib
-              ocamlPackages.windtrap
-              ocamlPackages.ppx_windtrap
-            ];
+            # The libraries of the two packages, and the test libraries. Thus
+            # a new dependency of a package needs no change here.
+            buildInputs =
+              ocamlPackages.cistern.propagatedBuildInputs
+              ++ ocamlPackages.ppx_cistern.propagatedBuildInputs
+              ++ [
+                ocamlPackages.windtrap
+                ocamlPackages.ppx_windtrap
+              ];
             buildPhase = ''
               runHook preBuild
               export DUNE_CACHE=disabled

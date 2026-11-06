@@ -6,3 +6,4 @@ result
 result-*
 _windtrap/
 .mutate.diff
+.mutate.log
