@@ -74,3 +74,49 @@ val foreign_keys : model list -> model -> foreign_key list
     ({!Cistern_names.index_name}). A [Belongs_to] with a [key], a [target] or a
     [references] that does not exist gives no foreign key: [check] refuses it.
     [ON DELETE RESTRICT] is a rule of the DDL, not of this record. *)
+
+val check : model list -> (unit, string list) result
+(** The checks of [push_schema] and [check_schema] (DESIGN.md, "Schema, AST and
+    SQL"). [Error] has one message for each fault. The rules:
+    + The model names are unique. The table names are unique after the ASCII
+      fold.
+    + Each table name passes {!Cistern_names.valid_table_name}, and each column
+      name passes {!Cistern_names.valid_identifier}.
+    + Each model has exactly one [key] field. The key is not [nullable] and not
+      [Float].
+    + [auto] is only on the key, and only on an [Int64] field.
+    + The column names of a model are unique after the ASCII fold.
+    + The key has no [unique] and no [index]. A field does not have [unique] and
+      [index] together.
+    + The relation names of a model are unique, and differ from the field names.
+    + [Belongs_to]: [key] is a field of the model, [target] is a model of the
+      list, [references] is the key of the target, and the two fields have the
+      same [scalar]. Two [Belongs_to] of a model do not use one key. A
+      [Belongs_to] to its own model does not use the key of the model as its
+      [key]: MySQL refuses [FOREIGN KEY (id) REFERENCES t (id)] (error 6125),
+      and on MariaDB each [INSERT] fails (error 1452).
+    + [Has_many]: [target] is a model of the list, with exactly one [Belongs_to]
+      to this model (version 1 has no [via]).
+    + The names of the unique and plain indexes of a table are unique after the
+      ASCII fold. Rule 3 checks the primary key.
+    + The foreign key names of all the models are unique after the ASCII fold,
+      because a constraint name is unique in the database.
+
+    The messages come in this order: rule 1, then rules 2 to 10 for each model
+    in order, then rule 11. In rules 8 and 9, the message of two [Belongs_to] on
+    one key comes first, then the messages of each relation in order. A group of
+    equal names gives one message that names all the members, and a name used by
+    more than one relation or field gives one message. The names in the messages
+    come from {!Cistern_names.quote}. A rule does not run if it needs a part
+    that another rule refuses. For example, rule 8 does not compare the type of
+    a key that does not exist, rule 10 does not run for a model that breaks rule
+    2 or 5, and rule 11 does not run if rule 1 found equal tables. Two
+    [Belongs_to] on one key give only the message of rule 8.
+
+    The fold is ASCII only ({!Cistern_names.fold}). Thus two names that differ
+    only in a non-ASCII letter, for example [é] and [É], pass, and the server
+    refuses the DDL with error 1060 (a duplicate column). An index name with a
+    non-ASCII character always has the hash, thus it does not give error 1061.
+    The fold of the servers is not the same everywhere: MariaDB 11.8 accepts the
+    Kelvin sign (U+212A) and [k] as two columns. [check] cannot see the foreign
+    keys of tables outside the list. *)
