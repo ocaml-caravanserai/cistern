@@ -176,6 +176,10 @@
         }
       );
 
+      # The build of all the code, and the tests that need no database
+      # server. The build uses the dev profile, thus a warning is an error.
+      # The integration suites use their own dune alias, not @runtest, thus
+      # this check never needs a server.
       checks = forAllSystems (
         pkgs: ocamlPackages: {
           inherit (ocamlPackages) cistern ppx_cistern;
@@ -196,6 +200,39 @@
                 o.ppx_cistern
               ];
             };
+
+          tests = pkgs.stdenv.mkDerivation {
+            name = "cistern-tests";
+            src = source pkgs.lib (
+              [
+                ./cistern.opam
+                ./ppx_cistern.opam
+                ./ppx
+                ./test
+              ]
+              ++ libraryDirs
+            );
+            # Not `with ocamlPackages`: the names weft and windtrap are also
+            # the inputs of this flake, and a `with` does not hide them.
+            nativeBuildInputs = [
+              ocamlPackages.ocaml
+              ocamlPackages.dune_3
+              ocamlPackages.findlib
+            ];
+            buildInputs = [
+              ocamlPackages.weft
+              ocamlPackages.ppxlib
+              ocamlPackages.windtrap
+              ocamlPackages.ppx_windtrap
+            ];
+            buildPhase = ''
+              runHook preBuild
+              export DUNE_CACHE=disabled
+              dune build @install @runtest --display short
+              runHook postBuild
+            '';
+            installPhase = "touch $out";
+          };
         }
       );
 

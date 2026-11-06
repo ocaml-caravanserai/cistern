@@ -1,0 +1,13 @@
+; The guard (DESIGN.md, "Shared state and the query hook"): the build gives
+; an error if a library of Cistern depends on unix, on threads or on a world
+; of weft. weft.linux and weft.kqueue depend on weft.posix, thus the forbidden
+; weft.posix also forbids these two worlds. -linkall links each module of the
+; libraries, thus a module that no other module uses also gets the check. The
+; windtrap suites link unix, thus the guard is a separate executable with no
+; test library.
+
+(test
+ (name nounix)
+ (libraries cistern cistern.core cistern.sql cistern.mysql)
+ (link_flags (-linkall))
+ (forbidden_libraries unix threads.posix weft.posix weft.sim weft.os))
