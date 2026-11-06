@@ -125,3 +125,22 @@ let contains s sub =
   let n = String.length s and k = String.length sub in
   let rec at i = i + k <= n && (String.sub s i k = sub || at (i + 1)) in
   at 0
+
+(* An event with an error that holds a marker, and the marker. The SQL and the
+   address hold no marker. *)
+let event =
+  let open Gen in
+  let* m, e = error in
+  let* ns = int_range 0 1_000_000 in
+  let* rows = int_range 0 1000 in
+  let* sent = bool in
+  let duration = Weft.Span.ns ns in
+  let+ ev =
+    Gen.of_list
+      [ Cistern_core.Event.Query {sql= "SELECT ?"; duration; outcome= Failed e}
+      ; Query {sql= "SELECT ?"; duration; outcome= Done {rows}}
+      ; Query {sql= "UPDATE t SET a = ?"; duration; outcome= Cancelled {sent}}
+      ; Connect {address= "db:3306"; duration; error= Some e}
+      ; Connect {address= "db:3306"; duration; error= None} ]
+  in
+  (m, ev)

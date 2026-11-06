@@ -11,4 +11,5 @@ let () =
        ; Prop_literal.tests
        ; Prop_decoder.tests
        ; Prop_error.tests
-       ; Prop_mapping.tests ] )
+       ; Prop_mapping.tests
+       ; Prop_event.tests ] )

@@ -12,4 +12,5 @@ let () =
        ; Test_literal.tests
        ; Test_decoder.tests
        ; Test_error.tests
-       ; Test_mapping.tests ] )
+       ; Test_mapping.tests
+       ; Test_event.tests ] )
