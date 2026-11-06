@@ -6,13 +6,15 @@
 #                       mutate-all, and list the survivors on the lines that
 #                       changed since BASE. Give BASE= for all the lines.
 #   make check-ocaml55  The OCaml 5.5 check of test/ocaml55/dune.
+#   make check-scope    The scope of the gate (tools/check-scope.sh).
 #
 # The variables:
 #
 #   BASE       The git revision of the changed lines. The default is the
 #              merge base with origin/main. make mutate refuses an empty BASE.
 #   MIN_SCORE  If it is set, the report gives exit status 1 only when the
-#              score is less than MIN_SCORE, and not for each survivor.
+#              score is less than MIN_SCORE, and not for each survivor. It
+#              does not change the rule for unreached mutants.
 #   SUITES     The suites of the run (default: all the suites of the gate).
 #
 # Outside the dev shell, each command runs in `nix develop`.
@@ -27,10 +29,11 @@ SUITES := test/ocaml55
 
 # The changed lines since BASE, as the output of `git diff -U0`. windtrap
 # needs an absolute path, because each suite runs in its own directory of
-# _build. The options of GIT_DIFF fix the output of git, because some git
-# configurations and attributes hide lines from windtrap: diff.mnemonicPrefix
-# (other prefixes), color.diff (color codes), diff.renames (a moved file gives
-# no lines), and the attribute -diff ("Binary files differ").
+# _build. The output of git diff can hide lines from windtrap: with
+# diff.mnemonicPrefix (other prefixes), color.diff (color codes),
+# diff.renames (a moved file gives no lines) or the attribute -diff ("Binary
+# files differ"). With the options of GIT_DIFF, these settings do not change
+# the output.
 #
 # The limits of the diff:
 #
@@ -39,32 +42,40 @@ SUITES := test/ocaml55
 #   make mutate-all finds such a survivor.
 # - A change of a test file only has no mutant. A test that becomes weaker
 #   is thus not found. make mutate-all finds the survivor.
+# - A moved file (git mv) gives all its lines as added lines, because of
+#   --no-renames. Thus the gate tests each mutant of the moved file.
 # - A file that git does not track is not in the diff. make mutate gives a
 #   warning for each such .ml file.
-# - A changed library .ml that no suite of SUITES links passes. PR 0b-1 adds
-#   the scope check.
+# - A mutant on a site that only the initialization of a module evaluates
+#   (for example a top-level constant) is "evaluated outside tests". windtrap
+#   tests no such mutant, and the gate does not fail for it, as in weft: each
+#   test depends on the value of the site, but no test can run with and
+#   without the mutant. Thus keep each limit constant inside the function
+#   that uses it, and call library code only inside a test, never at the top
+#   level of a test file.
 DIFF := $(CURDIR)/.mutate.diff
 GIT_DIFF := git diff --text --no-renames --no-color --no-ext-diff --no-textconv \
   --no-relative --src-prefix=a/ --dst-prefix=b/ -U0
 
-# The report of `windtrap mutants`. $(1) is the diff file, or empty for all
-# the lines. A suite that tests no mutant writes no verdict file, and then
-# `windtrap mutants` gives an error. With a diff, no verdict file is a pass,
-# as the rule of weft for a change with no mutant. Without a diff
-# (mutate-all), it is a failure, because the suites reached no mutant.
-report = if find _build/_mutants -name '*.mutants' 2>/dev/null | grep -q .; then \
-  $(DUNE) exec $(MUTATE) windtrap -- mutants \
-    $(if $(1),--diff $(1)) $(if $(MIN_SCORE),--min $(MIN_SCORE)); \
-  else $(if $(1),echo "No suite tested a mutant.", \
-    echo "No suite tested a mutant. Examine the backend and SUITES."; exit 1); fi
+# The output of the last mutation run, for the report (tools/mutate-report.sh).
+LOG := $(CURDIR)/.mutate.log
 
 # The run of the suites. $(1) is the diff file, or empty for all the lines.
-# A suite with a survivor gives exit status 1, thus the run ignores the
-# status, and the report gives the result.
+# First the instrumented suites run with no mutant armed: a test that fails,
+# or a suite that crashes, stops the target. Then each suite runs with its
+# mutants. A suite with a survivor gives exit status 1, thus this run
+# ignores the status, and the report gives the result.
 define run_suites
+$(DUNE) runtest --force $(MUTATE) $(SUITES)
 -WINDTRAP_MUTATE=1 $(if $(1),WINDTRAP_DIFF=$(1)) \
-  $(DUNE) runtest --force $(MUTATE) $(SUITES)
+  $(DUNE) runtest --force $(MUTATE) $(SUITES) 2>&1 | tee $(LOG)
 endef
+
+# The report. $(1) is the diff file, or empty for all the lines. $(2) is
+# empty, or the variables of a fresh run (the rules are in the script).
+report = DUNE="$(DUNE)" MUTATE="$(MUTATE)" MIN_SCORE="$(MIN_SCORE)" $(2) \
+  tools/mutate-report.sh $(1)
+run_vars = RUN_LOG=$(LOG) NSUITES=$(words $(SUITES))
 
 # The lines of describe, count and sum_lengths in test/ocaml55/ocaml55.ml,
 # and the ids of the mutants that the backend puts on them.
@@ -76,7 +87,8 @@ OCAML55_MUTANTS := \
   test/ocaml55/ocaml55.ml:26:63:int \
   test/ocaml55/ocaml55.ml:28:49:sub
 
-.PHONY: help check-windtrap mutate mutate-all mutate-report check-ocaml55
+.PHONY: help check-windtrap check-scope mutate mutate-all mutate-report \
+  check-ocaml55
 
 help:
 	@sed -n '1,/^$$/p' Makefile | sed 's/^# \{0,1\}//'
@@ -88,9 +100,12 @@ check-windtrap:
 	  echo "The windtrap of this shell is not the windtrap of flake.nix."; \
 	  echo "Start nix develop again, or run direnv reload."; exit 2; }
 
+check-scope:
+	@tools/check-scope.sh $(SUITES)
+
 # The build comes first, thus a compile error stops the target. The run
 # removes the old verdict files. CI runs this target on each pull request.
-mutate: check-windtrap
+mutate: check-windtrap check-scope
 	@test -n "$(BASE)" || { \
 	  echo "BASE is empty. Give BASE=<revision>, for example BASE=origin/main."; exit 2; }
 	@untracked=$$(git ls-files --others --exclude-standard -- '*.ml'); \
@@ -101,17 +116,17 @@ mutate: check-windtrap
 	rm -rf _build/_mutants
 	$(GIT_DIFF) $(BASE) > $(DIFF)
 	$(call run_suites,$(DIFF))
-	$(call report,$(DIFF))
+	@$(call report,$(DIFF),$(run_vars))
 
-mutate-all: check-windtrap
+mutate-all: check-windtrap check-scope
 	$(DUNE) build $(MUTATE) $(SUITES:%=@%/all)
 	rm -rf _build/_mutants
 	$(call run_suites,)
-	$(call report,)
+	@$(call report,,$(run_vars))
 
 mutate-report: check-windtrap
 	$(if $(BASE),$(GIT_DIFF) $(BASE) > $(DIFF))
-	$(call report,$(if $(BASE),$(DIFF)))
+	@$(call report,$(if $(BASE),$(DIFF)),)
 
 check-ocaml55: check-windtrap
 	$(DUNE) build $(MUTATE) @test/ocaml55/all

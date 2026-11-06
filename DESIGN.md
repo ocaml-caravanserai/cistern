@@ -752,6 +752,9 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: close the connection
 - README test: a dune build rule compiles the examples of `README.md`, as in caravan.
 - Mutation tests: `make mutate` as in weft, on the suites unit, prop, stateful, expect and sim. Each phase adds its suites to `SUITES` of the Makefile. `test/ocaml55` stays in `SUITES` as the check of the mutation backend. The integration suites are not in the mutation runs. The rule is the rule of weft (no surviving mutant on changed lines), with `[@mutate off]` and a reason where a mutant cannot be killed.
   - The gate gives the output of `git diff -U0` to windtrap (`--diff`). On a local machine, the base is the merge base with `origin/main`. In CI, the base is `HEAD^1`: the checkout of a pull request is a merge commit, and its first parent is the tip of the base branch at the time of the event.
+  - Unlike weft, a mutant on a changed line that no test reaches fails the gate. Code that no suite can reach gets `[@mutate off]` with a reason.
+  - Each library with the mutation backend and a `.ml` file is in the `libraries` of a test stanza of a suite of `SUITES`, and each such test stanza links with `-linkall`. `make check-scope` examines this, so that the catalogue of the suites has each mutation site. `ppx_cistern` has no mutation backend until phase 3.
+  - Before the mutation run, the suites run with no mutant armed, and a failure stops the gate. In the mutation run, each suite writes a verdict file or tells that no mutant is in its scope. A suite that does neither stopped early, and the gate fails.
 - The integration suites run under their own dune alias, not under `@runtest`. Thus `dune runtest` and the `checks` of the flake never need a database server.
 - Simulator tests (`Weft_sim`):
   - The weft shell of the pool: 1000 fibers, 4 virtual domains, 8 connections, timeouts and cancels at the same time as checkins; a connect fiber that raises does not stop `with_db`.
