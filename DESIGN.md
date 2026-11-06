@@ -207,6 +207,17 @@ inputs = {
   - MariaDB: `information_schema.SYSTEM_VARIABLES` has no `GLOBAL_VALUE_ORIGIN` `CONFIG`.
   - A comparison of values does not find a defaults file, because the command line sets the compared values.
 
+`make db-errors` checks the error numbers of "Error mapping" against the server packages. A running server is not necessary.
+
+- `test/db/errors.tsv` has each pair (dialect, number) of `Error.of_server` and `Error.interrupts`, with its name. An example: `mariadb 4025 ER_CONSTRAINT_FAILED`.
+- The test `test/db/error_codes` runs in `dune runtest`. It is not a suite of the mutation gate.
+- The test makes sure that each row has a name, and that the file has each number of the table and no other number.
+- It probes the numbers 0 to 65535 with the SQLSTATE `23000` and with `HY000`. A number outside the table gives the fallback of the SQLSTATE: `Constraint_violation Other_constraint` or `Driver`.
+- A number is in the table if at least one of the two probes does not give its fallback.
+- `make db-errors` compares each name with `perror` of `server-mysql84`, or of `server-mariadb114` and `server-mariadb118`.
+- An empty name, and a number that `perror` does not know, are mismatches. MariaDB `perror` gives status 0 for a number that it does not know.
+- Thus a nixpkgs update that changes an error number fails the workflow.
+
 `make integration SERVER=<name>` runs the integration tests (phase 1.1).
 
 `make db-down [SERVER=<name>]` stops the servers. It sends `SIGTERM` to the pid of the env file and to the pid of the server's pid file. It stops a process only if its command line has the pid file of this `DB_DIR`. After 60 s, it sends `SIGKILL` and gives status 1.

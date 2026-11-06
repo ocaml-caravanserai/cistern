@@ -18,6 +18,8 @@
 #                       The smoke check of a test server that runs.
 #   make db-down [SERVER=...]
 #                       Stop SERVER, or each test server that runs.
+#   make db-errors      Compare the names of test/db/errors.tsv with perror
+#                       of the server packages (no server runs).
 #
 # The variables:
 #
@@ -101,7 +103,7 @@ OCAML55_MUTANTS := \
   test/ocaml55/ocaml55.ml:28:49:sub
 
 .PHONY: help check-windtrap check-scope mutate mutate-all mutate-report \
-  mutate-arm check-ocaml55 db-up db-check db-down
+  mutate-arm check-ocaml55 db-up db-check db-down db-errors
 
 help:
 	@sed -n '1,/^$$/p' Makefile | sed 's/^# \{0,1\}//'
@@ -171,3 +173,6 @@ db-check:
 
 db-down:
 	sh test/db/db.sh down $(SERVER)
+
+db-errors:
+	sh test/db/db.sh errors

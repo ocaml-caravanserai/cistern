@@ -9,6 +9,7 @@
 #   test/db/db.sh up NAME      Start the server NAME with a new data directory.
 #   test/db/db.sh down [NAME]  Stop NAME, or each server that runs.
 #   test/db/db.sh check NAME   The smoke check of the server NAME.
+#   test/db/db.sh errors       Compare test/db/errors.tsv with perror.
 #
 # NAME is mysql84, mariadb114 or mariadb118. The variables:
 #
@@ -368,6 +369,49 @@ Ssl_version	TLSv1.3" tcp "$client" "$verify" --ssl-ca="$DB_CA" \
   rm -f "$DB_DIR/check.err"
 }
 
+# The name of the error $2 from perror of the store path $1, or nothing.
+# MySQL: "MySQL error code MY-001062 (ER_DUP_ENTRY): ...". MariaDB: "MariaDB
+# error code 1062 (ER_DUP_ENTRY): ...", with status 0 also for a number that
+# it does not know.
+error_name() {
+  "$1/bin/perror" "$2" 2>/dev/null |
+    sed -n 's/^[A-Za-z]* error code [A-Z0-9-]* (\([A-Z0-9_]*\)):.*/\1/p' |
+    head -n 1
+}
+
+errors() {
+  my=$(nix build --no-link --print-out-paths '.#server-mysql84^out')
+  m114=$(nix build --no-link --print-out-paths '.#server-mariadb114^out')
+  m118=$(nix build --no-link --print-out-paths '.#server-mariadb118^out')
+  bad=0 rows=0
+  tab=$(printf '\t')
+  while IFS=$tab read -r dialect number expected; do
+    case $dialect in
+      '#'* | '') continue ;;
+      mysql) stores=$my ;;
+      mariadb) stores="$m114 $m118" ;;
+      *) die "errors.tsv: unknown dialect '$dialect'" ;;
+    esac
+    rows=$((rows + 1))
+    # perror of a new package can give no name for a number that it does not
+    # know. Thus an empty name in the file is a failure, not a match.
+    if [ -z "$expected" ]; then
+      echo "FAIL $dialect $number: errors.tsv has no name"
+      bad=$((bad + 1))
+      continue
+    fi
+    for s in $stores; do
+      got=$(error_name "$s" "$number")
+      if [ "$got" != "$expected" ]; then
+        echo "FAIL $dialect $number: expected $expected, perror of ${s#*-} gives '${got}'"
+        bad=$((bad + 1))
+      fi
+    done
+  done <test/db/errors.tsv
+  [ "$bad" -eq 0 ] || die "$bad names differ"
+  echo "ok $rows error names"
+}
+
 down() {
   for n in ${1:-$NAMES}; do
     server "$n"
@@ -403,8 +447,12 @@ case ${1:-} in
     [ $# -eq 2 ] || die "usage: db.sh check NAME"
     check "$2"
     ;;
+  errors)
+    [ $# -eq 1 ] || die "usage: db.sh errors"
+    errors
+    ;;
   *)
-    echo "usage: db.sh up NAME | check NAME | down [NAME]" >&2
+    echo "usage: db.sh up NAME | check NAME | down [NAME] | errors" >&2
     exit 2
     ;;
 esac
