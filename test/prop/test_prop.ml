@@ -7,4 +7,7 @@
 let () =
   exit
     (Windtrap.run "prop"
-       [Prop_decimal.tests; Prop_literal.tests; Prop_decoder.tests] )
+       [ Prop_decimal.tests
+       ; Prop_literal.tests
+       ; Prop_decoder.tests
+       ; Prop_error.tests ] )

@@ -444,9 +444,11 @@ module Error : sig
     | Connect of string     (* the last connect error of the pool *)
     | Decode of string
     | Driver of { code : int; sqlstate : string; message : string }
-  val pp : Format.formatter -> t -> unit
+  val pp_summary : Format.formatter -> t -> unit   (* no message: for logs *)
+  val pp : Format.formatter -> t -> unit           (* the summary and the message *)
+  val to_string : t -> string                      (* the text of pp *)
 end
-exception Cistern_error of Error.t   (* with a printer from Printexc.register_printer *)
+exception Cistern_error of Error.t   (* its printer (Printexc.register_printer) prints the summary *)
 ```
 
 Rules:
@@ -740,6 +742,7 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: close the connection
 - `on_query` gets events with a kind (`Query`, `Connect`, `Kill`, `Kill_dropped`, `Kill_off`), the redacted SQL, the duration, the number of rows and the error. Cistern catches its exceptions.
   - `Query` events outside a `Tx` run after the checkin, in the fiber of the statement. In a `Tx`, they run after each statement. An event never changes the result of the statement.
   - `Connect` events run in the connect fiber. `Kill` events run in the killer, outside its shields.
+- `Error.t` keeps the full server message for the program. A server message can hold a value of a row, for example 1062 "Duplicate entry 'x' for key 'email'". `Error.pp_summary` prints only the constructor, the kind of a constraint and the error number. The printer of the exception `Cistern_error`, which logging libraries call through `Printexc.to_string`, uses `Error.pp_summary`. Only an explicit `Error.pp` or `Error.to_string` gives the full message.
 - No stdlib I/O: Cistern does not call `Unix`, `open_in` or `Sys.time`. The guard `test/nounix` links the four libraries of the package `cistern` (not `ppx_cistern`, which runs in the compiler) with the list of caravan's `test/nounix/dune`: `(forbidden_libraries unix threads.posix weft.posix weft.sim weft.os)`.
 
 ## Tests (windtrap)
