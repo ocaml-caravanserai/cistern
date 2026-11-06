@@ -453,7 +453,7 @@ Rules:
 
 - `Query.update` and `Query.delete` with `offset`, `include_`, `for_update` or `for_share` raise `Invalid_argument` (MySQL has no `UPDATE ... OFFSET`). `count` and `exists` ignore `include_`, `for_update` and `for_share`.
 - A raw statement marks its connection, which then gets a session reset at checkin (see "Session").
-- `Value.t` has `Null`, `Int of int64`, `Float of float`, `Text of string`, `Bytes of string`, `Datetime of Ptime.t`, and `Decimal of Decimal.t` (for raw results such as `SUM`). `Decimal.t` is abstract. `Decimal.of_string` accepts only `-?[0-9]{1,65}(\.[0-9]{1,30})?`, so that `Raw.v (Decimal d)` cannot carry SQL text.
+- `Value.t` has `Null`, `Int of int64`, `Float of float`, `Text of string`, `Bytes of string`, `Datetime of Ptime.t`, and `Decimal of Decimal.t` (for raw results such as `SUM`). `Decimal.t` is abstract. `Decimal.of_string` accepts only `-?[0-9]+(\.[0-9]+)?`, with at most 65 digits in total and at most 38 after the point (the `DECIMAL` limits of the servers: 65 digits, and a scale of at most 38 on MariaDB and 30 on MySQL), so that `Raw.v (Decimal d)` cannot carry SQL text.
 - The exception is `Cistern_error`, not `Error`, so that `open Cistern` does not hide the `Error` constructor of `result`.
 - A cancel of the fiber is never an `Error.t`. weft's `Cancelled` always goes up, also when a write was in flight. Then the `on_query` event of the statement records the unknown outcome, and the `Tx` (if any) fails.
 - A failure in a hook or in the checkin never changes the result of the statement.

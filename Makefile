@@ -5,6 +5,8 @@
 #   make mutate-report  Merge the verdicts of the last run of mutate or
 #                       mutate-all, and list the survivors on the lines that
 #                       changed since BASE. Give BASE= for all the lines.
+#   make mutate-arm MUTANT=core/decimal.ml:21:43:int
+#                       Run SUITE with one mutant armed.
 #   make check-ocaml55  The OCaml 5.5 check of test/ocaml55/dune.
 #   make check-scope    The scope of the gate (tools/check-scope.sh).
 #
@@ -16,16 +18,18 @@
 #              score is less than MIN_SCORE, and not for each survivor. It
 #              does not change the rule for unreached mutants.
 #   SUITES     The suites of the run (default: all the suites of the gate).
+#   SUITE      The suite of mutate-arm (default test/unit/test_unit.exe).
 #
 # Outside the dev shell, each command runs in `nix develop`.
 
 BASE ?= $(shell git merge-base origin/main HEAD 2>/dev/null)
+SUITE ?= test/unit/test_unit.exe
 
 DUNE := $(if $(IN_NIX_SHELL),dune,nix develop -c dune)
 MUTATE := --instrument-with ppx_windtrap.mutate
 
 # The suites of the gate. They use no database server.
-SUITES := test/ocaml55
+SUITES := test/unit test/prop test/ocaml55
 
 # The changed lines since BASE, as the output of `git diff -U0`. windtrap
 # needs an absolute path, because each suite runs in its own directory of
@@ -88,7 +92,7 @@ OCAML55_MUTANTS := \
   test/ocaml55/ocaml55.ml:28:49:sub
 
 .PHONY: help check-windtrap check-scope mutate mutate-all mutate-report \
-  check-ocaml55
+  mutate-arm check-ocaml55
 
 help:
 	@sed -n '1,/^$$/p' Makefile | sed 's/^# \{0,1\}//'
@@ -127,6 +131,10 @@ mutate-all: check-windtrap check-scope
 mutate-report: check-windtrap
 	$(if $(BASE),$(GIT_DIFF) $(BASE) > $(DIFF))
 	@$(call report,$(if $(BASE),$(DIFF)),)
+
+mutate-arm:
+	@test -n "$(MUTANT)" || { echo "Give MUTANT, for example MUTANT=core/decimal.ml:21:43:int"; exit 2; }
+	$(DUNE) exec $(MUTATE) $(SUITE) -- --arm $(MUTANT)
 
 check-ocaml55: check-windtrap
 	$(DUNE) build $(MUTATE) @test/ocaml55/all
