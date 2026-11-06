@@ -15,4 +15,5 @@ let () =
        ; Test_mapping.tests
        ; Test_event.tests
        ; Test_dialect.tests
-       ; Test_names.tests ] )
+       ; Test_names.tests
+       ; Test_schema.tests ] )

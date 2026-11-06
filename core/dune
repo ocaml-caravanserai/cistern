@@ -3,6 +3,6 @@
 (library
  (name cistern_core)
  (public_name cistern.core)
- (libraries ptime weft)
+ (libraries cistern.names ptime weft)
  (instrumentation
   (backend ppx_windtrap.mutate)))

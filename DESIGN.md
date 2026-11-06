@@ -215,7 +215,7 @@ and todo = {
 | `[@auto]` | Only on an `int64` key. `AUTO_INCREMENT`. |
 | `[@unique]` | Unique index. Generates `get_by_<field>` and `find_by_<field>`. |
 | `[@index]` | Index. Generates `filter_by_<field>`. |
-| `[@has_many]`, `[@belongs_to { key; references }]` | Relations. The field type is `'a Deferred.t`. `belongs_to` makes a `FOREIGN KEY ... ON DELETE RESTRICT`, and it acts as `[@index]` on the key field (one index, and `filter_by_<key>`). An explicit `[@index]` on that field adds no second index. In version 1, `references` must be the `[@key]` field of the other model. |
+| `[@has_many]`, `[@belongs_to { key; references }]` | Relations. The field type is `'a Deferred.t`. `belongs_to` makes a `FOREIGN KEY ... ON DELETE RESTRICT`, and it acts as `[@index]` on the key field (one index, and `filter_by_<key>`). An explicit `[@index]` on that field adds no second index. A key field that is the `[@key]` or has `[@unique]` gets no plain index, because its index serves the foreign key. In version 1, `references` must be the `[@key]` field of the other model. |
 | `[@default v]` | The create argument becomes optional. The client puts the default in the `INSERT`. The DDL has no `DEFAULT` clauses. |
 | `[@column "x"]`, `[@@table "x"]` | Names in the database. The default table name is the type name. The rules (`Cistern_names.valid_identifier`): valid UTF-8, 1 to 64 characters (not bytes), each in U+0001 to U+FFFF (the servers keep names in utf8mb3), no backquote, and no ASCII white space at the end. A table name is also a file name: InnoDB encodes each character other than `[0-9A-Za-z_]` in 3 or 5 bytes, with a limit of 251 bytes. `Cistern_names.valid_table_name` counts 5 bytes for each such character, thus 64 × `€` is a valid column name but not a valid table name. A table name must not start with `#mysql50#`: MariaDB 11.4 refuses it (1103), and MariaDB 11.8 uses another table. The ppx and `Schema.check` apply these rules. |
 
@@ -231,7 +231,7 @@ Field types in version 1:
 | OCaml | Column type |
 |---|---|
 | `int64`, `int` | `BIGINT` |
-| `string` | `VARCHAR(255)` if indexed or a key, else `MEDIUMTEXT` |
+| `string` | `VARCHAR(255)` if indexed or a key, else `MEDIUMTEXT`. Indexed: `[@unique]`, `[@index]`, or the key field of a `belongs_to`. |
 | `bool` | `TINYINT(1)`. Decoding: 0 is `false`, any other value is `true`. |
 | `float` | `DOUBLE` |
 | `bytes` | `VARBINARY(255)` if indexed or a key, else `MEDIUMBLOB` |
