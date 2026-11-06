@@ -59,8 +59,9 @@
         license = lib.licenses.mpl20;
       };
 
-      # The directories of the four libraries of the package cistern.
+      # The directories of the five libraries of the package cistern.
       libraryDirs = [
+        ./names
         ./core
         ./sql
         ./mysql
@@ -83,8 +84,8 @@
           );
         };
 
-      # The four libraries cistern.core, cistern.sql, cistern.mysql and
-      # cistern.
+      # The five libraries cistern.names, cistern.core, cistern.sql,
+      # cistern.mysql and cistern.
       package =
         {
           lib,

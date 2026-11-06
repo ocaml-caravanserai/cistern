@@ -56,6 +56,8 @@ In version 1:
 - `push_schema` and a reduced `check_schema`.
 - A query hook for logs (`?on_query`).
 
+Other servers, for example MySQL 5.7 or a fork, are not supported. A server with no `mariadb` in its version or comment gets the rules of MySQL. MySQL 5.7 refuses the session setup with error 1273, because it has no `utf8mb4_0900_bin`.
+
 Later versions:
 
 - PostgreSQL (see "Later versions: PostgreSQL notes"), SQLite (needs a weft API for blocking calls), DynamoDB.
@@ -170,6 +172,7 @@ CI jobs:
 ```
 cistern/
   flake.nix, flake.lock, dune-project, Makefile, test/certgen
+  names/    (cistern.names)   The rules of names, the names of indexes (only the stdlib)
   core/     (cistern.core)    Value, Dialect, literals, Schema, model AST, Decoder, Error, Event, MODEL
   sql/      (cistern.sql)     SQL AST, compiler from the model AST, serializer for each dialect, DDL
   mysql/    (cistern.mysql)   Config and URL parser, connect, TLS, authentication, text protocol, sessions
@@ -178,7 +181,8 @@ cistern/
   test/  unit, prop, stateful, expect, sim, integration, nounix, readme, typeerror, ocaml55
 ```
 
-- Two opam packages: `cistern` (the four libraries) and `ppx_cistern`. An application links `cistern`.
+- Two opam packages: `cistern` (the five libraries) and `ppx_cistern`.
+- `cistern.names` has an empty `libraries` field, thus dune refuses a dependency. The ppx of phase 3 can link it with no weft and no ptime. An application links `cistern`.
 - With one client, version 1 has no `CONN` interface and no `Driver.t`. A later PostgreSQL driver brings the abstraction back.
 
 ## User API
@@ -211,9 +215,9 @@ and todo = {
 | `[@auto]` | Only on an `int64` key. `AUTO_INCREMENT`. |
 | `[@unique]` | Unique index. Generates `get_by_<field>` and `find_by_<field>`. |
 | `[@index]` | Index. Generates `filter_by_<field>`. |
-| `[@has_many]`, `[@belongs_to { key; references }]` | Relations. The field type is `'a Deferred.t`. `belongs_to` makes a `FOREIGN KEY ... ON DELETE RESTRICT`, and it acts as `[@index]` on the key field (one index, and `filter_by_<key>`). An explicit `[@index]` on that field adds no second index. In version 1, `references` must be the `[@key]` field of the other model. |
+| `[@has_many]`, `[@belongs_to { key; references }]` | Relations. The field type is `'a Deferred.t`. `belongs_to` makes a `FOREIGN KEY ... ON DELETE RESTRICT`, and it acts as `[@index]` on the key field (one index, and `filter_by_<key>`). An explicit `[@index]` on that field adds no second index. A key field that is the `[@key]` or has `[@unique]` gets no plain index, because its index serves the foreign key. In version 1, `references` must be the `[@key]` field of the other model. |
 | `[@default v]` | The create argument becomes optional. The client puts the default in the `INSERT`. The DDL has no `DEFAULT` clauses. |
-| `[@column "x"]`, `[@@table "x"]` | Names in the database. The default table name is the type name. The ppx refuses a name with a backquote or a NUL, and a name of more than 64 characters. |
+| `[@column "x"]`, `[@@table "x"]` | Names in the database. The default table name is the type name. The rules (`Cistern_names.valid_identifier`): valid UTF-8, 1 to 64 characters (not bytes), each in U+0001 to U+FFFF (the servers keep names in utf8mb3), no backquote, and no ASCII white space at the end. A table name is also a file name: InnoDB encodes each character other than `[0-9A-Za-z_]` in 3 or 5 bytes, with a limit of 251 bytes. `Cistern_names.valid_table_name` counts 5 bytes for each such character, thus 64 × `€` is a valid column name but not a valid table name. A table name must not start with `#mysql50#`: MariaDB 11.4 refuses it (1103), and MariaDB 11.8 uses another table. The ppx and `Schema.check` apply these rules. |
 
 The ppx refuses field names that clash with generated names:
 
@@ -227,7 +231,7 @@ Field types in version 1:
 | OCaml | Column type |
 |---|---|
 | `int64`, `int` | `BIGINT` |
-| `string` | `VARCHAR(255)` if indexed or a key, else `MEDIUMTEXT` |
+| `string` | `VARCHAR(255)` if indexed or a key, else `MEDIUMTEXT`. Indexed: `[@unique]`, `[@index]`, or the key field of a `belongs_to`. |
 | `bool` | `TINYINT(1)`. Decoding: 0 is `false`, any other value is `true`. |
 | `float` | `DOUBLE` |
 | `bytes` | `VARBINARY(255)` if indexed or a key, else `MEDIUMBLOB` |
@@ -496,7 +500,20 @@ Error 1153 (packet too large): the server did not run the statement, but it clos
 
 ### Schema, AST and SQL
 
-- One schema: models, fields, column names, types, the key, indexes and relations. `push_schema` and `check_schema` check it: each `belongs_to` key is a field, each `has_many` has an opposite `belongs_to`, each `references` is a key or a unique field, and the models of all relations are in the list.
+- One schema (`Schema`): models, fields, column names, types, the key, indexes and relations. `push_schema` and `check_schema` call `Schema.check` first. Its rules:
+  1. The model names are unique. The table names are unique after the ASCII fold (the file system of macOS ignores case).
+  2. Each table name and each column name obeys the rules of names ("Model definition").
+  3. Each model has exactly one `[@key]` field. The key is not an `option` and not a `float`.
+  4. `[@auto]` is only on the key, and only on an `int64` field.
+  5. The column names of a model are unique after the ASCII fold.
+  6. The key has no `[@unique]` and no `[@index]`. A field does not have `[@unique]` and `[@index]` together.
+  7. The relation names of a model are unique, and differ from the field names.
+  8. `belongs_to`: the key is a field, the other model is in the list, `references` is its key, and the two fields have the same type. Two `belongs_to` of a model do not use one key. A `belongs_to` to its own model does not use the `[@key]` as its key: MySQL refuses `FOREIGN KEY (id) REFERENCES t (id)` (6125), and on MariaDB each `INSERT` fails (1452).
+  9. `has_many`: the other model is in the list, with exactly one `belongs_to` to this model (version 1 has no `via`).
+  10. The names of the unique and plain indexes of a table are unique after the ASCII fold.
+  11. The foreign key names of all the models are unique after the ASCII fold, because a constraint name is unique in the database. `check` cannot see the foreign keys of tables outside the list.
+
+  A group of equal names gives one message with all the members. A rule that needs a part that another rule refuses does not run. The fold is ASCII only: the servers also fold other letters (`É` to `é`), thus two such names pass `check`, and the server refuses the DDL with 1060 (documented). An index name with a non-ASCII character always has the hash, thus no 1061. The fold of the servers differs: MariaDB 11.8 accepts the Kelvin sign (U+212A) and `k` as two columns. The messages quote names with `Cistern_names.quote`: valid UTF-8 stays as it is, and control characters and invalid bytes become escapes.
 - The typed API builds a model-level untyped AST. `cistern.sql` compiles it to a SQL AST and serializes it for the dialect of the connection.
 - Each `SELECT` has an explicit, qualified column list in the field order of the model. The decoders read columns by position.
 - Identifiers are always quoted with backquotes.
@@ -524,7 +541,7 @@ No value from a user is ever between quotes:
 
 - `CREATE TABLE IF NOT EXISTS ... ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=<collation> ROW_FORMAT=DYNAMIC`. `ROW_FORMAT=DYNAMIC` permits unique indexes on `VARCHAR(255)` in `utf8mb4` (1020 bytes).
 - Collation: binary with no trailing-space padding. MySQL: `utf8mb4_0900_bin`. MariaDB: `utf8mb4_nopad_bin`.
-- Indexes and foreign keys are inside `CREATE TABLE`, because MySQL has no `CREATE INDEX IF NOT EXISTS`. Each foreign key has an explicit index with a known name. Index and constraint names have at most 64 characters, with a hash suffix.
+- Indexes and foreign keys are inside `CREATE TABLE`, because MySQL has no `CREATE INDEX IF NOT EXISTS`. Each foreign key has an explicit index with a known name. The name of an index or a constraint (`Cistern_names.index_name`) is `<table>_<column>_<kind>`, with the kind `key` (unique), `idx` (plain) or `fk` (foreign key), for example `user_email_key`, `todo_user_id_idx` and `todo_user_id_fk`. If this name has more than 64 characters or a non-ASCII character, it becomes `<prefix>_<kind>_<hash>`: `<hash>` is the 8 lowercase hex digits of the FNV-1a 32 hash of the full name, and `<prefix>` is `<table>_<column>`, cut on a character boundary to 64 characters in total. The hash on non-ASCII names prevents equal names on MySQL, which compares constraint names with no accents.
 - No `DEFAULT` clauses (MySQL refuses them on `MEDIUMTEXT` and `MEDIUMBLOB`). `[@default]` works on the client.
 - `push_schema` runs on its own connection with `SET foreign_key_checks = 0`, so the order of the tables and cycles of references do not matter (mysqldump uses the same method). The connection is closed after the DDL. This connection is outside `pool_size`, so the pool can have one more session during `push_schema` (documented).
 - `push_schema` never changes a table that exists. To change a table, use a raw `ALTER TABLE`, then `check_schema` (documented).
@@ -633,7 +650,7 @@ In other cases the client fails with `Connect "the server asks for full authenti
 
 Three round trips after the authentication:
 
-1. `SELECT CONNECTION_ID(), @@version, @@version_comment, @@hostname, @@port, @@server_id, @@wait_timeout, @@innodb_rollback_on_timeout, @@max_allowed_packet`. All names exist on the two servers. The dialect comes from `@@version` and `@@version_comment` (MariaDB writes `MariaDB`; a `5.5.5-` prefix is removed).
+1. `SELECT CONNECTION_ID(), @@version, @@version_comment, @@hostname, @@port, @@server_id, @@wait_timeout, @@innodb_rollback_on_timeout, @@max_allowed_packet`. All names exist on the two servers. The dialect comes from `@@version` and `@@version_comment` (`Dialect.of_version`): the text `mariadb` in one of them, with no regard to case, gives MariaDB, else MySQL. The pinned MySQL build has the comment `Source distribution`, thus the comment cannot identify MySQL. `@@version` has no `5.5.5-` prefix on the pinned servers. A version that does not start with `<major>.<minor>.<patch>` gives `Driver`.
 2. `SET NAMES utf8mb4 COLLATE <collation of the dialect>, time_zone = '+00:00', sql_mode = 'STRICT_ALL_TABLES,NO_BACKSLASH_ESCAPES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION', autocommit = 1`. The `sql_mode` is a complete value, because some global modes break Cistern (for example MariaDB `EMPTY_STRING_IS_NULL`).
 3. Identity, in one `SELECT` that the dialect chooses (with no `CLIENT_MULTI_STATEMENTS`, one round trip has one statement):
    - MySQL: `SELECT @@server_uuid, UNIX_TIMESTAMP() - (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Uptime')`.
@@ -751,7 +768,7 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: close the connection
 - `Error.t` keeps the full server message for the program. A server message can hold a value of a row, for example 1062 "Duplicate entry 'x' for key 'email'". `Error.pp_summary` prints only the constructor, the kind of a constraint and the error number. The printer of the exception `Cistern_error`, which logging libraries call through `Printexc.to_string`, uses `Error.pp_summary`. Only an explicit `Error.pp` or `Error.to_string` gives the full message.
 - `Event.pp`, and any default log output of events, prints only the kind of the event, the duration, the number of rows, the address, the redacted SQL and `Error.pp_summary`. Thus no server message and no value goes to the logs (decision Q9 of phase 0). The producer of a `Query` event puts only redacted SQL in it: each literal is `?`. A query has the outcome `Done` (with the rows), `Failed` (with the error) or `Cancelled` (with a flag: was the statement sent).
 - The events of `KILL` (`Kill`, `Kill_dropped`, `Kill_off`) come with the killer in phase 1.5. Their reasons are variants, not text, so that an event holds no free text. A `KILL` that gives 1094 (the query is already gone) is a success.
-- No stdlib I/O: Cistern does not call `Unix`, `open_in` or `Sys.time`. The guard `test/nounix` links the four libraries of the package `cistern` (not `ppx_cistern`, which runs in the compiler) with the list of caravan's `test/nounix/dune`: `(forbidden_libraries unix threads.posix weft.posix weft.sim weft.os)`.
+- No stdlib I/O: Cistern does not call `Unix`, `open_in` or `Sys.time`. The guard `test/nounix` links the five libraries of the package `cistern` (not `ppx_cistern`, which runs in the compiler) with the list of caravan's `test/nounix/dune`: `(forbidden_libraries unix threads.posix weft.posix weft.sim weft.os)`.
 
 ## Tests (windtrap)
 
@@ -777,7 +794,7 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: close the connection
   - Protocol faults: a peer fiber plays a transcript that a test packet encoder makes, so a change of the protocol code needs no new recording. Version 1 has no recorder of real server traffic; the integration tests cover the real servers. The test injects resets, short reads, latency, and an error 4031 on an idle connection.
   - TLS: `Weft_tls.server` with test certificates from `test/certgen`.
 - Integration tests (`Weft_os`): `suite : (module S : SERVER) -> Windtrap.test` runs the tests through the typed API on each server. The `Tx.exec` runner runs on MySQL 8.4 and MariaDB 11.8.
-- Verification of claims (phase 1.1), on the real servers: the MariaDB default plugins; the implicit commit of `START TRANSACTION` in a transaction; `COM_RESET_CONNECTION` and the database; `SERVER_STATUS_IN_TRANS` in the OK of `COM_PING` on MariaDB; the exact start time from one identity `SELECT` on the two servers; 1053 and 1927 after an autocommit write; `FOR SHARE` on MariaDB; the text forms of `DOUBLE` that the decoders read (the `my_gcvt` model of `test/prop/server_text.ml`); the literals `-0e0` (the sign stays), `5e-324` and `-9223372036854775808` on a `DOUBLE` and a `BIGINT` column; if a `utf8mb4` column can store an encoded surrogate (`ED A0 80`), which `Decoder.string` refuses; the errors 1874 (`--innodb-read-only`), 1836 (`ER_READ_ONLY_MODE`), 1265 and 1365 (in strict mode) on the two servers, 3101 on MySQL, and 1205 for `NOWAIT` on MariaDB; the errors 1052, 1169, 1859, 1761 and 1762 on the two servers, and 3673 on MySQL. 1557 (`ER_FOREIGN_DUPLICATE_KEY_OLD_UNUSED` on MySQL, `ER_UNUSED_4` on MariaDB) has no row: the servers do not send it. Round 5 verified in the source code: error numbers 4025 and 1969, the read rights for `performance_schema.global_status`, and `COM_PING` on MySQL. The tests check these too.
+- Verification of claims (phase 1.1), on the real servers: the MariaDB default plugins; the implicit commit of `START TRANSACTION` in a transaction; `COM_RESET_CONNECTION` and the database; `SERVER_STATUS_IN_TRANS` in the OK of `COM_PING` on MariaDB; the exact start time from one identity `SELECT` on the two servers; 1053 and 1927 after an autocommit write; the greeting bit `CLIENT_MYSQL` (0 on MariaDB) as a cross-check of `Dialect.of_version`; the text forms of `DOUBLE` that the decoders read (the `my_gcvt` model of `test/prop/server_text.ml`); the literals `-0e0` (the sign stays), `5e-324` and `-9223372036854775808` on a `DOUBLE` and a `BIGINT` column; if a `utf8mb4` column can store an encoded surrogate (`ED A0 80`), which `Decoder.string` refuses; the errors 1874 (`--innodb-read-only`), 1836 (`ER_READ_ONLY_MODE`), 1265 and 1365 (in strict mode) on the two servers, 3101 on MySQL, and 1205 for `NOWAIT` on MariaDB; the errors 1052, 1169, 1859, 1761 and 1762 on the two servers, and 3673 on MySQL. 1557 (`ER_FOREIGN_DUPLICATE_KEY_OLD_UNUSED` on MySQL, `ER_UNUSED_4` on MariaDB) has no row: the servers do not send it. The grammar of MariaDB 11.4.13 and 11.8.8 (`sql/sql_yacc.yy`) has no `FOR SHARE`, thus Cistern uses `LOCK IN SHARE MODE` on MariaDB. A review ran the pinned servers for the rules of names (phase 0b-3): a name of 65 characters gives 1059 on MySQL and 1103 on MariaDB (a table); a 4-byte character gives 1300 on MariaDB, and MySQL stores `a?` (a second `a😀` then gives 1060); 64 × `€` is a valid column name but not a valid table name (the InnoDB file name); MySQL `CHECK` constraint names are unique in the schema (version 1 has no `CHECK`). Phase 1.1 tests these errors again. It also tests that the collations do not pad: `SELECT 'a ' = 'a' COLLATE utf8mb4_0900_bin` (MySQL) and `COLLATE utf8mb4_nopad_bin` (MariaDB) give 0. MariaDB has no `PAD_ATTRIBUTE` column in `information_schema.COLLATIONS` (1054). Round 5 verified in the source code: error numbers 4025 and 1969, the read rights for `performance_schema.global_status`, and `COM_PING` on MySQL. The tests check these too.
 
 ## Prerequisite PRs
 
@@ -788,7 +805,7 @@ These PRs move or add generic transport code in weft, so that any protocol on we
 | weft PR 1a | `Flow`, `Tcp`, `Deadline` from caravan into the library `weft.flow`. `Tcp.Listener` takes a constant backlog instead of caravan's `Config`. `Tcp.connect` gets a keep-alive option. caravan's `Cancel` stays internal to `weft.flow` (weft already has `Fiber.check_cancel`). The flow-level tests move from caravan onto weft's simulator helpers. | — |
 | weft PR 1b | A new binary `Weft_flow.Reader` and `Weft_flow.Writer`: `ensure`, integer reads and writes (`int8` to `int64`, little-endian and big-endian, 3-byte lengths), views at offsets, `consume`, frames with a length field that is filled after the body. Its two users (the MySQL packet codec, and caravan's WebSocket frame headers with 16- and 64-bit big-endian lengths, `caravan/websocket/frame.ml`) are outside weft. Thus the PR has property tests with a model of the two framings. The owner merged it on 2026-11-06 (ocaml-caravanserai/weft#56), before phase 1.1. | 1a |
 | weft PR 1c | The TLS flow (`client`, `server`) in a separate package `weft-tls`, with `weft-tls.opam`, the flake output `lib.tlsPackage`, and `tls`, `x509`, `mirage-crypto-rng` and `mirage-crypto-ec` in weft's dev shell. It includes caravan's `tls_support` (certificates made in code). The `https` and engine tests stay in caravan. Merged on 2026-11-06 (ocaml-caravanserai/weft#58). | 1a |
-| caravan PR | caravan uses `weft.flow` and `weft-tls`, and moves its WebSocket frames onto the binary `Reader` and `Writer`. caravan keeps its HTTP `Buf_reader` and `Buf_writer`. | 1a, 1b, 1c; not on the critical path of Cistern |
+| caravan PR | caravan uses `weft.flow` and `weft-tls`, and moves its WebSocket frames onto the binary `Reader` and `Writer`. caravan keeps its HTTP `Buf_reader` and `Buf_writer`. Done on 2026-11-06 (ocaml-caravanserai/caravan#36): caravan main uses `weft.flow` and `weft-tls`. | 1a, 1b, 1c; not on the critical path of Cistern |
 
 PRs 1b and 1c can run in parallel. Each weft PR includes the work that the weft rules require:
 
@@ -887,6 +904,6 @@ The reviews of drafts 4 and 5 produced this PostgreSQL design. Keep it for the l
 
 ## Status
 
-Draft 12, 2026-11-06. It fixes the findings of review round 5 on draft 11. You approved it on 2026-11-06. Phase 0 started on 2026-11-06: weft PR 1a (ocaml-caravanserai/weft#55) and weft PR 1b (ocaml-caravanserai/weft#56) are merged. The owner merged PR 1b before phase 1.1, so the flake uses weft main. weft PR 1c (`weft-tls`) is merged too (ocaml-caravanserai/weft#58, 6f05d17), and weft main has `lib.tlsPackage`. Cistern takes it in phase 1.4.
+Draft 12, 2026-11-06. It fixes the findings of review round 5 on draft 11. You approved it on 2026-11-06. Phase 0 started on 2026-11-06: weft PR 1a (ocaml-caravanserai/weft#55) and weft PR 1b (ocaml-caravanserai/weft#56) are merged. The owner merged PR 1b before phase 1.1, so the flake uses weft main. weft PR 1c (`weft-tls`) is merged too (ocaml-caravanserai/weft#58, 6f05d17), and weft main has `lib.tlsPackage`. Cistern takes it in phase 1.4. The caravan PR is done (ocaml-caravanserai/caravan#36, 2026-11-06): caravan main uses `weft.flow` and `weft-tls`. Thus all four prerequisite PRs are done: weft #55, #56 and #58, and caravan #36.
 
 Round 5 found 3 critical defects. Two of them were in fixes of round 4 (the session reset and the killer drain), and one was a gap from an earlier draft (`Decimal`). Most of the critical and major findings are in the cancel path with `KILL`. Thus phases 1.1 to 1.4 ship without `KILL` (`kill=false`), and phase 1.5 adds it. The remaining risk is in server behavior that only a real server can show (the "not verified" claims). Phase 1.1 tests these claims first.

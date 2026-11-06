@@ -8,6 +8,6 @@
 
 (test
  (name nounix)
- (libraries cistern cistern.core cistern.sql cistern.mysql)
+ (libraries cistern cistern.core cistern.names cistern.sql cistern.mysql)
  (link_flags (-linkall))
  (forbidden_libraries unix threads.posix weft.posix weft.sim weft.os))
