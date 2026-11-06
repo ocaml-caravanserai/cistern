@@ -231,7 +231,7 @@ Field types in version 1:
 | `bool` | `TINYINT(1)`. Decoding: 0 is `false`, any other value is `true`. |
 | `float` | `DOUBLE` |
 | `bytes` | `VARBINARY(255)` if indexed or a key, else `MEDIUMBLOB` |
-| `Ptime.t` | `DATETIME(6)` in UTC. Timestamps are truncated to 1 µs on the client. |
+| `Ptime.t` | `DATETIME(6)` in UTC. Timestamps are truncated to 1 µs on the client. A timestamp before the year 1000 gives `Invalid_value` on the client, because the documented range of `DATETIME` is the years 1000 to 9999. |
 | `'a option` | nullable |
 
 - A value that is too long or out of range gives `Invalid_value`, because the session uses `STRICT_ALL_TABLES`.
@@ -500,12 +500,12 @@ No value from a user is ever between quotes:
 | Value | Literal |
 |---|---|
 | `int64`, `int` | Decimal digits, with a sign. `Int64.min_int` is in the property tests. |
-| `float` | Cistern's own formatter (not `printf`, so that a C locale cannot change the decimal point). Always with an exponent, for example `1.5e0` and `-0e0`, so that the server reads a `DOUBLE` and keeps the sign of `-0`. NaN and infinities give `Invalid_value` on the client. |
+| `float` | Cistern's own method: the shortest correctly rounded `%.{p}e` form that reads back to the same bits. For p from 0 to 16, the client formats the float with `%.{p}e`, takes the sign, the digits and the exponent from the result, skips one byte for the point, and writes its own point. No locale can change the literal, because the OCaml 5.5 runtime formats and reads floats in the "C" locale (`runtime/floats.c`: `caml_format_float` and `caml_float_of_string`, with `USE_LOCALE` and `strtod_l`). Always with an exponent and with no `+`, for example `1.5e0`, `1e-1` and `-0e0`, so that the server reads a `DOUBLE` and keeps the sign of `-0` (not verified). The form is not always the shortest decimal: 2^-1017 gives `7.1202363472230444e-307`. NaN and infinities give `Invalid_value` on the client. |
 | `bool` | `0` or `1` |
 | `string` | `_utf8mb4 X'<hex>'`. The client checks that the string is valid UTF-8 first. |
 | `bytes` | `X'<hex>'` |
-| `Ptime.t` | `'YYYY-MM-DD HH:MM:SS.ffffff'`, made by the client from the number, with no user text |
-| `Decimal.t` (raw only) | The digits that `Decimal.of_string` checked, as they are |
+| `Ptime.t` | `'YYYY-MM-DD HH:MM:SS.ffffff'`, made by the client from the number, with no user text. A timestamp before the year 1000 gives `Invalid_value` on the client. |
+| `Decimal.t` (raw only) | The digits that `Decimal.of_string` checked, as they are. More than 30 digits after the point give `Invalid_value` on the client, because MySQL cuts such a literal with no error. |
 | `None` | `NULL` |
 
 - The literals do not depend on `NO_BACKSLASH_ESCAPES` or another session setting.

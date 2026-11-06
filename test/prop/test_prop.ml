@@ -4,4 +4,4 @@
 
 (* The property suite of cistern.core. *)
 
-let () = exit (Windtrap.run "prop" [Prop_decimal.tests])
+let () = exit (Windtrap.run "prop" [Prop_decimal.tests; Prop_literal.tests])

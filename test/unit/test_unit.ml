@@ -4,4 +4,7 @@
 
 (* The unit suite of cistern.core. *)
 
-let () = exit (Windtrap.run "unit" [Test_decimal.tests; Test_value.tests])
+let () =
+  exit
+    (Windtrap.run "unit"
+       [Test_decimal.tests; Test_value.tests; Test_literal.tests] )
