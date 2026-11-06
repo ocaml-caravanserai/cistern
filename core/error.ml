@@ -20,6 +20,65 @@ type t =
   | Decode of string
   | Driver of {code: int; sqlstate: string; message: string}
 
+let interrupts (d : Dialect.t) code =
+  match (d, code) with
+  | _, (1053 | 1317) | Mysql, 4031 | Mariadb, 1927 ->
+      true
+  | _ ->
+      false
+
+(* True if [part] is in [s]. *)
+let contains s part =
+  let n = String.length s and k = String.length part in
+  let rec at i = i + k <= n && (String.sub s i k = part || at (i + 1)) in
+  at 0
+
+(* 1290 names the option that stops the statement ("The MySQL server is running
+   with the %s option so it cannot execute this statement"). *)
+let read_only_option message =
+  contains message "--read-only" || contains message "--super-read-only"
+
+(* The table of DESIGN.md, "Error mapping", in the same order. perror of the
+   pinned servers confirmed each number (DESIGN.md). *)
+let of_server (d : Dialect.t) ~code ~sqlstate ~message =
+  let violation kind = Constraint_violation {kind; message} in
+  match (d, code) with
+  | _, (1062 | 1586 | 1022 | 1169 | 1859 | 1761 | 1762) ->
+      violation Unique
+  | _, (1451 | 1452 | 1216 | 1217) ->
+      violation Foreign_key
+  | _, (1048 | 1364) | Mysql, 3673 ->
+      violation Not_null
+  | Mysql, 3819 | Mariadb, 4025 ->
+      violation Check
+  | _, (1406 | 1264 | 1265 | 1365 | 1366 | 1292 | 1690 | 1367 | 1301 | 1153) ->
+      Invalid_value {code= Some code; message}
+  | _, 1213 ->
+      Retryable `Deadlock
+  | _, 1205 ->
+      Retryable `Lock_timeout
+  | Mysql, 3101 ->
+      Retryable `Rolled_back
+  | Mysql, 3024 | Mariadb, 1969 ->
+      Statement_timeout
+  | _, 1290 ->
+      if read_only_option message then Read_only
+      else Driver {code; sqlstate; message}
+  | _, (1792 | 1836 | 1874) ->
+      Read_only
+  | _, (1317 | 1052) ->
+      Driver {code; sqlstate; message}
+  | _ when interrupts d code ->
+      Connection_lost
+  | _
+    when String.length sqlstate = 5 && String.starts_with ~prefix:"23" sqlstate
+    ->
+      violation Other_constraint
+  | _ when String.equal sqlstate "40001" ->
+      Retryable `Deadlock
+  | _ ->
+      Driver {code; sqlstate; message}
+
 let kind_name = function
   | Unique ->
       "Unique"

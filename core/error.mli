@@ -25,6 +25,29 @@ type t =
   | Decode of string
   | Driver of {code: int; sqlstate: string; message: string}
 
+val interrupts : Dialect.t -> int -> bool
+(** [interrupts d code] is true for an error number with which a server of
+    dialect [d] stops a session or a statement from outside: 1053
+    ([ER_SERVER_SHUTDOWN]) and 1317 ([ER_QUERY_INTERRUPTED]) on the two servers,
+    4031 ([ER_CLIENT_INTERACTION_TIMEOUT]) on MySQL, and 1927
+    ([ER_CONNECTION_KILLED]) on MariaDB. On the other server, 4031 and 1927 are
+    other errors or no error. *)
+
+val of_server : Dialect.t -> code:int -> sqlstate:string -> message:string -> t
+(** [of_server d ~code ~sqlstate ~message] is the meaning of an error packet of
+    a server of dialect [d] (DESIGN.md, "Error mapping"). The key is the dialect
+    and the number, because a number can have another meaning on the other
+    server (for example 4031). A number that the table does not have uses the
+    SQLSTATE, if the SQLSTATE has exactly 5 characters: class [23] gives
+    [Constraint_violation Other_constraint], and [40001] gives
+    [Retryable `Deadlock]. Else [Driver].
+
+    [of_server] gives the meaning of the packet alone. It does not know if the
+    client sent a write, if the stream ended after the packet, if the statement
+    is a [COMMIT], or if a [Tx] is open. The client adds these, with the rules
+    of DESIGN.md: "Order of the error rules", the replies to [COMMIT] and
+    "Transactions". *)
+
 val pp_summary : Format.formatter -> t -> unit
 (** [pp_summary] prints the constructor, the kind of a constraint and the error
     number, never a message. For example [Constraint_violation Unique],

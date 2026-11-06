@@ -440,10 +440,12 @@ module Error : sig
     | Outcome_unknown of [ `Statement | `Commit ]   (* a write was sent, and no reply came *)
     | Implicit_commit       (* in a Tx, the server committed the transaction before its end *)
     | Connection_lost       (* before a write was sent, or during a read *)
-    | Read_only             (* 1290 with a read-only message, 1792 *)
+    | Read_only             (* 1290 with --read-only or --super-read-only, 1792, 1836, 1874 *)
     | Connect of string     (* the last connect error of the pool *)
     | Decode of string
     | Driver of { code : int; sqlstate : string; message : string }
+  val interrupts : Dialect.t -> int -> bool      (* 1053, 1317; 4031 on MySQL; 1927 on MariaDB *)
+  val of_server : Dialect.t -> code:int -> sqlstate:string -> message:string -> t
   val pp_summary : Format.formatter -> t -> unit   (* no message: for logs *)
   val pp : Format.formatter -> t -> unit           (* the summary and the message *)
   val to_string : t -> string                      (* the text of pp *)
@@ -462,7 +464,8 @@ Rules:
 
 Order of the error rules:
 
-- A write (`INSERT`, `UPDATE`, `DELETE`, any raw statement, `COMMIT`) that was sent with no clear reply gives `Outcome_unknown`. "No clear reply" is a deadline, the end of the stream, or error 1053, 1927, 1317 or 4031 followed by the end of the stream. This rule is the same for `COMMIT` and for a write in autocommit mode. The user must not retry it blindly.
+- A write (`INSERT`, `UPDATE`, `DELETE`, any raw statement, `COMMIT`) that was sent with no clear reply gives `Outcome_unknown`. "No clear reply" is a deadline, the end of the stream, or an error for which `Error.interrupts` is true followed by the end of the stream: 1053 or 1317 (the two servers), 4031 (MySQL) or 1927 (MariaDB). This rule is the same for `COMMIT` (it gives `Outcome_unknown `Commit`) and for a write in autocommit mode. The user must not retry it blindly.
+- `Error.of_server` gives `Connection_lost` for such an error also when the stream did not end. Then the client closes the connection, because its state is not known, and a write that it sent gives `Outcome_unknown`.
 - `Timeout` and `Connection_lost` are only for reads and for statements that were not sent.
 - At the level of `Db.transaction`: if the client closed the connection before it sent `COMMIT`, the server rolled back. Then `Db.transaction` gives `Timeout` or `Connection_lost`, not `Outcome_unknown `Statement`, because a retry of the whole transaction is safe.
 
@@ -470,19 +473,22 @@ Error mapping. The key is (server, error number). A number that the table does n
 
 | Error | MySQL | MariaDB |
 |---|---|---|
-| `Unique` | 1062, 1586, 1022 | 1062, 1586, 1022 |
+| `Unique` | 1062, 1586, 1022, 1169, 1859, 1761, 1762 | the same |
 | `Foreign_key` | 1451, 1452, 1216, 1217 | 1451, 1452, 1216, 1217 |
-| `Not_null` | 1048, 1364 | 1048, 1364 |
+| `Not_null` | 1048, 1364, 3673 (`ER_BAD_NULL_ERROR_NOT_IGNORED`) | 1048, 1364 |
 | `Check` | 3819 | 4025 (`ER_CONSTRAINT_FAILED`, verified in round 5) |
-| `Invalid_value` | 1406, 1264, 1366, 1292, 1690, 1367, 1301, and 1153 (see the note that follows) | the same |
+| `Invalid_value` | 1406, 1264, 1265, 1365, 1366, 1292, 1690, 1367, 1301, and 1153 (see the note that follows) | the same |
 | `Retryable `Deadlock` | 1213 | 1213 |
-| `Retryable `Lock_timeout` | 1205 | 1205 |
+| `Retryable `Lock_timeout` | 1205 | 1205 (also for `NOWAIT`, not verified) |
+| `Retryable `Rolled_back` | 3101 (`ER_TRANSACTION_ROLLBACK_DURING_COMMIT`) | none (3101 is a placeholder number) |
 | `Statement_timeout` | 3024 | 1969 (`ER_STATEMENT_TIMEOUT`, verified in round 5) |
 | `Connection_lost` (a read or an unsent statement; a sent write gives `Outcome_unknown`) | 4031, 1053, end of stream | 1927, 1053, end of stream |
-| `Read_only` | 1290 when the message names `read-only` or `super-read-only`, 1792 | the same |
-| `Driver` | all others, also 1317 and 1290 for other options | the same |
+| `Read_only` | 1290 when the message names the option `--read-only` or `--super-read-only`, 1792, 1836 (`ER_READ_ONLY_MODE`), 1874 (`ER_INNODB_READ_ONLY`) | the same |
+| `Driver` | all others, also 1317, 1052 (`ER_NON_UNIQ_ERROR`, an ambiguous column, with SQLSTATE 23000), 1290 for other options, 1036 (`ER_OPEN_AS_READONLY`, one table) and 3572 (`ER_LOCK_NOWAIT`) | the same, with no 3572 |
 
 The server gives no structured constraint name, so `Constraint_violation` has only the message.
+
+`perror` of the pinned packages (MySQL 8.4.11, MariaDB 11.4.13 and 11.8.8) confirmed each number of the table and its name on 2026-11-06. A number of one server is another error on the other server (MySQL 4025, MariaDB 3024, 3101 and 4031), or no error (MySQL 1927 and 1969, MariaDB 3819 and 3572). Thus the key is the pair. 2013 and 2006 are codes of the client library: a server never sends them. `Error.of_server` gives the meaning of an error packet alone. The rules that need the state of the connection ("Order of the error rules", "Transactions") are in the client.
 
 Error 1153 (packet too large): the server did not run the statement, but it closes the connection after the error. Thus the client gives `Invalid_value`, closes the connection, and fails the `Tx` (if any). The client size check (see "Limits and defaults") prevents this error in most cases.
 
@@ -731,8 +737,8 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: close the connection
 - `COMMIT` and `ROLLBACK` run in `Fiber.shield` with their own deadline (see "Limits and defaults"), so the shield always has a time limit.
 - Replies to `COMMIT`:
   - OK: success.
-  - 1213, 1205, 1180: `Retryable `Rolled_back`.
-  - 1053, 1927, 4031, or 1317 followed by the end of the stream, or no reply: `Outcome_unknown `Commit`, and the connection closes.
+  - 1213, 1205, 1180 (the two servers), 3101 (MySQL): `Retryable `Rolled_back`.
+  - An error for which `Error.interrupts` is true (1053 or 1317; 4031 on MySQL; 1927 on MariaDB) followed by the end of the stream, or no reply: `Outcome_unknown `Commit`, and the connection closes.
   - Another error: `ROLLBACK`, and `Driver`.
 - The cleanup uses `match ... with exception`, not `Fun.protect`, so that a failed `ROLLBACK` does not become `Fun.Finally_raised`.
 
@@ -769,7 +775,7 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: close the connection
   - Protocol faults: a peer fiber plays a transcript that a test packet encoder makes, so a change of the protocol code needs no new recording. Version 1 has no recorder of real server traffic; the integration tests cover the real servers. The test injects resets, short reads, latency, and an error 4031 on an idle connection.
   - TLS: `Weft_tls.server` with test certificates from `test/certgen`.
 - Integration tests (`Weft_os`): `suite : (module S : SERVER) -> Windtrap.test` runs the tests through the typed API on each server. The `Tx.exec` runner runs on MySQL 8.4 and MariaDB 11.8.
-- Verification of claims (phase 1.1), on the real servers: the MariaDB default plugins; the implicit commit of `START TRANSACTION` in a transaction; `COM_RESET_CONNECTION` and the database; `SERVER_STATUS_IN_TRANS` in the OK of `COM_PING` on MariaDB; the exact start time from one identity `SELECT` on the two servers; 1053 and 1927 after an autocommit write; `FOR SHARE` on MariaDB; the text forms of `DOUBLE` that the decoders read (the `my_gcvt` model of `test/prop/server_text.ml`); the literals `-0e0` (the sign stays), `5e-324` and `-9223372036854775808` on a `DOUBLE` and a `BIGINT` column; if a `utf8mb4` column can store an encoded surrogate (`ED A0 80`), which `Decoder.string` refuses. Round 5 verified in the source code: error numbers 4025 and 1969, the read rights for `performance_schema.global_status`, and `COM_PING` on MySQL. The tests check these too.
+- Verification of claims (phase 1.1), on the real servers: the MariaDB default plugins; the implicit commit of `START TRANSACTION` in a transaction; `COM_RESET_CONNECTION` and the database; `SERVER_STATUS_IN_TRANS` in the OK of `COM_PING` on MariaDB; the exact start time from one identity `SELECT` on the two servers; 1053 and 1927 after an autocommit write; `FOR SHARE` on MariaDB; the text forms of `DOUBLE` that the decoders read (the `my_gcvt` model of `test/prop/server_text.ml`); the literals `-0e0` (the sign stays), `5e-324` and `-9223372036854775808` on a `DOUBLE` and a `BIGINT` column; if a `utf8mb4` column can store an encoded surrogate (`ED A0 80`), which `Decoder.string` refuses; the errors 1874 (`--innodb-read-only`), 1836 (`ER_READ_ONLY_MODE`), 1265 and 1365 (in strict mode) on the two servers, 3101 on MySQL, and 1205 for `NOWAIT` on MariaDB; the errors 1052, 1169, 1859, 1761 and 1762 on the two servers, and 3673 on MySQL. 1557 (`ER_FOREIGN_DUPLICATE_KEY_OLD_UNUSED` on MySQL, `ER_UNUSED_4` on MariaDB) has no row: the servers do not send it. Round 5 verified in the source code: error numbers 4025 and 1969, the read rights for `performance_schema.global_status`, and `COM_PING` on MySQL. The tests check these too.
 
 ## Prerequisite PRs
 
