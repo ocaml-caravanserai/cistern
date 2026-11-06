@@ -226,7 +226,12 @@ CI jobs:
 
 - `test`, on Linux and macOS: the build, the suites that need no server, and `nix flake check`. On Linux also: the format checks, the `.opam` files, the OCaml 5.5 check of the mutation backend, and on a pull request the mutation gate.
 - Phase 1.1 adds one integration job for each server. MySQL 8.4 and MariaDB 11.8 run on each PR. MariaDB 11.4 runs on `main` and every night.
-- The test servers of phase 0 come with a separate workflow. It starts each server and runs a smoke check, on `workflow_dispatch` and every night, not on each PR.
+- The workflow `db.yml` of the test servers runs every night, on `workflow_dispatch`, and on a PR that changes its files. These files are `db.yml`, `test/db/`, `test/certgen/`, `Makefile`, `flake.nix`, `flake.lock` and `core/error.ml`.
+  - The job `server` runs `make db-up`, `make db-check` and `make db-down` for each server on Linux (`ubuntu-24.04`) and macOS (`macos-15`).
+  - The make targets run outside the dev shell. Thus `db.sh` runs with dash on Linux, and with the `sh` and the BSD tools of macOS. Only the build of `test/certgen` uses `nix develop -c dune`.
+  - If a step fails or the job is cancelled, the job keeps the logs of the server.
+  - If a server package does not build on aarch64-darwin, the macOS leg of that server fails at `make db-up`.
+  - The job `errors` runs `make db-errors` on Linux.
 
 ### Libraries (dependencies go one way)
 
