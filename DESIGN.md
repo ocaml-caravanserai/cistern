@@ -134,11 +134,12 @@ inputs = {
 
 - All dependencies come from the flake. Cistern does not use `opam install` or Docker. dune makes the `.opam` files only for the package metadata.
 - The OCaml scope is `ocaml-ng.ocamlPackages_5_5.overrideScope` with `weft = callPackage weft.lib.package {}`, `windtrap = callPackage windtrap.lib.windtrap {}`, `ppx_windtrap = callPackage windtrap.lib.ppx_windtrap {}`. This is the pattern of `~/projects/caravan/flake.nix`. Phase 1.4 (TLS) adds `weft-tls = callPackage weft.lib.tlsPackage {}`, a new output of weft PR 1c. Before phase 1.4, the flake does not refer to `lib.tlsPackage`, because weft does not have it (weft `flake.nix` has `lib = { inherit package; }`).
-- Until the weft PRs merge, the `weft` input points to one integration branch in weft that merges the PR branches. One input cannot point to two parallel branches.
+- The `weft` input is the main branch of weft. weft PRs 1a and 1b are merged, and `flake.lock` pins one commit. If the codec of phase 1.1 needs a change of `Reader` or `Writer`, a normal weft PR makes it, and an update of `flake.lock` takes it. Phase 1.4 takes `lib.tlsPackage` from weft main after weft PR 1c merges.
 - Systems: `x86_64-linux`, `aarch64-linux`, `aarch64-darwin`. nixpkgs dropped `x86_64-darwin`.
 - OCaml libraries from nixpkgs: `ppxlib`, `digestif` (SHA-1 and SHA-256), `mirage-crypto-rng`, `ptime`, `fmt`. `weft-tls` brings `tls` and `x509`. The tests also use `mirage-crypto-ec` (test certificates).
-- Outputs: `lib.package`, `lib.ppxPackage`, `overlays.default`, `packages.<system>.cistern`, `packages.<system>.ppx_cistern`, `devShells.default`, `checks` (build and tests that need no database server), and `packages.<system>.server-mysql84`, `server-mariadb114` and `server-mariadb118` (the nixpkgs servers `mysql84` 8.4.11, `mariadb_114` 11.4.12 and `mariadb_118` 11.8.8, verified on 2026-11-06). The servers are not in the dev shell, so a `nix develop` does not download them.
-- The dev shell uses `inputsFrom = [ cistern ppx_cistern ]`, so it has every library dependency (`weft`, `ppxlib`, `digestif`, `mirage-crypto-rng`, `ptime`, `fmt`, and from phase 1.4 `weft-tls`). It adds OCaml 5.5, dune, findlib, `windtrap`, `ppx_windtrap`, `mirage-crypto-ec`, `x509`, `ocaml-lsp`, `odoc`, and `ocamlformat_0_29_0` (pinned, as in weft).
+- Outputs: `lib.package`, `lib.ppxPackage`, `overlays.default`, `packages.<system>.cistern`, `packages.<system>.ppx_cistern`, `devShells.default`, `checks` (build and tests that need no database server), and `packages.<system>.server-mysql84`, `server-mariadb114` and `server-mariadb118` (the nixpkgs servers `mysql84` 8.4.11, `mariadb_114` 11.4.13 and `mariadb_118` 11.8.8, verified on 2026-11-06). The servers are not in the dev shell, so a `nix develop` does not download them. The server outputs come in phase 0 with `test/certgen` and the `db-up` targets, not with the first flake.
+- The dev shell uses `inputsFrom = [ cistern ppx_cistern ]`, so it has every library dependency of the two packages. It adds OCaml 5.5, dune, findlib, `windtrap`, `ppx_windtrap`, `ocaml-lsp`, `odoc`, and `ocamlformat_0_29_0` (pinned, as in weft).
+- Each PR adds a dependency together with its first user. For example, `ptime` comes with `Value`, and `x509` and `mirage-crypto-ec` come with `test/certgen`. At the end of version 1, the packages depend on `weft`, `ppxlib`, `digestif`, `mirage-crypto-rng`, `ptime`, `fmt` and (from phase 1.4) `weft-tls`, and the dev shell adds `mirage-crypto-ec` and `x509` for the tests.
 - `flake.lock` pins nixpkgs, weft and windtrap. The server versions follow nixpkgs.
 
 ### Database servers for the tests
@@ -160,9 +161,9 @@ inputs = {
 
 CI jobs:
 
-- Build, format, unit, property, expect and simulator tests.
-- The mutation gate.
-- One integration job for each server. MySQL 8.4 and MariaDB 11.8 run on each PR. MariaDB 11.4 runs on `main` and every night.
+- `test`, on Linux and macOS: the build, the suites that need no server, and `nix flake check`. On Linux also: the format checks, the `.opam` files, the OCaml 5.5 check of the mutation backend, and on a pull request the mutation gate.
+- Phase 1.1 adds one integration job for each server. MySQL 8.4 and MariaDB 11.8 run on each PR. MariaDB 11.4 runs on `main` and every night.
+- The test servers of phase 0 come with a separate workflow. It starts each server and runs a smoke check, on `workflow_dispatch` and every night, not on each PR.
 
 ### Libraries (dependencies go one way)
 
@@ -174,7 +175,7 @@ cistern/
   mysql/    (cistern.mysql)   Config and URL parser, connect, TLS, authentication, text protocol, sessions
   cistern/  (cistern)         Typed API, Raw, pool, killer, Tx, execution  (depends on core, sql, mysql)
   ppx/      (ppx_cistern)     The deriver
-  test/  unit, prop, stateful, expect, sim, integration, nounix, readme, typeerror
+  test/  unit, prop, stateful, expect, sim, integration, nounix, readme, typeerror, ocaml55
 ```
 
 - Two opam packages: `cistern` (the four libraries) and `ppx_cistern`. An application links `cistern`.
@@ -739,7 +740,7 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: close the connection
 - `on_query` gets events with a kind (`Query`, `Connect`, `Kill`, `Kill_dropped`, `Kill_off`), the redacted SQL, the duration, the number of rows and the error. Cistern catches its exceptions.
   - `Query` events outside a `Tx` run after the checkin, in the fiber of the statement. In a `Tx`, they run after each statement. An event never changes the result of the statement.
   - `Connect` events run in the connect fiber. `Kill` events run in the killer, outside its shields.
-- No stdlib I/O: Cistern does not call `Unix`, `open_in` or `Sys.time`. The guard `test/nounix` links all Cistern libraries with the list of caravan's `test/nounix/dune`: `(forbidden_libraries unix threads.posix weft.posix weft.sim weft.os)`.
+- No stdlib I/O: Cistern does not call `Unix`, `open_in` or `Sys.time`. The guard `test/nounix` links the four libraries of the package `cistern` (not `ppx_cistern`, which runs in the compiler) with the list of caravan's `test/nounix/dune`: `(forbidden_libraries unix threads.posix weft.posix weft.sim weft.os)`.
 
 ## Tests (windtrap)
 
@@ -749,7 +750,9 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: close the connection
 - Expect tests (`ppx_windtrap`): the generated code and the errors of the ppx (with `ppxlib` and `Pprintast`), a file with two deriving groups, the refused field names, and the SQL of each statement for each dialect (`Stmt.to_sql`).
 - Type-error test: a dune rule compiles a file that uses a field of another model in a filter, with `(with-accepted-exit-codes 2 ...)`, and windtrap `expect_file` checks the compiler message. No cram test, so that all tests are windtrap tests.
 - README test: a dune build rule compiles the examples of `README.md`, as in caravan.
-- Mutation tests: `make mutate` as in weft, on the suites unit, prop, stateful, expect and sim. The integration suites are not in the mutation runs. The rule is the rule of weft (no surviving mutant on changed lines), with `[@mutate off]` and a reason where a mutant cannot be killed.
+- Mutation tests: `make mutate` as in weft, on the suites unit, prop, stateful, expect and sim. Each phase adds its suites to `SUITES` of the Makefile. `test/ocaml55` stays in `SUITES` as the check of the mutation backend. The integration suites are not in the mutation runs. The rule is the rule of weft (no surviving mutant on changed lines), with `[@mutate off]` and a reason where a mutant cannot be killed.
+  - The gate gives the output of `git diff -U0` to windtrap (`--diff`). On a local machine, the base is the merge base with `origin/main`. In CI, the base is `HEAD^1`: the checkout of a pull request is a merge commit, and its first parent is the tip of the base branch at the time of the event.
+- The integration suites run under their own dune alias, not under `@runtest`. Thus `dune runtest` and the `checks` of the flake never need a database server.
 - Simulator tests (`Weft_sim`):
   - The weft shell of the pool: 1000 fibers, 4 virtual domains, 8 connections, timeouts and cancels at the same time as checkins; a connect fiber that raises does not stop `with_db`.
   - Deadlines with no real time, and deadlines that do not stay on a reused flow.
@@ -769,7 +772,7 @@ These PRs move or add generic transport code in weft, so that any protocol on we
 | PR | Content | Depends on |
 |---|---|---|
 | weft PR 1a | `Flow`, `Tcp`, `Deadline` from caravan into the library `weft.flow`. `Tcp.Listener` takes a constant backlog instead of caravan's `Config`. `Tcp.connect` gets a keep-alive option. caravan's `Cancel` stays internal to `weft.flow` (weft already has `Fiber.check_cancel`). The flow-level tests move from caravan onto weft's simulator helpers. | — |
-| weft PR 1b | A new binary `Weft_flow.Reader` and `Weft_flow.Writer`: `ensure`, integer reads and writes (`int8` to `int64`, little-endian and big-endian, 3-byte lengths), views at offsets, `consume`, frames with a length field that is filled after the body. Its two users (the MySQL packet codec, and caravan's WebSocket frame headers with 16- and 64-bit big-endian lengths, `caravan/websocket/frame.ml`) are outside weft. Thus the PR has property tests with a model of the two framings, and it merges after the Cistern packet codec runs on its branch (phase 1.1). | 1a |
+| weft PR 1b | A new binary `Weft_flow.Reader` and `Weft_flow.Writer`: `ensure`, integer reads and writes (`int8` to `int64`, little-endian and big-endian, 3-byte lengths), views at offsets, `consume`, frames with a length field that is filled after the body. Its two users (the MySQL packet codec, and caravan's WebSocket frame headers with 16- and 64-bit big-endian lengths, `caravan/websocket/frame.ml`) are outside weft. Thus the PR has property tests with a model of the two framings. The owner merged it on 2026-11-06 (ocaml-caravanserai/weft#56), before phase 1.1. | 1a |
 | weft PR 1c | The TLS flow (`client`, `server`) in a separate package `weft-tls`, with `weft-tls.opam`, the flake output `lib.tlsPackage`, and `tls`, `x509`, `mirage-crypto-rng` and `mirage-crypto-ec` in weft's dev shell. It includes caravan's `tls_support` (certificates made in code). The `https` and engine tests stay in caravan. | 1a |
 | caravan PR | caravan uses `weft.flow` and `weft-tls`, and moves its WebSocket frames onto the binary `Reader` and `Writer`. caravan keeps its HTTP `Buf_reader` and `Buf_writer`. | 1a, 1b, 1c; not on the critical path of Cistern |
 
@@ -784,14 +787,14 @@ PRs 1b and 1c can run in parallel. Each weft PR includes the work that the weft 
 
 The phase steps have the names 1.1 to 1.5, so that they are not confused with the weft PRs 1a to 1c.
 
-0. Foundations: weft PR 1a, and PR 1b on its branch; one weft integration branch for the flake input; the flake with the server packages, `test/certgen` and the `Makefile` targets; `cistern.core` (Value, Decimal, Dialect, literals, Schema, Decoder, Error, Event, MODEL); a check that `ppx_windtrap.mutate` works on 5.5 syntax. No reference to `lib.tlsPackage`.
+0. Foundations: weft PRs 1a and 1b (merged); the flake on weft main, with the server packages, `test/certgen` and the `Makefile` targets; `cistern.core` (Value, Decimal, Dialect, literals, Schema, Decoder, Error, Event); a check that `ppx_windtrap.mutate` works on 5.5 syntax. No reference to `lib.tlsPackage`. `MODEL` moves to phase 2, because its first users are there.
 1. A usable raw client, in five steps. Each step ends with tests that pass.
    - 1.1: One connection, no pool. TCP and Unix socket without TLS; `mysql_native_password`; the `caching_sha2_password` fast path, and the full path on a Unix socket with `allow-cleartext=socket`; the session setup; `Raw` on one connection; the error mapping. The tests of the "not verified" claims on MySQL 8.4 and MariaDB 11.8. Result: the claims are checked early.
    - 1.2: `Pool_state`, the weft shell, the opener, the deadlines, the session reset at checkout, `Db.with_db`, `Db.exec`, the events. Cancel with the `kill=false` behavior. Simulator tests.
    - 1.3: `Db.transaction`, `Tx.exec` with the error rules, savepoints. Result: a raw SQL client with a pool and transactions. MySQL 8.4 only on a Unix socket (with `DISABLED` over TCP, the full path fails after each restart); MariaDB also on plain TCP.
    - 1.4: TLS with `ssl-mode`, `ssl-ca`, `ssl-fingerprint` and the authenticator; the full path over verified TLS; MariaDB 11.4. Needs PR 1c. The flake adds `weft-tls`.
    - 1.5: Cancel with `KILL`: `Killing` slots with tokens, `next_timer`, the killer, its control connection, the identity step of the session, the drain.
-2. `cistern.sql` and the typed API with one hand-written model module (an internal step for the tests, not a result for users): get, find, create, update, delete, `all`, `where`, `Query.where`, order, limit, offset, `to_list`, `first`, count, exists, for_update, for_share, `IS NULL`, `in_`, `starts_with`, `contains`, bulk `update` and `delete`; `push_schema` and `check_schema`.
+2. `cistern.sql`, `module type MODEL`, and the typed API with one hand-written model module (an internal step for the tests, not a result for users): get, find, create, update, delete, `all`, `where`, `Query.where`, order, limit, offset, `to_list`, `first`, count, exists, for_update, for_share, `IS NULL`, `in_`, `starts_with`, `contains`, bulk `update` and `delete`; `push_schema` and `check_schema`.
 3. `ppx_cistern` for models without relations. Result: a usable ORM for single tables.
 4. Relations in Toasty style (three stages, `Deferred.t`, `include_`, nested create of one level).
 5. Hardening and documentation: the README and odoc, the limits, the security notes.
@@ -870,6 +873,6 @@ The reviews of drafts 4 and 5 produced this PostgreSQL design. Keep it for the l
 
 ## Status
 
-Draft 12, 2026-11-06. It fixes the findings of review round 5 on draft 11. You approved it on 2026-11-06. Phase 0 started on 2026-11-06: weft PR 1a is merged (ocaml-caravanserai/weft#55), and weft PR 1b is open (ocaml-caravanserai/weft#56). Its merge waits for phase 1.1.
+Draft 12, 2026-11-06. It fixes the findings of review round 5 on draft 11. You approved it on 2026-11-06. Phase 0 started on 2026-11-06: weft PR 1a (ocaml-caravanserai/weft#55) and weft PR 1b (ocaml-caravanserai/weft#56) are merged. The owner merged PR 1b before phase 1.1, so the flake uses weft main.
 
 Round 5 found 3 critical defects. Two of them were in fixes of round 4 (the session reset and the killer drain), and one was a gap from an earlier draft (`Decimal`). Most of the critical and major findings are in the cancel path with `KILL`. Thus phases 1.1 to 1.4 ship without `KILL` (`kill=false`), and phase 1.5 adds it. The remaining risk is in server behavior that only a real server can show (the "not verified" claims). Phase 1.1 tests these claims first.
