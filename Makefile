@@ -14,6 +14,8 @@
 #                       Start a test server with a new data directory in
 #                       DB_DIR (default .db). DB_PORT changes the port,
 #                       DB_SERVER_ARGS adds server options.
+#   make db-check SERVER=...
+#                       The smoke check of a test server that runs.
 #   make db-down [SERVER=...]
 #                       Stop SERVER, or each test server that runs.
 #
@@ -99,7 +101,7 @@ OCAML55_MUTANTS := \
   test/ocaml55/ocaml55.ml:28:49:sub
 
 .PHONY: help check-windtrap check-scope mutate mutate-all mutate-report \
-  mutate-arm check-ocaml55 db-up db-down
+  mutate-arm check-ocaml55 db-up db-check db-down
 
 help:
 	@sed -n '1,/^$$/p' Makefile | sed 's/^# \{0,1\}//'
@@ -162,6 +164,10 @@ export DB_DIR DB_PORT DB_SERVER_ARGS
 db-up:
 	@test -n "$(SERVER)" || { echo "Give SERVER=mysql84, mariadb114 or mariadb118."; exit 2; }
 	DUNE="$(DUNE)" sh test/db/db.sh up $(SERVER)
+
+db-check:
+	@test -n "$(SERVER)" || { echo "Give SERVER=mysql84, mariadb114 or mariadb118."; exit 2; }
+	sh test/db/db.sh check $(SERVER)
 
 db-down:
 	sh test/db/db.sh down $(SERVER)

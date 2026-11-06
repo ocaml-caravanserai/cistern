@@ -183,6 +183,30 @@ inputs = {
 
 `mysql_native_password` is tested only on MariaDB, because MySQL 8.4 disables it by default.
 
+`make db-check SERVER=<name>` is the smoke check of a server that runs. Each step prints `ok`, or `FAIL` with the expected and the actual result. The steps:
+
+- The series of `@@version` (`8.4.`, `11.4.` or `11.8.`). An incorrect package fails.
+- MySQL only: the paths of `caching_sha2_password`. Root runs `FLUSH PRIVILEGES` first, thus the cache is empty. Then:
+  1. With no TLS, the login gives error 2061.
+  2. On the socket, the full path passes.
+  3. With no TLS, the fast path passes.
+  4. The test user runs `FLUSH PRIVILEGES` (`RELOAD`).
+  5. With no TLS, the login gives error 2061 again.
+  6. With TLS (`VERIFY_IDENTITY`), the full path passes.
+  7. With no TLS, the fast path passes.
+- TCP with TLS and the client of the server. MySQL uses `--ssl-mode=VERIFY_IDENTITY --ssl-ca`, and MariaDB uses `--ssl-verify-server-cert --ssl-ca`. The step expects the version, `<user>@%` and `Ssl_version` `TLSv1.3`.
+- The identity of the certificate, with the MySQL 8.4 client and `VERIFY_IDENTITY` on the three servers.
+  - The MariaDB client checks the chain of the certificate. It does not check the name or the IP address of a connection to `127.0.0.1`.
+  - The MariaDB client also connects with no CA file.
+  - Probably MariaDB 11.4 and later treat a local connection as safe, or check the certificate with the password hash. We did not examine the source.
+  - Thus a certificate with no `127.0.0.1` name passes the MariaDB client. Cistern's own client does the real check in phase 1.4.
+- The test user on the Unix socket.
+- The plugin of the test user (as root).
+- No variable from a defaults file.
+  - MySQL: `performance_schema.variables_info` has no `VARIABLE_SOURCE` other than `COMPILED`, `COMMAND_LINE` and `DYNAMIC`.
+  - MariaDB: `information_schema.SYSTEM_VARIABLES` has no `GLOBAL_VALUE_ORIGIN` `CONFIG`.
+  - A comparison of values does not find a defaults file, because the command line sets the compared values.
+
 `make integration SERVER=<name>` runs the integration tests (phase 1.1).
 
 `make db-down [SERVER=<name>]` stops the servers. It sends `SIGTERM` to the pid of the env file and to the pid of the server's pid file. It stops a process only if its command line has the pid file of this `DB_DIR`. After 60 s, it sends `SIGKILL` and gives status 1.

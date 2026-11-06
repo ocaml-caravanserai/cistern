@@ -8,6 +8,7 @@
 #
 #   test/db/db.sh up NAME      Start the server NAME with a new data directory.
 #   test/db/db.sh down [NAME]  Stop NAME, or each server that runs.
+#   test/db/db.sh check NAME   The smoke check of the server NAME.
 #
 # NAME is mysql84, mariadb114 or mariadb118. The variables:
 #
@@ -51,11 +52,15 @@ server() {
   case $name in
     mysql84)
       family=mysql default_port=13384 user=cistern_sha2
-      plugin=caching_sha2_password
+      plugin=caching_sha2_password series=8.4.
       ;;
-    mariadb114 | mariadb118)
-      family=mariadb user=cistern_native plugin=mysql_native_password
-      if [ "$name" = mariadb114 ]; then default_port=13414; else default_port=13418; fi
+    mariadb114)
+      family=mariadb default_port=13414 user=cistern_native
+      plugin=mysql_native_password series=11.4.
+      ;;
+    mariadb118)
+      family=mariadb default_port=13418 user=cistern_native
+      plugin=mysql_native_password series=11.8.
       ;;
     *)
       echo "db.sh: unknown server '$name': give mysql84, mariadb114 or mariadb118" >&2
@@ -270,6 +275,99 @@ up() {
   echo "$name $version on 127.0.0.1:$port and $sock"
 }
 
+# Run a step of check: $1 is the name of the step, $2 the expected output
+# (or "ERROR <n>" for an expected error), then the command. The step prints
+# "ok", or "FAIL" and exits.
+step() {
+  label=$1 expected=$2
+  shift 2
+  if out=$("$@" 2>"$DB_DIR/check.err"); then
+    got=$out
+  else
+    rc=$?
+    got=$(grep -o '^ERROR [0-9]*' "$DB_DIR/check.err" || echo "status $rc")
+  fi
+  if [ "$got" = "$expected" ]; then
+    echo "ok $label"
+  else
+    echo "FAIL $label"
+    echo "  expected: $expected"
+    echo "  actual:   $got"
+    grep -v 'password on the command line' "$DB_DIR/check.err" | sed 's/^/  /'
+    exit 1
+  fi
+}
+
+# The test user over TCP with the client $1 and the options that follow.
+tcp() {
+  c=$1
+  shift
+  "$c" --no-defaults --protocol=TCP -h127.0.0.1 -P"$DB_PORT" -u"$DB_USER" \
+    --password="$DB_PASSWORD" -N -B "$@"
+}
+
+# The test user on the socket with the client of the server.
+sock_sql() {
+  "$client" --no-defaults --protocol=SOCKET -S "$DB_SOCKET" -u"$DB_USER" \
+    --password="$DB_PASSWORD" -N -B -e "$1"
+}
+
+check() {
+  server "$1"
+  [ -f "$dir/env" ] || die "$name is not started: make db-up SERVER=$name"
+  # shellcheck disable=SC1091
+  . "$dir/env"
+  alive "$DB_PID" || die "$name does not run: make db-up SERVER=$name"
+  store=$DB_STORE
+  sock=$DB_SOCKET
+  tools
+  case $DB_VERSION in
+    "$series"*) echo "ok version $DB_VERSION" ;;
+    *) die "FAIL version: $DB_VERSION is not $series*" ;;
+  esac
+  mysql84=$(nix build --no-link --print-out-paths '.#server-mysql84^out')/bin/mysql
+  me="$DB_VERSION	$DB_USER@%"
+  q="SELECT @@version, CURRENT_USER()"
+  if [ "$family" = mysql ]; then
+    # The paths of caching_sha2_password: with no TLS, only a user in the
+    # cache of the server passes (fast path). The full path fills the cache,
+    # on the socket or with TLS. FLUSH PRIVILEGES (RELOAD) empties it.
+    root_sql "FLUSH PRIVILEGES"
+    off=--ssl-mode=DISABLED
+    step "sha2: no TLS, empty cache" "ERROR 2061" tcp "$client" "$off" -e "$q"
+    step "sha2: socket, full path" "$me" sock_sql "$q"
+    step "sha2: no TLS, fast path" "$me" tcp "$client" "$off" -e "$q"
+    step "sha2: FLUSH PRIVILEGES as the test user" "" sock_sql "FLUSH PRIVILEGES"
+    step "sha2: no TLS after the flush" "ERROR 2061" tcp "$client" "$off" -e "$q"
+    step "sha2: TLS, full path" "$me" tcp "$client" \
+      --ssl-mode=VERIFY_IDENTITY --ssl-ca="$DB_CA" -e "$q"
+    step "sha2: no TLS, fast path again" "$me" tcp "$client" "$off" -e "$q"
+    verify=--ssl-mode=VERIFY_IDENTITY
+  else
+    # The MariaDB client checks the chain of the certificate, but not the
+    # name or the IP address of a connection to 127.0.0.1. Step "identity"
+    # checks them.
+    verify=--ssl-verify-server-cert
+  fi
+  step "TLS with the client of the server" "$me
+Ssl_version	TLSv1.3" tcp "$client" "$verify" --ssl-ca="$DB_CA" \
+    -e "$q; SHOW SESSION STATUS LIKE 'Ssl_version'"
+  step "identity of the certificate (the MySQL 8.4 client)" "$me" \
+    tcp "$mysql84" --ssl-mode=VERIFY_IDENTITY --ssl-ca="$DB_CA" -e "$q"
+  step "socket" "$me" sock_sql "$q"
+  step "plugin" "$DB_PLUGIN" root_sql \
+    "SELECT plugin FROM mysql.user WHERE user = '$DB_USER'"
+  if [ "$family" = mysql ]; then
+    origin="SELECT VARIABLE_NAME FROM performance_schema.variables_info
+      WHERE VARIABLE_SOURCE NOT IN ('COMPILED', 'COMMAND_LINE', 'DYNAMIC')"
+  else
+    origin="SELECT VARIABLE_NAME FROM information_schema.SYSTEM_VARIABLES
+      WHERE GLOBAL_VALUE_ORIGIN = 'CONFIG'"
+  fi
+  step "no variable from a defaults file" "" root_sql "$origin"
+  rm -f "$DB_DIR/check.err"
+}
+
 down() {
   for n in ${1:-$NAMES}; do
     server "$n"
@@ -301,8 +399,12 @@ case ${1:-} in
     [ $# -le 2 ] || die "usage: db.sh down [NAME]"
     down "${2:-}"
     ;;
+  check)
+    [ $# -eq 2 ] || die "usage: db.sh check NAME"
+    check "$2"
+    ;;
   *)
-    echo "usage: db.sh up NAME | down [NAME]" >&2
+    echo "usage: db.sh up NAME | check NAME | down [NAME]" >&2
     exit 2
     ;;
 esac
