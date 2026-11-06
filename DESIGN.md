@@ -149,7 +149,7 @@ inputs = {
 `make db-up SERVER=<name>`:
 
 1. Gets the server with `nix build --no-link --print-out-paths .#server-<name>`.
-2. Makes a test CA and a server certificate with `test/certgen`, a small OCaml program that uses `x509` and `mirage-crypto-ec` (the method of caravan's `test/tls_support.ml`). No `openssl` is necessary.
+2. Makes a test CA and a server certificate with `test/certgen`, a small OCaml program that uses `x509` and `mirage-crypto-ec` (the method of weft's `test/tls/tls_support.ml`). No `openssl` is necessary. The keys are ECDSA P-256: the three servers accept them, and use TLS 1.3. The server certificate has the names `localhost` and `127.0.0.1`, and is valid from 2020 to 2040. `test/certgen` is test code: it is not in the package, and the mutation gate does not examine it. `dune runtest` runs its test.
 3. Initializes the data directory in `.db/<name>` (not `_build`, because `dune clean` deletes `_build`). The path of the Unix socket must have less than 104 bytes on macOS.
    - MySQL: `mysqld --no-defaults --basedir=<store path> --datadir=... --initialize-insecure`, then the server with `--no-defaults --bind-address=127.0.0.1 --port=<free port> --socket=... --pid-file=... --log-error=... --secure-file-priv=... --mysqlx=OFF --ssl-ca=... --ssl-cert=... --ssl-key=...`.
    - MariaDB: `mariadb-install-db --no-defaults --basedir=<store path> --datadir=... --auth-root-authentication-method=normal --skip-test-db`, then `mariadbd` with the same kind of flags.

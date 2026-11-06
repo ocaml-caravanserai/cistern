@@ -1,0 +1,27 @@
+; test/certgen: the test CA and the server certificate of the test servers
+; (DESIGN.md, "Database servers for the tests"). This is test code: the
+; library has no public_name and no mutation backend, and no suite of the
+; mutation gate links it.
+
+(library
+ (name cistern_certgen)
+ (modules pki)
+ (libraries x509 mirage-crypto-ec mirage-crypto-rng ipaddr ptime fmt))
+
+(executable
+ (name certgen)
+ (modules certgen)
+ (libraries cistern_certgen mirage-crypto-rng.unix))
+
+(test
+ (name test_certgen)
+ (modules test_certgen)
+ (libraries
+  cistern_certgen
+  x509
+  domain-name
+  ipaddr
+  ptime
+  mirage-crypto-rng.unix
+  unix
+  windtrap))

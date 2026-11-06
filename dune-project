@@ -27,7 +27,16 @@
   (ppx_windtrap
    (and
     :with-test
-    (>= 0.3.0)))))
+    (>= 0.3.0)))
+  (x509
+   (and
+    :with-test
+    (>= 1.0.0)))
+  (mirage-crypto-ec :with-test)
+  (mirage-crypto-rng :with-test)
+  (ipaddr :with-test)
+  (domain-name :with-test)
+  (fmt :with-test)))
 
 (package
  (name ppx_cistern)
