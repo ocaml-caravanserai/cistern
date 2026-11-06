@@ -187,10 +187,16 @@
         })
       ];
 
+      # The test servers of `make db-up` (DESIGN.md, "Database servers for
+      # the tests"). They are not in the dev shell, and `nix flake check` does
+      # not build them.
       packages = forAllSystems (
-        _: ocamlPackages: {
+        pkgs: ocamlPackages: {
           inherit (ocamlPackages) cistern ppx_cistern;
           default = ocamlPackages.cistern;
+          server-mysql84 = pkgs.mysql84;
+          server-mariadb114 = pkgs.mariadb_114;
+          server-mariadb118 = pkgs.mariadb_118;
         }
       );
 

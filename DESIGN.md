@@ -148,18 +148,44 @@ inputs = {
 
 `make db-up SERVER=<name>`:
 
-1. Gets the server with `nix build --no-link --print-out-paths .#server-<name>`.
+1. Gets the server with `nix build --no-link --print-out-paths '.#server-<name>^out'`. The flake has `packages.<system>.server-mysql84`, `server-mariadb114` and `server-mariadb118`. They are not in the dev shell, and `nix flake check` does not build them.
 2. Makes a test CA and a server certificate with `test/certgen`, a small OCaml program that uses `x509` and `mirage-crypto-ec` (the method of weft's `test/tls/tls_support.ml`). No `openssl` is necessary. The keys are ECDSA P-256: the three servers accept them, and use TLS 1.3. The server certificate has the names `localhost` and `127.0.0.1`, and is valid from 2020 to 2040. `test/certgen` is test code: it is not in the package, and the mutation gate does not examine it. `dune runtest` runs its test.
-3. Initializes the data directory in `.db/<name>` (not `_build`, because `dune clean` deletes `_build`). The path of the Unix socket must have less than 104 bytes on macOS.
-   - MySQL: `mysqld --no-defaults --basedir=<store path> --datadir=... --initialize-insecure`, then the server with `--no-defaults --bind-address=127.0.0.1 --port=<free port> --socket=... --pid-file=... --log-error=... --secure-file-priv=... --mysqlx=OFF --ssl-ca=... --ssl-cert=... --ssl-key=...`.
-   - MariaDB: `mariadb-install-db --no-defaults --basedir=<store path> --datadir=... --auth-root-authentication-method=normal --skip-test-db`, then `mariadbd` with the same kind of flags.
-   - `--no-defaults` must be the first option, so that the server does not read `/etc/my.cnf` or `~/.my.cnf`.
-   - `--bind-address=127.0.0.1` is necessary, because root has no password. The server certificate from `test/certgen` has the name `localhost` and the IP address `127.0.0.1` in its subject-alternative names.
-4. Makes the test users with the client of the same store path: one with `caching_sha2_password` on MySQL, one with `mysql_native_password` on MariaDB, with the grants for the tests (also `RELOAD` for the test that empties the authentication cache).
+3. Initializes a new data directory in `.db/<name>` on each `db-up`. The data is not in `_build`, because `dune clean` deletes `_build`.
+   - `DB_DIR` changes `.db`. `db-up` removes or uses a directory only if it has the file `.cistern-db`, which `db.sh` writes. Else `db-up` stops.
+   - The directories `.db/<name>` and `.db/certs` have the mode 700. Thus only the owner can use the socket of root. In `.db/certs`, `ca.pem` and `server-cert.pem` have the mode 644, and `server-key.pem` has the mode 600.
+   - The path of the Unix socket has at most 107 bytes on Linux (`sun_path` has 108 bytes) and 103 bytes on macOS (`sun_path` has 104 bytes). A longer path stops `db-up` before the start.
+   - The ports are fixed: 13384 (`mysql84`), 13414 (`mariadb114`) and 13418 (`mariadb118`). `DB_PORT` changes the port.
+   - `DB_SERVER_ARGS` adds server options, for example `--max-connections=50`. On MySQL 8.4, `--innodb-read-only` makes `db-up` fail with error 1836, because `db-up` makes the test user.
+   - The script `test/db/db.sh` is POSIX `sh`, for Linux (dash) and macOS.
+   - MySQL: `mysqld --no-defaults --basedir=<store path> --datadir=... --initialize-insecure`. Then the server starts with `--no-defaults --bind-address=127.0.0.1 --skip-name-resolve --port=<DB_PORT> --socket=... --pid-file=... --log-error=... --secure-file-priv=... --mysqlx=OFF --ssl-ca=... --ssl-cert=... --ssl-key=...`, then `--user=root` if the user is root, then `DB_SERVER_ARGS`.
+   - MariaDB: `mariadb-install-db --no-defaults --basedir=<store path> --datadir=... --auth-root-authentication-method=normal --skip-test-db`. Then `mariadbd` starts with the same options, without `--mysqlx=OFF`.
+   - `--no-defaults` must be the first option. Then the server does not read `/etc/my.cnf` or `~/.my.cnf`.
+   - Root has no password. Thus `--bind-address=127.0.0.1` is necessary. With `--skip-name-resolve`, the account `root@localhost` matches only the socket.
+   - MariaDB also makes root at `127.0.0.1`, `::1` and the host name, with no password. `db-up` removes these accounts after the start. Then a TCP login of root gets error 1045 on the three servers.
+   - The server certificate from `test/certgen` has the name `localhost` and the IP address `127.0.0.1` in its subject alternative names.
+   - Each client call gets `--no-defaults` and `--protocol`. The MySQL 8.4 clients read `~/.mylogin.cnf` also with `--no-defaults`. Thus the script sets `MYSQL_TEST_LOGIN_FILE=/dev/null`.
+   - The script also removes `MYSQL_PWD`, `MYSQL_HOST`, `MYSQL_TCP_PORT`, `MYSQL_UNIX_PORT` and `MYSQL_HOME`.
+   - The MariaDB client asks for TLS by default, also on the socket. Thus the root route gives it `--skip-ssl`, so that a server with no TLS can start.
+   - The wait for the server uses a query, not `mysqladmin ping`. `mysqladmin ping` gives status 0 also for "Access denied".
+   - The errors 2002 and 2003 tell that the server is not ready. Another client error stops the wait at once, with the error and the end of the error log.
+   - If the server process stops, `db-up` prints the end of the error log, for example for a busy port.
+   - A failure, `SIGINT`, `SIGTERM` or `SIGHUP` after the start stops the server with `SIGTERM`.
+   - The server refuses root with no `--user`. Thus the script adds `--user=root` for root (not tested).
+4. Makes the test users with the client of the same store path:
+   - MySQL: `cistern_sha2` with `caching_sha2_password`.
+   - MariaDB: `cistern_native` with `mysql_native_password` (`IDENTIFIED VIA mysql_native_password USING PASSWORD(...)`).
+   - Each user has all rights on the database `cistern_test`, and `RELOAD` for the test that empties the authentication cache.
+   - The users have the host `%` and the fixed password `cistern`. The bind address keeps them local. A connection on the Unix socket also gets `<user>@%`.
+5. Writes `.db/<name>/env`, with shell assignments of these values:
+   - `DB_SERVER`, `DB_STORE`, `DB_VERSION` (from `@@version`) and `DB_PID`.
+   - `DB_PORT`, `DB_SOCKET`, `DB_USER`, `DB_PASSWORD`, `DB_DATABASE`, `DB_CA` and `DB_PLUGIN`.
+   - `DB_ADMIN_USER`: root on `DB_SOCKET`, with no password. These rights are necessary for some claims of phase 1.1, for example `read_only` and `SHUTDOWN`.
 
 `mysql_native_password` is tested only on MariaDB, because MySQL 8.4 disables it by default.
 
-`make integration SERVER=<name>` runs the integration tests. `make db-down` stops the servers.
+`make integration SERVER=<name>` runs the integration tests (phase 1.1).
+
+`make db-down [SERVER=<name>]` stops the servers. It sends `SIGTERM` to the pid of the env file and to the pid of the server's pid file. It stops a process only if its command line has the pid file of this `DB_DIR`. After 60 s, it sends `SIGKILL` and gives status 1.
 
 CI jobs:
 

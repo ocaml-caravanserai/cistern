@@ -1,4 +1,5 @@
-# Mutation testing with windtrap (DESIGN.md, "Tests").
+# Mutation testing with windtrap (DESIGN.md, "Tests"), and the test servers
+# (DESIGN.md, "Database servers for the tests").
 #
 #   make mutate         Test the mutants on the lines that changed since BASE.
 #   make mutate-all     Test all the mutants that the suites reach.
@@ -9,6 +10,12 @@
 #                       Run SUITE with one mutant armed.
 #   make check-ocaml55  The OCaml 5.5 check of test/ocaml55/dune.
 #   make check-scope    The scope of the gate (tools/check-scope.sh).
+#   make db-up SERVER=mysql84|mariadb114|mariadb118
+#                       Start a test server with a new data directory in
+#                       DB_DIR (default .db). DB_PORT changes the port,
+#                       DB_SERVER_ARGS adds server options.
+#   make db-down [SERVER=...]
+#                       Stop SERVER, or each test server that runs.
 #
 # The variables:
 #
@@ -92,7 +99,7 @@ OCAML55_MUTANTS := \
   test/ocaml55/ocaml55.ml:28:49:sub
 
 .PHONY: help check-windtrap check-scope mutate mutate-all mutate-report \
-  mutate-arm check-ocaml55
+  mutate-arm check-ocaml55 db-up db-down
 
 help:
 	@sed -n '1,/^$$/p' Makefile | sed 's/^# \{0,1\}//'
@@ -148,3 +155,13 @@ check-ocaml55: check-windtrap
 	  if [ "$$got" = "$$want" ]; then echo "check-ocaml55: the expected mutants, all killed."; \
 	  else echo "check-ocaml55: expected these mutants, all killed:"; echo "$$want"; \
 	    echo "The report has:"; echo "$${got:-(no mutant)}"; exit 1; fi
+
+# The test servers (test/db/db.sh). They run outside the dev shell too.
+export DB_DIR DB_PORT DB_SERVER_ARGS
+
+db-up:
+	@test -n "$(SERVER)" || { echo "Give SERVER=mysql84, mariadb114 or mariadb118."; exit 2; }
+	DUNE="$(DUNE)" sh test/db/db.sh up $(SERVER)
+
+db-down:
+	sh test/db/db.sh down $(SERVER)
