@@ -13,4 +13,5 @@ let () =
        ; Test_decoder.tests
        ; Test_error.tests
        ; Test_mapping.tests
-       ; Test_event.tests ] )
+       ; Test_event.tests
+       ; Test_dialect.tests ] )
