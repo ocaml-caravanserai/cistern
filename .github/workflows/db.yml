@@ -1,0 +1,78 @@
+# The test servers (DESIGN.md, "Database servers for the tests"): each night,
+# on request, and on a pull request that changes the files of the servers.
+# Each server starts on Linux and macOS, gets the smoke check and stops. If a
+# server package does not build on aarch64-darwin, the macOS leg of that
+# server fails at `make db-up`.
+#
+# The make targets run outside the dev shell, so that db.sh runs with the sh
+# and the tools of the system: dash on Linux, and the sh and BSD tools of
+# macOS. Only the build of test/certgen uses `nix develop -c dune`.
+name: Test servers
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/db.yml
+      - test/db/**
+      - test/certgen/**
+      - Makefile
+      - flake.nix
+      - flake.lock
+      - core/error.ml
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the run of the older push.
+concurrency:
+  group: db-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  server:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+        server: [mysql84, mariadb114, mariadb118]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        id: nix
+      - name: Start the server
+        run: make db-up SERVER=${{ matrix.server }}
+      - name: Smoke check
+        run: make db-check SERVER=${{ matrix.server }}
+      - name: Stop the server
+        if: ${{ steps.nix.outcome == 'success' && !cancelled() }}
+        run: make db-down SERVER=${{ matrix.server }}
+      # .db/ is a hidden directory. A new run of the job replaces the
+      # artifact.
+      - name: Logs
+        if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.os }}-${{ matrix.server }}
+          include-hidden-files: true
+          if-no-files-found: ignore
+          overwrite: true
+          path: |
+            .db/${{ matrix.server }}/error.log
+            .db/${{ matrix.server }}/init.log
+            .db/${{ matrix.server }}/server.out
+
+  # The names of the error numbers (make db-errors). No server runs, and the
+  # tools of the dev shell are not necessary.
+  errors:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Error names
+        run: make db-errors

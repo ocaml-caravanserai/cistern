@@ -145,6 +145,19 @@
           }
         );
 
+      # The libraries of the tests: windtrap, and the libraries of
+      # test/certgen (the certificates of the test servers).
+      testLibraries = ocamlPackages: [
+        ocamlPackages.windtrap
+        ocamlPackages.ppx_windtrap
+        ocamlPackages.x509
+        ocamlPackages.mirage-crypto-ec
+        ocamlPackages.mirage-crypto-rng
+        ocamlPackages.ipaddr
+        ocamlPackages.domain-name
+        ocamlPackages.fmt
+      ];
+
       forAllSystems =
         f:
         nixpkgs.lib.genAttrs systems (
@@ -174,10 +187,16 @@
         })
       ];
 
+      # The test servers of `make db-up` (DESIGN.md, "Database servers for
+      # the tests"). They are not in the dev shell, and `nix flake check` does
+      # not build them.
       packages = forAllSystems (
-        _: ocamlPackages: {
+        pkgs: ocamlPackages: {
           inherit (ocamlPackages) cistern ppx_cistern;
           default = ocamlPackages.cistern;
+          server-mysql84 = pkgs.mysql84;
+          server-mariadb114 = pkgs.mariadb_114;
+          server-mariadb118 = pkgs.mariadb_118;
         }
       );
 
@@ -229,10 +248,7 @@
             buildInputs =
               ocamlPackages.cistern.propagatedBuildInputs
               ++ ocamlPackages.ppx_cistern.propagatedBuildInputs
-              ++ [
-                ocamlPackages.windtrap
-                ocamlPackages.ppx_windtrap
-              ];
+              ++ testLibraries ocamlPackages;
             buildPhase = ''
               runHook preBuild
               export DUNE_CACHE=disabled
@@ -252,10 +268,7 @@
               ocamlPackages.cistern
               ocamlPackages.ppx_cistern
             ];
-            packages = [
-              # The tests.
-              ocamlPackages.windtrap
-              ocamlPackages.ppx_windtrap
+            packages = testLibraries ocamlPackages ++ [
               # The version of .ocamlformat, as in weft.
               pkgs.ocamlformat_0_29_0
               # Dev tools.

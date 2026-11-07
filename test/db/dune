@@ -1,0 +1,7 @@
+; The error numbers of cistern.core against test/db/errors.tsv. This test
+; checks a data file, thus it is not a suite of the mutation gate.
+
+(test
+ (name error_codes)
+ (libraries cistern.core windtrap)
+ (deps errors.tsv))
