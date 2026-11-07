@@ -98,6 +98,34 @@ val with_conn :
 val now : t -> Weft.Span.t
 (** The time of the pool: the span since its origin. *)
 
+val mono : t -> Weft.Span.t -> Weft.Clock.mono option
+(** [mono t span] is the [Mono] time of the time [span] of the pool. *)
+
+val time_left : t -> deadline:Weft.Span.t -> bool
+(** [time_left t ~deadline] is true if [deadline] leaves the margin of 50 ms. *)
+
+val emit : t -> Cistern_core.Event.t -> unit
+(** [emit t e] gives [e] to [on_query], and catches its exceptions. *)
+
+val abort_conn : t -> Cistern_mysql.Connection.t -> unit
+(** [abort_conn t c] aborts the held connection [c], with the count of the
+    sockets. Then the end of the holder must be [Discard]. *)
+
+val check_open : t -> unit
+(** @raise Invalid_argument "Db.t used after with_db" after {!shutdown}. *)
+
+(** {1 The fibers that hold a transaction (phase 1.3)} *)
+
+val enter_tx : t -> Weft.Fiber.Id.t -> unit
+
+val leave_tx : t -> Weft.Fiber.Id.t -> unit
+
+val in_tx : t -> bool
+(** [in_tx t] is true if the fiber that calls it holds a [Tx] of [t]. *)
+
+val tx_fibers : t -> int
+(** The count of the fibers that hold a [Tx]. *)
+
 val add_span : Weft.Span.t -> Weft.Span.t -> Weft.Span.t
 (** A saturated sum: a very large span gives the largest time. *)
 
@@ -107,7 +135,9 @@ val exec :
     statement"), and emits exactly one [Query] event, except on the paths of a
     misuse ([Invalid_argument]) or of a bug exception.
 
-    @raise Invalid_argument "Db.t used after with_db" after {!shutdown}. *)
+    @raise Invalid_argument
+      "Db.t used after with_db" after {!shutdown}, and "Db.exec in the fiber of
+      a Tx" in the fiber of a [Tx]. *)
 
 val shutdown : t -> unit
 (** [shutdown t] closes the pool, after the end of the opener: the waiters get

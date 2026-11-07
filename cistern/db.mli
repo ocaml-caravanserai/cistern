@@ -44,6 +44,35 @@ val exec :
     an [Error.t]: [Weft.Fiber.Cancelled] goes up, and the pool aborts the
     connection. *)
 
+val transaction :
+  ?timeout:Weft.Span.t -> t -> (Tx.t -> 'a) -> ('a, Cistern_core.Error.t) result
+(** [transaction db f] runs [f] in a transaction on one connection of the pool
+    (DESIGN.md, "Transactions"). [timeout] (default 30 s) is one deadline for
+    the checkout, [START TRANSACTION], the callback and its statements. The end:
+
+    - [f] returns before the deadline, and the transaction did not fail:
+      [COMMIT], and the result of the [COMMIT].
+    - [f] raises an exception that is not [Cistern_error]: [ROLLBACK], then the
+      exception again (also [Weft.Fiber.Timeout] before the deadline).
+    - The transaction failed with [Implicit_commit] (or an [Outcome_unknown]
+      that a retry cannot fix): [ROLLBACK], and that error. It wins over
+      [Cistern_error] and over the deadline, because the writes before it can be
+      committed: do not run the transaction again.
+    - [f] raises [Cistern_error e]: [ROLLBACK], and [Error e].
+    - The deadline passed (also when [f] returns a value after it): [ROLLBACK],
+      and [Timeout], or the first error of a failed transaction.
+    - The transaction failed: [ROLLBACK], and its first error.
+    - The fiber is cancelled: the connection is aborted (the server rolls back),
+      and [Weft.Fiber.Cancelled] goes up.
+
+    [COMMIT] and [ROLLBACK] run in a shield, with their own deadline of 5 to 30
+    s. A child fiber of [f] is not the fiber of the transaction: its [Db.exec]
+    waits for a second connection (with [pool_size = 1], until
+    [checkout_timeout]).
+
+    @raise Invalid_argument
+      in the fiber of a transaction, and after the end of {!with_db}. *)
+
 val exec_exn : ?timeout:Weft.Span.t -> t -> 'a Stmt.t -> 'a
 (** [exec_exn] is {!exec}, and raises [Error.Cistern_error] for an error. *)
 

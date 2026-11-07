@@ -7,6 +7,7 @@
 
 module Db = Db
 module Stmt = Stmt
+module Tx = Tx
 module Raw = Raw
 module Error = Cistern_core.Error
 module Event = Cistern_core.Event

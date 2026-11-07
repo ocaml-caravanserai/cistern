@@ -17,6 +17,9 @@ type conn = {c: Connection.t; owner: int Atomic.t}
 
 type outcome = Got of conn P.entry | Failed of Error.t | Abandoned
 
+(* The fibers that hold a [Tx] (phase 1.3). *)
+module Fibers = Set.Make (Fiber.Id)
+
 type t =
   { config: Config.t
   ; size: int
@@ -29,7 +32,8 @@ type t =
   ; bell: Fiber.Semaphore.t
   ; closed: bool Atomic.t
   ; sockets: int Atomic.t
-  ; over_bound: int Atomic.t }
+  ; over_bound: int Atomic.t
+  ; txs: Fibers.t Atomic.t }
 
 module Private = struct
   let after_op = ref ignore
@@ -110,7 +114,8 @@ let create ?random ?(on_query = ignore) ~pool_size ~max_lifetime
   ; bell= Fiber.Semaphore.create ~max:1 0
   ; closed= Atomic.make false
   ; sockets= Atomic.make 0
-  ; over_bound= Atomic.make 0 }
+  ; over_bound= Atomic.make 0
+  ; txs= Atomic.make Fibers.empty }
 
 (* The time of the pool: the span since its origin. *)
 let now t = Time.diff Clock.Mono (Time.now Clock.Mono) t.origin
@@ -166,6 +171,31 @@ let discard t (e : conn P.entry) =
   checkin t e ~reusable:false ~dirty:e.dirty
 
 let emit t ev = try t.on_query ev with _ -> ()
+
+(* An abort of a connection that a holder holds (a [Tx]), with the count of the
+   sockets. The checkin then discards the entry. *)
+let abort_conn t c = release t (Connection.abort c)
+
+let check_open t =
+  if Atomic.get t.closed then invalid_arg "Db.t used after with_db"
+
+(* The set of the fibers that hold a [Tx]. A failed compare_and_set means that
+   another domain changed the set: read it again. *)
+let rec change_txs t f =
+  let s = Atomic.get t.txs in
+  ( if not (Atomic.compare_and_set t.txs s (f s)) then change_txs t f )
+  [@mutate
+    off
+      "no switch point between get and compare_and_set in the simulator: the \
+       retry runs only on real domains"]
+
+let enter_tx t id = change_txs t (Fibers.add id)
+
+let leave_tx t id = change_txs t (Fibers.remove id)
+
+let in_tx t = Fibers.mem (Fiber.self ()) (Atomic.get t.txs)
+
+let tx_fibers t = Fibers.cardinal (Atomic.get t.txs)
 
 let address config =
   match Config.address config with
@@ -506,7 +536,8 @@ let with_conn t ~start ~deadline f =
 
 let exec t ~timeout stmt =
   (* Before each other check: a misuse emits no event. *)
-  if Atomic.get t.closed then invalid_arg "Db.t used after with_db" ;
+  check_open t ;
+  if in_tx t then invalid_arg "Db.exec in the fiber of a Tx" ;
   let meta = Stmt.Private.meta stmt in
   let t0 = Time.now Clock.Mono in
   let event ?c outcome =

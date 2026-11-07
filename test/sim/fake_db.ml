@@ -12,6 +12,18 @@
    receive buffer of the server with that next command. Another text gives an OK
    with 1 affected row.
 
+   Each connection has the state of a transaction (phase 1.3): "START
+   TRANSACTION" and "BEGIN" open it, "COMMIT" and "ROLLBACK" end it, and
+   "SAVEPOINT n", "RELEASE SAVEPOINT n" and "ROLLBACK TO SAVEPOINT n" keep the
+   savepoints (1305 for an unknown name). Each OK, the end of a result set and
+   the OK of COM_PING carry SERVER_STATUS_IN_TRANS while it is open. The words
+   of the faults: "DEADLOCK" (1213, a rollback), "LOCKWAIT" (1205, a rollback
+   only with the fault [rollback_on_timeout]), "CREATE" and "TRUNCATE" (an
+   implicit commit), "DDLFAIL" (an implicit commit, then 1050), "INFILE" (a
+   LOCAL INFILE request), "FORGET" (the savepoints go, the transaction stays)
+   and "CLOSE" (an OK, then the server closes). The fault [commit] changes the
+   reply to COMMIT.
+
    COM_PING, COM_INIT_DB and COM_RESET_CONNECTION give an OK, COM_QUIT ends the
    connection. The faults are mutable, so that a test can change them in its
    run. The server counts the connections, the handshakes in progress, the
@@ -22,6 +34,18 @@ open Weft
 module F = Fake_server
 module Flow = Weft_flow.Flow
 module Reader = Weft_flow.Reader
+
+(** The reply to COMMIT. *)
+type commit_fault =
+  | Commit_err of int
+      (** An ERR with this code. 1213, 1205, 1180, 3101 and 1317 roll back. *)
+  | Commit_err_close of int  (** An ERR with this code, then the end. *)
+  | Commit_close  (** The end, with no reply. *)
+  | Commit_delay of int  (** The OK after this many ms. *)
+  | Commit_delay_err of int * int
+      (** After this many ms, an ERR with this code (as [Commit_err]). *)
+  | Commit_in_trans  (** The commit, and an OK with IN_TRANS (a chain). *)
+  | Commit_seq0  (** 4031 with the id 0 before the read of COMMIT, the end. *)
 
 type faults =
   { mutable refuse: bool  (** Accept, then close at once. *)
@@ -34,7 +58,16 @@ type faults =
   ; mutable fail_reset: int option
         (** COM_RESET_CONNECTION gives an ERR with this code. *)
   ; mutable reset_ms: int  (** Before the reply of COM_RESET_CONNECTION. *)
-  ; mutable wait_timeout: int  (** The [@@wait_timeout] of round trip 1. *) }
+  ; mutable wait_timeout: int  (** The [@@wait_timeout] of round trip 1. *)
+  ; mutable rollback_on_timeout: bool
+        (** The [@@innodb_rollback_on_timeout] of round trip 1. *)
+  ; mutable commit: commit_fault option
+  ; mutable savepoint_err: int option  (** SAVEPOINT gives an ERR. *)
+  ; mutable rollback_err: int option  (** ROLLBACK gives an ERR. *)
+  ; mutable begin_no_trans: bool
+        (** START TRANSACTION gives an OK with IN_TRANS clear. *)
+  ; mutable begin_err: int option  (** START TRANSACTION gives an ERR. *)
+  ; mutable ping_close: bool  (** COM_PING closes the connection. *) }
 
 type t =
   { faults: faults
@@ -56,7 +89,14 @@ let no_faults () =
   ; idle_4031_ms= None
   ; fail_reset= None
   ; reset_ms= 0
-  ; wait_timeout= 28800 }
+  ; wait_timeout= 28800
+  ; rollback_on_timeout= false
+  ; commit= None
+  ; savepoint_err= None
+  ; rollback_err= None
+  ; begin_no_trans= false
+  ; begin_err= None
+  ; ping_close= false }
 
 (* An INT column with the binary set. *)
 let int_column name =
@@ -79,20 +119,72 @@ let sends flow seq ps =
 
 let session db =
   List.mapi
-    (fun i v -> if i = 6 then Some (string_of_int db.faults.wait_timeout) else v)
+    (fun i v ->
+      match i with
+      | 6 ->
+          Some (string_of_int db.faults.wait_timeout)
+      | 7 ->
+          Some (if db.faults.rollback_on_timeout then "1" else "0")
+      | _ ->
+          v )
     (F.session ())
+
+(* The state of the transaction of one connection. *)
+type tx = {mutable open_: bool; mutable savepoints: string list}
+
+let status tx = if tx.open_ then 3 else 2
 
 exception Stop
 
 let int_of s = try Some (int_of_string (String.trim s)) with _ -> None
 
-let reply flow sql =
+let ok tx flow = send flow 1 (F.ok_with ~affected:1L ~status:(status tx) ())
+
+let end_tx tx =
+  tx.open_ <- false ;
+  tx.savepoints <- []
+
+let commit db tx flow =
+  match db.faults.commit with
+  | None ->
+      end_tx tx ; ok tx flow
+  | Some (Commit_err code) ->
+      if List.mem code [1213; 1205; 1180; 3101; 1317] then end_tx tx ;
+      send flow 1 (F.err code "commit")
+  | Some (Commit_delay_err (ms, code)) ->
+      Time.sleep Mono (Span.ms ms) ;
+      if List.mem code [1213; 1205; 1180; 3101; 1317] then end_tx tx ;
+      send flow 1 (F.err code "commit")
+  | Some (Commit_err_close code) ->
+      send flow 1 (F.err code "commit") ;
+      raise Stop
+  | Some Commit_close ->
+      raise Stop
+  | Some (Commit_delay ms) ->
+      Time.sleep Mono (Span.ms ms) ;
+      end_tx tx ;
+      ok tx flow
+  | Some Commit_in_trans ->
+      tx.savepoints <- [] ;
+      ok tx flow
+  | Some Commit_seq0 ->
+      send flow 0 (F.err 4031 "idle") ;
+      raise Stop
+
+let reply db tx flow sql =
   let word, rest =
     match String.index_opt sql ' ' with
     | Some i ->
         (String.sub sql 0 i, String.sub sql (i + 1) (String.length sql - i - 1))
     | None ->
         (sql, "")
+  in
+  let named prefix =
+    if String.starts_with ~prefix rest then
+      Some
+        (String.sub rest (String.length prefix)
+           (String.length rest - String.length prefix) )
+    else None
   in
   match (word, int_of rest) with
   | "SELECT", Some n ->
@@ -101,18 +193,86 @@ let reply flow sql =
         |> fun l ->
         match l with
         | count :: _ :: rest ->
-            count :: int_column "n" :: rest
+            count :: int_column "n"
+            :: List.filteri (fun i _ -> i < List.length rest - 1) rest
+            @ [F.ok_with ~header:'\xfe' ~status:(status tx) ()]
         | l ->
             l )
   | "SLEEP", Some ms ->
       Time.sleep Mono (Span.ms ms) ;
-      send flow 1 (F.ok ())
+      send flow 1 (F.ok ~status:(status tx) ())
   | "FAIL", Some code ->
       send flow 1 (F.err code "fail")
-  | "BEGIN", _ ->
-      send flow 1 (F.ok_with ~status:3 ())
+  | ("BEGIN" | "START"), _ -> (
+    match db.faults.begin_err with
+    | Some code ->
+        send flow 1 (F.err code "begin")
+    | None ->
+        if not db.faults.begin_no_trans then tx.open_ <- true ;
+        tx.savepoints <- [] ;
+        ok tx flow )
+  | "COMMIT", _ ->
+      commit db tx flow
+  | "ROLLBACK", _ -> (
+    match named "TO SAVEPOINT " with
+    | Some n ->
+        if List.mem n tx.savepoints then (
+          (* The savepoints after it go. *)
+          let rec keep = function
+            | [] ->
+                []
+            | x :: rest ->
+                if x = n then x :: rest else keep rest
+          in
+          tx.savepoints <- keep tx.savepoints ;
+          ok tx flow )
+        else send flow 1 (F.err 1305 "no savepoint")
+    | None -> (
+      match db.faults.rollback_err with
+      | Some code ->
+          send flow 1 (F.err code "rollback")
+      | None ->
+          end_tx tx ; ok tx flow ) )
+  | "SAVEPOINT", _ -> (
+    match db.faults.savepoint_err with
+    | Some code ->
+        send flow 1 (F.err code "savepoint")
+    | None ->
+        tx.savepoints <- rest :: tx.savepoints ;
+        ok tx flow )
+  | "RELEASE", _ -> (
+    match named "SAVEPOINT " with
+    | Some n when List.mem n tx.savepoints ->
+        let rec after = function
+          | [] ->
+              []
+          | x :: rest ->
+              if x = n then rest else after rest
+        in
+        tx.savepoints <- after tx.savepoints ;
+        ok tx flow
+    | _ ->
+        send flow 1 (F.err 1305 "no savepoint") )
+  | "DEADLOCK", _ ->
+      end_tx tx ;
+      send flow 1 (F.err 1213 "deadlock")
+  | "LOCKWAIT", _ ->
+      if db.faults.rollback_on_timeout then end_tx tx ;
+      send flow 1 (F.err 1205 "lock wait")
+  | ("CREATE" | "TRUNCATE"), _ ->
+      end_tx tx ; ok tx flow
+  | "DDLFAIL", _ ->
+      end_tx tx ;
+      send flow 1 (F.err 1050 "exists")
+  | "INFILE", _ ->
+      send flow 1 "\xfbfile"
+  | "FORGET", _ ->
+      tx.savepoints <- [] ;
+      ok tx flow
+  | "CLOSE", _ ->
+      ok tx flow ; raise Stop
   | "INSERT", _ ->
-      send flow 1 (F.ok_with ~affected:2L ~insert:7L ())
+      send flow 1 (F.ok_with ~affected:2L ~insert:7L ~status:(status tx) ())
   | "DEAF", _ ->
       (* The OK, and 5 ms later the OK of the next command, which the server
          never reads. Then the server reads nothing for 3 s, and closes. *)
@@ -122,9 +282,9 @@ let reply flow sql =
       Time.sleep Mono (Span.s 3) ;
       raise Stop
   | _ ->
-      send flow 1 (F.ok_with ~affected:1L ())
+      ok tx flow
 
-let command db flow r =
+let command db tx flow r =
   let p =
     match db.faults.idle_4031_ms with
     | Some ms -> (
@@ -146,19 +306,23 @@ let command db flow r =
   | '\x01' ->
       db.quits <- db.quits + 1 ;
       raise Stop
+  | '\x0e' when db.faults.ping_close ->
+      raise Stop
   | '\x0e' | '\x02' ->
-      send flow 1 (F.ok ())
+      send flow 1 (F.ok ~status:(status tx) ())
   | '\x1f' -> (
       db.resets <- db.resets + 1 ;
       if db.faults.reset_ms > 0 then
         Time.sleep Mono (Span.ms db.faults.reset_ms) ;
+      (* COM_RESET_CONNECTION rolls back an open transaction (C3). *)
+      end_tx tx ;
       match db.faults.fail_reset with
       | Some code ->
           send flow 1 (F.err code "reset")
       | None ->
           send flow 1 (F.ok ()) )
   | '\x03' ->
-      reply flow body
+      reply db tx flow body
   | _ ->
       send flow 1 (F.err 1047 "unknown command")
 
@@ -193,8 +357,9 @@ let serve db flow =
         send flow 1 (F.ok ()) ;
         finish_handshake () ;
         let n = ref 0 in
+        let tx = {open_= false; savepoints= []} in
         while true do
-          command db flow r ;
+          command db tx flow r ;
           incr n ;
           match db.faults.reset_after with
           | Some k when !n >= k ->

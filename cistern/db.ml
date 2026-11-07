@@ -24,6 +24,9 @@ let with_db ?(pool_size = 10) ?(max_lifetime = Span.s 1800)
 
 let exec ?(timeout = Span.s 30) db s = Pool.exec db ~timeout s
 
+let transaction ?(timeout = Span.s 30) db f =
+  Tx.Private.transaction ~timeout db f
+
 let exec_exn ?timeout db s =
   match exec ?timeout db s with
   | Ok v ->
