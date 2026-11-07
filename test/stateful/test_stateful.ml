@@ -24,7 +24,7 @@
    slow run first. *)
 
 open Windtrap
-module P = Cistern.Pool_state
+module P = Cistern.Private.Pool_state
 module Span = Weft.Span
 module M = Model
 

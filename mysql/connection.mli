@@ -141,6 +141,10 @@ val sent : t -> bool
     After a cancel in a statement, the pool reads it for the event of the
     statement. *)
 
+val usable : t -> bool
+(** [usable t] is true if [t] is not closed and not broken. The pool checks it
+    in at the end of a statement as reusable only then. *)
+
 val stale : t -> bool
 (** [stale t] is the check of an idle connection at the checkout of the pool:
     true if the connection is closed or broken, if the reader holds bytes, or if

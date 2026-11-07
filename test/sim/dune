@@ -5,5 +5,12 @@
 
 (test
  (name test_sim)
- (libraries cistern.core cistern.mysql weft weft.flow weft.sim windtrap)
+ (libraries
+  cistern
+  cistern.core
+  cistern.mysql
+  weft
+  weft.flow
+  weft.sim
+  windtrap)
  (link_flags (-linkall)))
