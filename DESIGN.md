@@ -665,18 +665,31 @@ Rules:
 
 ### Configuration
 
-`Config.of_url` takes `mysql://` (`mariadb://` is an alias): user, password (percent-decoded), host, port, database, `socket=<path>`, `ssl-mode`, `ssl-ca=<path>`, `ssl-fingerprint=sha256:<hex>`, `allow-cleartext=socket`, `kill=true|false`. The database is necessary: a URL without it gives an error, because the session reset needs it for `COM_INIT_DB`. It gives `(Config.t, string) result`. `Config.make` takes the same values, and also `?authenticator:X509.Authenticator.t`. The CA file is read with `Weft.File`. The printers of `Config.t` and the `Connect` events never show the password.
+`Config.of_url` takes `mysql://` (`mariadb://` is an alias): user, password (percent-decoded), host, port (default 3306), database, `socket=<path>`, `ssl-mode`, `ssl-ca=<path>`, `ssl-fingerprint=sha256:<hex>`, `allow-cleartext=socket`, `kill=true|false` (default `true`). The rules of the URL:
+
+- The scheme is in lowercase. The URL must not have a space or a control character: use `%20` and the other escapes. `+` stays `+`.
+- In the URL, the characters `@`, `/`, `?` and `#` of the user and the password must be percent-encoded. The password can have `:`. A raw `@` in the database part is an error, because it is probably a part of a password that is not encoded.
+- After the decode, no value (the user, the password, the database, the host, the socket path, the CA path) has a control character. A NUL ends a string in the handshake and in the socket address of weft.
+- The host is an IPv4 address, a name, or an IPv6 address in brackets, with no zone id (`[fe80::1%25eth0]` is an error). `localhost` is TCP to 127.0.0.1, not the Unix socket (the MySQL client uses the socket for `localhost`). This is safe: TCP needs a TLS setting.
+- An unknown key, a key two times, an empty value, or a fragment (`#`) is an error. The keys, `sha256:`, `socket`, `true` and `false` are in lowercase. The `ssl-mode` values have no case.
+- `socket=` with a host or a port is an error. `socket=` refuses `ssl-ca`, `ssl-fingerprint` and each `ssl-mode` other than `DISABLED`: version 1 has no TLS on a Unix socket.
+- `allow-cleartext=socket` is only for `socket=`. Thus the opt-in is a part of the socket address, and a TCP configuration cannot hold it.
+- `ssl-mode=DISABLED` with `ssl-ca` or `ssl-fingerprint` is an error. `ssl-mode=REQUIRED` with `ssl-ca` is an error, because the CA would have no effect: use `VERIFY_CA` or `VERIFY_IDENTITY`. `VERIFY_CA` and `VERIFY_IDENTITY` need `ssl-ca` or `ssl-fingerprint` in a URL, because a URL has no authenticator.
+- `Config.t` is abstract, so that no generic printer shows the password. No message of `of_url` has a part of the URL.
+- Phase 1.1 parses the TLS settings with these final rules, but it has no TLS. The connect refuses each configuration that needs TLS, with `Connect "TLS is not supported before phase 1.4"`, before the DNS resolve and before a socket opens.
+
+The database is necessary: a URL without it gives an error, because the session reset needs it for `COM_INIT_DB`. `Config.of_url` gives `(Config.t, string) result`. `Config.make ?tls ?kill ~address ~user ~password ~database ()` takes the same values, with the same checks (one shared function). Phase 1.4 adds `?authenticator:X509.Authenticator.t` to `Config.make`. The CA file is read with `Weft.File`. The printers of `Config.t` and the `Connect` events never show the password.
 
 `ssl-mode` uses the MySQL names:
 
 | `ssl-mode` | TLS | Certificate check |
 |---|---|---|
 | `DISABLED` | No | None |
-| `REQUIRED` | Yes | None. Documented: no protection against an attacker in the middle. |
+| `REQUIRED` | Yes | None, if the configuration has no `ssl-fingerprint`. Documented: no protection against an attacker in the middle. With `ssl-fingerprint`, the pin is checked. With `ssl-ca`, the configuration is an error |
 | `VERIFY_CA` | Yes | The chain only, with `ssl-ca` or the authenticator. No peer name is set. |
 | `VERIFY_IDENTITY` | Yes | The chain and the name: `Tls.Config.peer` for a host name, `Tls.Config.ip` for an IP address |
 
-`ssl-fingerprint=sha256:<hex>` pins the SHA-256 hash of the server certificate (`X509.Authenticator.server_cert_fingerprint`). It needs TLS, and it is a verified identity for the clear-text rule, the same as `VERIFY_IDENTITY`.
+`ssl-fingerprint=sha256:<hex>` pins the SHA-256 hash of the server certificate (`X509.Authenticator.server_cert_fingerprint`). The pin is checked in each mode. It needs TLS, and it is a verified identity for the clear-text rule, the same as `VERIFY_IDENTITY`.
 
 Defaults:
 
