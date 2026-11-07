@@ -33,11 +33,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1793990270,
-        "narHash": "sha256-MQv0XOb7WATzL8kv4FYapsNliVYdVWd74awkgrsUr10=",
+        "lastModified": 1794017297,
+        "narHash": "sha256-DzXTuuUD/ChF4HxXlFyd3kyxpMiR6m5WDXmjHwTum1o=",
         "owner": "ocaml-caravanserai",
         "repo": "weft",
-        "rev": "5e5026dae4a1dd071f7f4e5ea85e9655d5db0a11",
+        "rev": "8520b5fdd6a6fd3c91dbb27caf19861dc140e4c3",
         "type": "github"
       },
       "original": {
