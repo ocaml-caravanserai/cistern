@@ -3,6 +3,9 @@
 ; puts each module of the libraries in the catalogue of the mutation gate (make
 ; check-scope).
 
+; CISTERN_SLOW adds the slow storm (test_sim.ml). It is a dependency, thus dune
+; runs the test again when it changes.
+
 (test
  (name test_sim)
  (libraries
@@ -13,4 +16,6 @@
   weft.flow
   weft.sim
   windtrap)
+ (deps
+  (env_var CISTERN_SLOW))
  (link_flags (-linkall)))

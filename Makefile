@@ -10,6 +10,9 @@
 #                       Run SUITE with one mutant armed.
 #   make check-ocaml55  The OCaml 5.5 check of test/ocaml55/dune.
 #   make check-scope    The scope of the gate (tools/check-scope.sh).
+#   make sim-slow       The slow tests: the storm of 1000 fibers of the sim
+#                       suite, and random seeds in the stateful suite
+#                       (CISTERN_SLOW). Not in the gate.
 #   make db-up SERVER=mysql84|mariadb114|mariadb118
 #                       Start a test server with a new data directory in
 #                       DB_DIR (default .db). DB_PORT changes the port,
@@ -111,7 +114,7 @@ OCAML55_MUTANTS := \
   test/ocaml55/ocaml55.ml:28:49:sub
 
 .PHONY: help check-windtrap check-scope mutate mutate-all mutate-report \
-  mutate-arm check-ocaml55 db-up db-check db-down db-errors integration \
+  mutate-arm check-ocaml55 sim-slow db-up db-check db-down db-errors integration \
   integration-timing integration-shutdown
 
 help:
@@ -168,6 +171,12 @@ check-ocaml55: check-windtrap
 	  if [ "$$got" = "$$want" ]; then echo "check-ocaml55: the expected mutants, all killed."; \
 	  else echo "check-ocaml55: expected these mutants, all killed:"; echo "$$want"; \
 	    echo "The report has:"; echo "$${got:-(no mutant)}"; exit 1; fi
+
+# The slow tests. CISTERN_SLOW is a dependency of the two test stanzas, thus
+# dune runs them again when it changes. --force runs them each time, so that
+# the stateful suite gets a new random seed. ci.yml and db.yml run it.
+sim-slow:
+	CISTERN_SLOW=1 $(DUNE) build --force @test/sim/runtest @test/stateful/runtest
 
 # The test servers (test/db/db.sh). They run outside the dev shell too.
 export DB_DIR DB_PORT DB_SERVER_ARGS

@@ -158,6 +158,150 @@ let deaf ~hold =
     ~rows:(fun _ -> 0)
     ~finish:ignore
 
+(* The storm (plan of phase 1.2, section 4.5): [fibers] fibers on 4 virtual
+   domains and a pool of 8, with raw statements (dirty entries and resets),
+   BEGIN (an abort at checkin), server errors, short deadlines, cancels, a short
+   max_lifetime and 4031 faults. Each fiber starts at a random time in one of
+   three waves and records one outcome. Then, when the pool is quiet, 8 fibers
+   must each get a connection at once. It gives the outcomes, sorted. *)
+let permitted =
+  [ "ok"
+  ; "cancelled"
+  ; "Timeout"
+  ; "Pool_exhausted"
+  ; "Outcome_unknown statement"
+  ; "Constraint_violation Unique" ]
+
+let storm ~fibers ~seed ~seam =
+  Pool.Private.after_op :=
+    if seam then fun () -> Fiber.shield (fun () -> Time.sleep Mono (Span.ms 1))
+    else ignore ;
+  Fun.protect
+    ~finally:(fun () -> Pool.Private.after_op := ignore)
+    (fun () ->
+      let (outcomes, quiet, live), events =
+        with_pool ~size:8 ~seed ~domains:4 ~max_lifetime:(Span.ms 80)
+          ~checkout_timeout:(Span.ms 5)
+          ~setup:(fun db ->
+            db.faults.idle_4031_ms <- Some 25 ;
+            db.faults.reset_ms <- 1 )
+          (fun _ _ pool ->
+            let outcomes = ref [] in
+            Fiber.scope (fun s ->
+                for i = 1 to fibers do
+                  Fiber.fork s (fun () ->
+                      let rs = Random.State.make [|seed; i|] in
+                      (* Three waves of 30 ms, at 0, 60 and 200 ms. Between them
+                         the entries wait: 4031 after 25 ms idle, the end of
+                         life after 68 to 92 ms. *)
+                      let wave = [|0; 60; 200|].(Random.State.int rs 3) in
+                      Time.sleep Mono (Span.ms (wave + Random.State.int rs 30)) ;
+                      let sql =
+                        match Random.State.int rs 6 with
+                        | 0 ->
+                            "SELECT 1"
+                        | 1 ->
+                            "BEGIN"
+                        | 2 ->
+                            "FAIL 1062"
+                        | _ ->
+                            Printf.sprintf "SLEEP %d" (Random.State.int rs 11)
+                      in
+                      (* Above the margin of 50 ms. *)
+                      let timeout = Span.ms (50 + Random.State.int rs 70) in
+                      let run () = Db.exec ~timeout pool (q sql) in
+                      let o =
+                        match
+                          if Random.State.int rs 4 = 0 then
+                            Fiber.with_timeout Mono
+                              (Span.ms (1 + Random.State.int rs 60))
+                              run
+                          else run ()
+                        with
+                        | Ok _ ->
+                            "ok"
+                        | Error e ->
+                            error_text e
+                        | exception Fiber.Timeout ->
+                            "cancelled"
+                        | exception Invalid_argument m ->
+                            "Invalid_argument " ^ m
+                        | exception e ->
+                            "exception " ^ Printexc.to_string e
+                      in
+                      outcomes := o :: !outcomes )
+                done ) ;
+            (* The pool is quiet when the connects and the polite closes ended.
+               The check of liveness runs with no seam, because each operation
+               of the seam takes 1 ms. *)
+            Pool.Private.after_op := ignore ;
+            Time.sleep Mono (Span.ms 100) ;
+            let idle, in_use, opening, _, waiting =
+              Pool.Private.state (Db.Private.pool pool)
+            in
+            let quiet = (idle <= 8, in_use, opening, waiting) in
+            let t0 = Time.now Mono in
+            let live =
+              Fiber.scope (fun s ->
+                  let ps =
+                    List.init 8 (fun _ ->
+                        Fiber.fork_promise s (fun () ->
+                            result_text
+                              (Db.exec ~timeout:(Span.s 1) pool (q "SELECT 2")) ) )
+                  in
+                  let rs = List.map Promise.await ps in
+                  (rs, seconds t0 < 0.05) )
+            in
+            (List.sort compare !outcomes, quiet, live) )
+      in
+      (outcomes, List.length (queries events), quiet, live) )
+
+let check_storm ~fibers (outcomes, queries, quiet, live) =
+  equal ~msg:"one outcome for each fiber" int fibers (List.length outcomes) ;
+  (* The storm must run statements, not only waiters at their limit: at least 80
+     execs of each seed run a statement (ok, or the error of FAIL). In the
+     record of PR 1.2c2, the fewest were 116 of 200 and 112 of 1000. *)
+  let ran =
+    List.length
+      (List.filter
+         (fun o -> o = "ok" || o = "Constraint_violation Unique")
+         outcomes )
+  in
+  is_true ~msg:(Printf.sprintf "at least 80 statements ran (%d)" ran) (ran >= 80) ;
+  List.iter
+    (fun o -> is_true ~msg:("a permitted outcome: " ^ o) (List.mem o permitted))
+    outcomes ;
+  equal ~msg:"one Query event for each exec" int (fibers + 8) queries ;
+  equal ~msg:"quiet: idle <= 8, in use, opening, waiting" (list string)
+    ["true"; "0"; "0"; "0"]
+    (let a, b, c, d = quiet in
+     [string_of_bool a; string_of_int b; string_of_int c; string_of_int d] ) ;
+  let rs, fast = live in
+  equal ~msg:"8 fibers get a connection" (list string)
+    (List.init 8 (fun _ -> "2"))
+    rs ;
+  is_true ~msg:"8 fibers get a connection at once" fast
+
+(* The storm over [seeds] seeds. The race counters are a sum over the seeds, and
+   each must be above 0. The first 2 seeds run with no seam. This sum depends on
+   the seeds, thus each counter also has a test that forces its branch: the
+   latch tests (waiter_lost, checkin_lost), "a cancel in the session reset"
+   (cancel_in_reset), "an idle entry past its life" and "two expired entries"
+   (expired_at_checkout), and "a stale idle entry" (stale_at_checkout). *)
+let storm_test ~fibers ~seeds () =
+  Pool.Private.reset_counters () ;
+  for seed = 0 to seeds - 1 do
+    check_storm ~fibers (storm ~fibers ~seed ~seam:(seed >= 2))
+  done ;
+  let c = Pool.Private.counters () in
+  List.iter
+    (fun (name, n) -> is_true ~msg:(name ^ " above 0") (n > 0))
+    [ ("waiter_lost", c.waiter_lost)
+    ; ("checkin_lost", c.checkin_lost)
+    ; ("cancel_in_reset", c.cancel_in_reset)
+    ; ("expired_at_checkout", c.expired_at_checkout)
+    ; ("stale_at_checkout", c.stale_at_checkout) ]
+
 let tests =
   group "Db and the pool"
     [ test "a query, and its events" (fun () ->
@@ -1193,4 +1337,13 @@ let tests =
                 Time.sleep Mono (Span.s 3) ;
                 Printf.sprintf "%s %b" w fast )
           in
-          equal string "2 true" r ) ]
+          equal string "2 true" r )
+    ; test "the storm: 200 fibers, 8 seeds, 4 domains"
+        (storm_test ~fibers:200 ~seeds:8) ]
+
+(* The slow storm, outside the gate: make sim-slow (CISTERN_SLOW). *)
+let slow_tests =
+  group "Db and the pool, slow"
+    [ tag "slow"
+        (test "the storm: 1000 fibers, 20 seeds, 4 domains"
+           (storm_test ~fibers:1000 ~seeds:20) ) ]
