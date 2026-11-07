@@ -475,34 +475,41 @@ let with_conn t ~start ~deadline f =
     (* A successful reset makes the entry clean. *)
     let was_reset = ref false in
     match
-      if Connection.stale c then Stale
-      else (
-        Connection.set_deadline c flow_deadline ;
-        if e.dirty && not (time_left ()) then Margin_step
-        else
-          match
-            if e.dirty then (
-              match Connection.reset c with
-              | r ->
-                  r
-              | exception (Fiber.Cancelled _ as ex) ->
-                  Atomic.incr Private.cancel_in_reset ;
-                  raise ex )
-            else Ok ()
-          with
-          | exception (Fiber.Cancelled _ as ex) ->
-              Cancel_step ex
-          | Error err ->
-              Reset_step err
-          | Ok () ->
-              was_reset := e.dirty ;
-              if not (time_left ()) then Margin_step
-              else
-                (* No wait between the margin check and the function. *)
-                let outcome, event, held_end =
-                  f {c; dirty= e.dirty && not !was_reset}
-                in
-                Ran_step (outcome, event, held_end) )
+      (* A cancel at the lock of a TLS session in the stale check is a cancel at
+         the checkout: its event comes (Cancelled_before). The stale check broke
+         the connection first. *)
+      match Connection.stale c with
+      | exception (Fiber.Cancelled _ as ex) ->
+          Cancel_step ex
+      | true ->
+          Stale
+      | false -> (
+          Connection.set_deadline c flow_deadline ;
+          if e.dirty && not (time_left ()) then Margin_step
+          else
+            match
+              if e.dirty then (
+                match Connection.reset c with
+                | r ->
+                    r
+                | exception (Fiber.Cancelled _ as ex) ->
+                    Atomic.incr Private.cancel_in_reset ;
+                    raise ex )
+              else Ok ()
+            with
+            | exception (Fiber.Cancelled _ as ex) ->
+                Cancel_step ex
+            | Error err ->
+                Reset_step err
+            | Ok () ->
+                was_reset := e.dirty ;
+                if not (time_left ()) then Margin_step
+                else
+                  (* No wait between the margin check and the function. *)
+                  let outcome, event, held_end =
+                    f {c; dirty= e.dirty && not !was_reset}
+                  in
+                  Ran_step (outcome, event, held_end) )
     with
     | exception ex ->
         (* A bug of Cistern. *)

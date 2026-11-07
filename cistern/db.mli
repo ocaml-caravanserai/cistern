@@ -32,9 +32,16 @@ val with_db :
     Phase 1.2 has no [KILL]: a cancelled statement keeps running on the server
     until it ends, and its session stays until then.
 
+    TLS (phase 1.4) takes its randomness from the default generator of
+    mirage-crypto-rng. Set it one time before [with_db], with
+    [Mirage_crypto_rng_unix.use_default ()]: that generator is safe on many
+    domains, and a Fortuna generator is not (the pool connects from fibers on
+    many domains).
+
     @raise Invalid_argument
       if [pool_size] is not 1 to 1000, or [max_lifetime] or [checkout_timeout]
-      is not positive. *)
+      is not positive, or if [config] needs TLS and no default generator is set
+      (before any fiber starts). *)
 
 val exec :
   ?timeout:Weft.Span.t -> t -> 'a Stmt.t -> ('a, Cistern_core.Error.t) result

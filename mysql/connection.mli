@@ -39,20 +39,32 @@ val connect : Config.t -> (t, Cistern_core.Error.t) result
       transaction and never ends the session.
 
     The rules:
-    - A configuration that needs TLS gives
-      [Connect "TLS is not supported before phase 1.4"] at once: before the DNS
-      resolve, and before a socket opens.
+    - A configuration that needs TLS raises [Invalid_argument] if no default
+      generator of mirage-crypto-rng is set ({!check_rng}), before the DNS
+      resolve and the socket.
+    - TLS (DESIGN.md, "Handshake"): the CA file of [ssl-ca] is read first (a
+      regular file of at most 1 MiB; a missing file and a path through a file
+      give short messages, and a file with no valid certificate gives a fixed
+      message with no part of the file). Then the greeting must have
+      [CLIENT_SSL], the SSL request goes with the sequence id 1, the reader must
+      hold no byte, and [Weft_tls.client] checks the certificate ({!Tls_setup}).
+      A failure of TLS gives [Connect "TLS: <cause>"], with the cause escaped
+      with its first and its last 100 bytes ({!Wire.peer_text_ends}: x509 puts
+      the cause at the end). The handshake response then has the sequence id 2.
     - A host name goes to [Weft.Dns.resolve], and the client tries the addresses
       in order. An IP address and [localhost] (127.0.0.1) go straight to the
       connect.
-    - One timeout of 10 s covers the resolve, the connect, the greeting, the
-      authentication and the two round trips.
+    - One timeout of 10 s covers the read of the CA file, the resolve, the
+      connect, the greeting, the TLS handshake, the authentication and the two
+      round trips.
     - The server must have [CLIENT_PROTOCOL_41], [CLIENT_SECURE_CONNECTION],
       [CLIENT_PLUGIN_AUTH], [CLIENT_DEPRECATE_EOF] and [CLIENT_CONNECT_WITH_DB].
     - The authentication: [mysql_native_password], or the fast path of
       [caching_sha2_password]. The full path sends the password in clear text
-      only on a Unix socket with [allow-cleartext=socket]. Else the connection
-      closes, no password byte goes, and the result is
+      only on a Unix socket with [allow-cleartext=socket], or in a TLS session
+      that is verified: [Verify_identity] with [ssl-ca], or a pin. An
+      authenticator alone is not verified. Else the connection closes, no
+      password byte goes, and the result is
       [Connect "the server asks for full authentication; use VERIFY_IDENTITY
        with ssl-ca, a pinned certificate (ssl-fingerprint), or
        allow-cleartext=socket"]. At most one [AuthSwitchRequest], to one of the
@@ -65,6 +77,11 @@ val connect : Config.t -> (t, Cistern_core.Error.t) result
       [Weft.Fiber.Cancelled]. *)
 
 val info : t -> info
+
+val check_rng : string -> unit
+(** [check_rng name] raises [Invalid_argument] for the function [name] if no
+    default generator of mirage-crypto-rng is set: the same test as [Weft_tls].
+*)
 
 (** {1 Commands}
 
@@ -152,8 +169,14 @@ val stale : t -> bool
 (** [stale t] is the check of an idle connection at the checkout of the pool:
     true if the connection is closed or broken, if the reader holds bytes, or if
     the flow has bytes or the end of the stream ([Flow.read_now]: for example
-    error 4031 at the idle timeout of MySQL), or if the read raises. A stale
-    connection is broken. It waits for nothing. *)
+    error 4031 at the idle timeout of MySQL), or if the read raises
+    [Flow.Closed], [Flow.Timeout] or [Weft.Net.Error] (on TLS, the end with no
+    [close_notify]). A TLS record with no data (a session ticket) is not stale.
+    A stale connection is broken. It waits for nothing.
+
+    @raise Weft.Fiber.Cancelled
+      after the connection breaks, for a cancel in [read_now] (the lock of a TLS
+      session). Each other exception also breaks the connection first. *)
 
 val abort : t -> bool
 (** [abort t] breaks the connection and closes the flow. It sends nothing, never

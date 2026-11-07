@@ -25,7 +25,15 @@ val peer_text : limit:int -> string -> string
     [s] between double quotes, with [\xNN] for each other byte, a double quote
     and a backslash, and ["..."] if [s] is longer. Thus a hostile peer cannot
     put control bytes or a long text into a log. The plugin name uses a limit of
-    64, and the text of a TLS failure a limit of 200 (phase 1.4). *)
+    64. *)
+
+val peer_text_ends : half:int -> string -> string
+(** [peer_text_ends ~half s] is {!peer_text} with a limit of [2 * half] for a
+    text of at most [2 * half] bytes. A longer text keeps its first and its last
+    [half] bytes, each part as {!peer_text} gives it, with ["..."] between them.
+    The text of a TLS failure (phase 1.4) uses it with [half = 100]: x509 puts
+    the cause (a wrong name, the two fingerprints) at the end, after the
+    certificate. *)
 
 (** A payload and a position in it. *)
 type cursor

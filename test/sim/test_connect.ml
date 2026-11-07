@@ -752,13 +752,11 @@ let tests =
               [] (connect_close config)
           in
           equal string expected result )
-    ; test "TLS is refused before the DNS resolve and a socket" (fun () ->
+    ; test "the CA file comes before the DNS resolve and a socket" (fun () ->
+          (* Phase 1.4: the CA file is read first, inside the limit of 10 s. *)
           let config =
-            Result.get_ok
-              (C.make
-                 ~tls:(C.Tls {mode= Required; ca= None; fingerprint= None})
-                 ~address:(C.Tcp {host= "slow"; port= 3306})
-                 ~user:"u" ~password ~database:"db" () )
+            Tls_fixture.config ~host:"slow" ~ca:"/nonexistent/ca.pem"
+              Verify_identity
           in
           let result, _ =
             F.run
@@ -771,8 +769,7 @@ let tests =
                   (Weft_sim.open_fds sim = fds)
                   (Span.equal (Time.diff Mono (Time.now Mono) t0) Span.zero) )
           in
-          equal string "Connect TLS is not supported before phase 1.4 true true"
-            result )
+          equal string "Connect the CA file does not exist true true" result )
     ; test "a cancel of the connect closes the socket" (fun () ->
           let result, _ =
             F.run

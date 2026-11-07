@@ -24,7 +24,12 @@ type info =
   ; innodb_rollback_on_timeout: bool
   ; max_allowed_packet: int }
 
-type transport = Tcp_transport | Unix_transport
+(* The transport of an open connection. [verified]: the TLS session passed a
+   check that the clear-text rule trusts (Tls_setup). *)
+type transport =
+  | Tcp_transport
+  | Unix_transport
+  | Tls_transport of {verified: bool}
 
 type t =
   { config: Config.t
@@ -129,8 +134,8 @@ let greeting r =
         ; (Connect_with_db, "CLIENT_CONNECT_WITH_DB") ] ;
       g
 
-(* The capabilities of DESIGN.md "Handshake". CLIENT_SSL is never set in phase
-   1.1. *)
+(* The capabilities of DESIGN.md "Handshake". The TLS session adds
+   CLIENT_SSL. *)
 let client_capabilities () =
   List.fold_left
     (fun acc c -> acc lor Message.bit c)
@@ -157,21 +162,28 @@ let gate_message () =
 
 (* The clear-text gate. The one place that writes the password calls it. It
    reads the transport of the open connection and the address of the
-   configuration: only a Unix socket with allow-cleartext=socket. *)
+   configuration: a Unix socket with allow-cleartext=socket, or a TLS session
+   that is verified (VERIFY_IDENTITY with ssl-ca, or a pin). *)
 let may_send_cleartext ~transport config =
-  match Config.address config with
-  | Config.Socket {allow_cleartext; _} ->
-      allow_cleartext && transport = Unix_transport
-  | Tcp _ ->
+  match (Config.address config, transport) with
+  | Config.Socket {allow_cleartext; _}, Unix_transport ->
+      (* A socket always opens a Unix transport (Config refuses TLS on a
+         socket). The pattern keeps the gate exact if this changes. *)
+      allow_cleartext
+  | Tcp _, Tls_transport {verified} ->
+      verified
+  | _ ->
       false
 
-let authenticate config ~transport r w (g : Message.greeting) =
+(* [seq] is the sequence id of the handshake response: 1, or 2 after the SSL
+   request. *)
+let authenticate config ~transport ~capabilities ~seq r w (g : Message.greeting)
+    =
   let password = Config.password config in
   let plugin = if g.auth_plugin = sha2_name then sha2_name else native_name in
-  Packet.write w ~seq:1 (fun w ->
-      Message.write_handshake_response w
-        ~capabilities:(client_capabilities () land g.capabilities)
-        ~charset:45 ~user:(Config.user config)
+  Packet.write w ~seq (fun w ->
+      Message.write_handshake_response w ~capabilities ~charset:45
+        ~user:(Config.user config)
         ~auth:(scramble plugin ~password ~nonce:g.scramble)
         ~database:(Config.database config) ~plugin ) ;
   Writer.flush w ;
@@ -224,7 +236,7 @@ let authenticate config ~transport r w (g : Message.greeting) =
     | _ ->
         fail "authentication: a packet that the client does not know"
   in
-  loop ~seq:2 ~plugin ~switched:false ~fast:false
+  loop ~seq:(Packet.next seq) ~plugin ~switched:false ~fast:false
 
 (* One COM_QUERY of the session and its reply. *)
 let round_trip r w what sql =
@@ -317,12 +329,133 @@ let session r w ~thread_id =
   | _ ->
       fail "round trip 2: the reply is not an OK"
 
+(* The largest CA file (the plan of phase 1.4, D2). *)
+let ca_file_limit = 1 lsl 20
+
+(* A short message for an error of the file system with the CA file: the two
+   usual errors in words, else the error of weft (no content of the file). *)
+let ca_error e f =
+  match e with
+  | Weft.Net.No_entry ->
+      "the CA file does not exist"
+  | Not_dir ->
+      "a part of the path of the CA file is not a directory"
+  | e ->
+      "the CA file cannot be read: " ^ Printexc.to_string (Weft.Net.Error (e, f))
+
+(* The content of the CA file. A file that is not regular (a FIFO can make the
+   open wait) or that is larger than the limit is refused. *)
+let read_ca_file path =
+  match Weft.File.stat path with
+  | exception Weft.File.Error (e, f) ->
+      fail "%s" (ca_error e f)
+  | {kind= Weft.File.Regular; size; _} when size <= ca_file_limit -> (
+    match
+      Weft.File.openfile
+        ([Weft.File.Read]
+        [@mutate off "openfile with no flag also opens the file for a read"] )
+        path
+    with
+    | exception Weft.File.Error (e, f) ->
+        fail "%s" (ca_error e f)
+    | file ->
+        Fun.protect
+          ~finally:(fun () -> Weft.File.close file)
+          (fun () ->
+            (* At most the size of the stat: a file that grows after it does not
+               make the read longer. *)
+            let b = Bytes.create size in
+            let rec go got =
+              if got = size then Bytes.to_string b
+              else
+                match
+                  Weft.File.read file b got
+                    (( size - got )
+                     [@mutate
+                       off
+                         "the simulator gives the whole file in the first \
+                          read, where got is 0"] )
+                with
+                | 0 ->
+                    (* The file became shorter after the stat. *)
+                    Bytes.sub_string b 0 got
+                    [@mutate
+                      off
+                        "only a file that becomes shorter between the stat and \
+                         the read comes here: no test can make it"]
+                | n ->
+                    go (got + n)
+                | exception Weft.File.Error (e, f) ->
+                    fail "%s" (ca_error e f)
+            in
+            go 0 ) )
+  | _ ->
+      fail "the CA file is not a regular file of at most 1 MiB"
+
+(* The TLS configuration of [config], before the network: the CA file and
+   Tls_setup. *)
+let tls_setup config =
+  let cas =
+    match Config.tls config with
+    | Config.Tls {ca= Some path; _} -> (
+      match Tls_setup.ca_certificates (read_ca_file path) with
+      | Ok cas ->
+          cas
+      | Error m ->
+          fail "%s" m )
+    | _ ->
+        []
+  in
+  match Tls_setup.make ~time:Tls_setup.now ~cas config with
+  | Ok s ->
+      s
+  | Error m ->
+      fail "%s" m
+
+(* The SSL request and the TLS handshake on [flow]. The server must wait for the
+   ClientHello (fact T1 of the plan of phase 1.4): a byte in the reader before
+   the handshake is a sign of an attack, because the session would read it as if
+   it came over TLS. *)
+let start_tls (s : Tls_setup.t) ~capabilities flow reader writer
+    (g : Message.greeting) =
+  if not (Message.has g.capabilities Ssl) then fail "the server has no TLS" ;
+  Packet.write writer ~seq:1 (fun w ->
+      Message.write_ssl_request w ~capabilities ~charset:45 ) ;
+  Writer.flush writer ;
+  if Reader.buffered reader > 0 then
+    fail "bytes from the server before the TLS handshake" ;
+  match Weft_tls.client s.config flow with
+  | tls, _ ->
+      tls
+  | exception Weft_tls.Handshake_error m ->
+      fail "TLS: %s" (Wire.peer_text_ends ~half:100 m)
+
 let establish config opened =
-  let flow, transport = open_flow config in
-  opened := Some flow ;
-  let reader = Packet.reader flow and writer = Packet.writer flow in
+  let setup =
+    if Config.needs_tls config then Some (tls_setup config) else None
+  in
+  let tcp, transport = open_flow config in
+  opened := Some tcp ;
+  let reader = Packet.reader tcp and writer = Packet.writer tcp in
   let g = greeting reader in
-  authenticate config ~transport reader writer g ;
+  let capabilities = client_capabilities () land g.capabilities in
+  let flow, reader, writer, transport, capabilities, seq =
+    match setup with
+    | None ->
+        (tcp, reader, writer, transport, capabilities, 1)
+    | Some s ->
+        let capabilities = capabilities lor Message.bit Ssl in
+        (* A failure closes the TCP flow of [opened], and thus the TLS session,
+           whose close is the close of the TCP flow. *)
+        let flow = start_tls s ~capabilities tcp reader writer g in
+        ( flow
+        , Packet.reader flow
+        , Packet.writer flow
+        , Tls_transport {verified= s.verified}
+        , capabilities
+        , 2 )
+  in
+  authenticate config ~transport ~capabilities ~seq reader writer g ;
   let info, status = session reader writer ~thread_id:g.thread_id in
   { config
   ; flow
@@ -339,32 +472,42 @@ let establish config opened =
 (* The text of a network error, with the constructor and the function. *)
 let net_error e f = Printexc.to_string (Weft.Net.Error (e, f))
 
+(* The check of the generator of TLS (the plan of phase 1.4, D1): the same test
+   as Weft_tls. *)
+let check_rng name =
+  match Mirage_crypto_rng.default_generator () with
+  | _ ->
+      ()
+  | exception Mirage_crypto_rng.No_default_generator ->
+      invalid_arg
+        ( name
+        ^ ": no default generator for TLS: call \
+           Mirage_crypto_rng_unix.use_default ()" )
+
 let connect config =
-  if Config.needs_tls config then
-    Error (Error.Connect "TLS is not supported before phase 1.4")
-  else
-    let opened = ref None in
-    let close_opened () = Option.iter Flow.close !opened in
-    let failed m = close_opened () ; Error (Error.Connect m) in
-    match
-      Weft.Fiber.with_timeout Weft.Clock.Mono (Weft.Span.s 10) (fun () ->
-          establish config opened )
-    with
-    | t ->
-        Ok t
-    | exception Fail m ->
-        failed m
-    | exception Weft.Fiber.Timeout ->
-        failed "timeout"
-    | exception (End_of_file | Flow.Closed) ->
-        failed "the server closed the connection"
-    | exception Weft.Net.Error (Weft.Net.No_entry, "Dns.resolve") ->
-        (* Weft.Dns.Error is the exception Weft.Net.Error. *)
-        failed "the host name is not known"
-    | exception Weft.Net.Error (e, f) ->
-        failed ("network error: " ^ net_error e f)
-    | exception e ->
-        close_opened () ; raise e
+  if Config.needs_tls config then check_rng "Connection.connect" ;
+  let opened = ref None in
+  let close_opened () = Option.iter Flow.close !opened in
+  let failed m = close_opened () ; Error (Error.Connect m) in
+  match
+    Weft.Fiber.with_timeout Weft.Clock.Mono (Weft.Span.s 10) (fun () ->
+        establish config opened )
+  with
+  | t ->
+      Ok t
+  | exception Fail m ->
+      failed m
+  | exception Weft.Fiber.Timeout ->
+      failed "timeout"
+  | exception (End_of_file | Flow.Closed) ->
+      failed "the server closed the connection"
+  | exception Weft.Net.Error (Weft.Net.No_entry, "Dns.resolve") ->
+      (* Weft.Dns.Error is the exception Weft.Net.Error. *)
+      failed "the host name is not known"
+  | exception Weft.Net.Error (e, f) ->
+      failed ("network error: " ^ net_error e f)
+  | exception e ->
+      close_opened () ; raise e
 
 (* One user: a second call at the same time raises. *)
 let with_busy t f =
@@ -623,8 +766,14 @@ let stale t =
             false
         | Some _ ->
             true
-        | exception _ ->
+        | exception (Flow.Closed | Flow.Timeout | Weft.Net.Error _) ->
             true
+        | exception e ->
+            (* A cancel at the state lock of a TLS flow, or a bug: the
+               connection breaks, and the exception goes up. *)
+            let bt = Printexc.get_raw_backtrace () in
+            break t ;
+            Printexc.raise_with_backtrace e bt
       in
       if stale then break t ;
       stale )
