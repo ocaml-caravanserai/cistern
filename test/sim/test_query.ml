@@ -201,6 +201,24 @@ let tests =
           in
           (* The value "x" of the second result set is not decoded. *)
           equal string "a | Int 1 / Int 2; ok" query ;
+          let text, _ =
+            after_handshake
+              (with_connection script (fun c ->
+                   match Conn.Private.query_text c (sql "CALL p()") with
+                   | Ok rows ->
+                       String.concat " / "
+                         (List.map
+                            (fun row ->
+                              String.concat ","
+                                (Array.to_list
+                                   (Array.map
+                                      (Option.value ~default:"NULL")
+                                      row ) ) )
+                            rows )
+                   | Error e ->
+                       error_text e ) )
+          in
+          equal string "1 / 2" text ;
           let exec, _ =
             after_handshake
               (with_connection script (fun c ->
@@ -218,7 +236,21 @@ let tests =
                        :: rs [int_column "c"] [F.row [Some "3"]] ) ]
                  (fun c -> result_text (Conn.query c (sql "CALL q()"))) )
           in
-          equal string "c | Int 3" first_ok )
+          equal string "c | Int 3" first_ok ;
+          let no_rows, _ =
+            after_handshake
+              (with_connection
+                 [F.Recv; F.Send (1, F.ok ())]
+                 (fun c ->
+                   match Conn.Private.query_text c (sql "DO 1") with
+                   | Ok [] ->
+                       "no rows"
+                   | Ok _ ->
+                       "rows"
+                   | Error e ->
+                       error_text e ) )
+          in
+          equal string "no rows" no_rows )
     ; cases "an error in a part of the reply"
         ~id:(fun (n, _, _) -> n)
         [ ( "after the rows"
@@ -422,9 +454,39 @@ let tests =
                  ; F.Send (1, F.ok ()) ]
                  (fun c ->
                    let a = exec_text (Conn.exec c (sql "INSERT")) in
-                   a ^ "; " ^ unit_text (Conn.ping c) ) )
+                   let last () =
+                     match Conn.Private.last_error c with
+                     | Some e ->
+                         Printf.sprintf "%d %s %s" e.code e.sqlstate e.message
+                     | None ->
+                         "none"
+                   in
+                   let l1 = last () in
+                   let p = unit_text (Conn.ping c) in
+                   String.concat "; " [a; l1; p; last ()] ) )
           in
-          equal string "Driver 1317 28000; ok" result )
+          equal string "Driver 1317 28000; 1317 28000 interrupted; ok; none"
+            result )
+    ; test "the last error, then a call on the broken connection" (fun () ->
+          let result, _ =
+            after_handshake
+              (with_connection
+                 [F.Recv; F.Send (1, F.err 1053 "shutdown")]
+                 (fun c ->
+                   let last () =
+                     match Conn.Private.last_error c with
+                     | Some e ->
+                         string_of_int e.code
+                     | None ->
+                         "none"
+                   in
+                   let a = exec_text (Conn.exec c (sql "INSERT")) in
+                   let l1 = last () in
+                   let b = unit_text (Conn.ping c) in
+                   String.concat "; " [a; l1; b; last ()] ) )
+          in
+          equal string "Outcome_unknown statement; 1053; Connection_lost; none"
+            result )
     ; test "a cancel of a command" (fun () ->
           let result, received =
             after_handshake

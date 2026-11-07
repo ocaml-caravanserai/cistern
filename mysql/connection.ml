@@ -33,6 +33,7 @@ type t =
   ; writer: Writer.t
   ; info: info
   ; mutable status: int
+  ; mutable last_error: Message.err option
   ; mutable closed: bool
   ; mutable broken: bool
   ; busy: bool Atomic.t }
@@ -349,6 +350,7 @@ let establish config opened =
   ; writer
   ; info
   ; status
+  ; last_error= None
   ; closed= false
   ; broken= false
   ; busy= Atomic.make false }
@@ -492,12 +494,18 @@ let replies t =
    cancel) breaks the connection and goes up. *)
 let command ?(always_break = false) t kind f =
   with_busy t (fun () ->
+      t.last_error <- None ;
       if t.closed || t.broken then Error Error.Connection_lost
       else
         match f () with
         | v ->
             v
         | exception Event e ->
+            ( match e with
+            | Outcome.Server_error err ->
+                t.last_error <- Some err
+            | _ ->
+                () ) ;
             let error, state = Outcome.decide t.info.dialect kind e in
             if always_break || state = Outcome.Broken then break t ;
             Error error
@@ -584,6 +592,20 @@ let reset t =
 
 module Private = struct
   let reset_connection t = ok_command t [Reset_connection]
+
+  let last_error t = t.last_error
+
+  let query_text t raw =
+    run_query t raw (fun replies ->
+        match
+          List.find_map
+            (function Resultset.Rows r, _ -> Some r.rows | _ -> None)
+            replies
+        with
+        | Some rows ->
+            Ok rows
+        | None ->
+            Ok [] )
 end
 
 let close t =

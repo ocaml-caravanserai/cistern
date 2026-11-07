@@ -20,7 +20,12 @@
 #                       Stop SERVER, or each test server that runs.
 #   make integration SERVER=...
 #                       The integration suite against a test server that
-#                       runs (make db-up first).
+#                       runs (make db-up first), with the deterministic
+#                       claims.
+#   make integration-timing SERVER=...
+#                       The timing claims (C8a, C8b, C9).
+#   make integration-shutdown SERVER=...
+#                       The claim C8c. It stops the server.
 #   make db-errors      Compare the names of test/db/errors.tsv with perror
 #                       of the server packages (no server runs).
 #
@@ -106,7 +111,8 @@ OCAML55_MUTANTS := \
   test/ocaml55/ocaml55.ml:28:49:sub
 
 .PHONY: help check-windtrap check-scope mutate mutate-all mutate-report \
-  mutate-arm check-ocaml55 db-up db-check db-down db-errors integration
+  mutate-arm check-ocaml55 db-up db-check db-down db-errors integration \
+  integration-timing integration-shutdown
 
 help:
 	@sed -n '1,/^$$/p' Makefile | sed 's/^# \{0,1\}//'
@@ -184,11 +190,19 @@ db-errors:
 # path of the env file of the server, and runs each time: it is not a dune
 # rule that a cache can skip. The shell makes the path absolute, so that a
 # DB_DIR with a space works.
-integration:
+#
+# integration runs the deterministic group (with the deterministic claims).
+# integration-timing runs the timing claims, and integration-shutdown the
+# claim that stops the server (make db-up after it). The nightly db.yml runs
+# the two, never the job of a pull request.
+integration: GROUP = deterministic
+integration-timing: GROUP = timing
+integration-shutdown: GROUP = shutdown
+integration integration-timing integration-shutdown:
 	@test -n "$(SERVER)" || { echo "Give SERVER=mysql84, mariadb114 or mariadb118."; exit 2; }
 	$(DUNE) build test/integration/integration.exe
 	@dir="$(or $(DB_DIR),.db)"; \
 	case "$$dir" in /*) ;; *) dir="$$(pwd)/$$dir" ;; esac; \
-	echo "CISTERN_DB_ENV=$$dir/$(SERVER)/env"; \
-	CISTERN_DB_ENV="$$dir/$(SERVER)/env" \
+	echo "CISTERN_DB_ENV=$$dir/$(SERVER)/env CISTERN_GROUP=$(GROUP)"; \
+	CISTERN_DB_ENV="$$dir/$(SERVER)/env" CISTERN_GROUP=$(GROUP) \
 	  ./_build/default/test/integration/integration.exe
