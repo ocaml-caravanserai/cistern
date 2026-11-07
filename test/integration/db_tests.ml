@@ -254,7 +254,11 @@ let deterministic =
           in_weft (fun () ->
               warm () ;
               let first_id = last_session_id () in
-              let holders = ref [] and waiter = ref "" and after = ref "" in
+              (* The forks can run on other domains (Weft_os runs up to 4): the
+                 values that they give are under a mutex or in an Atomic. *)
+              let m = Mutex.create () in
+              let holders = ref [] and waiter = Atomic.make "" in
+              let after = ref "" in
               Fiber.scope (fun s ->
                   let last = ref None in
                   Db.with_db ~pool_size:2 (config ()) (fun db ->
@@ -262,11 +266,11 @@ let deterministic =
                       for _ = 1 to 2 do
                         Fiber.fork s (fun () ->
                             let r = first (Db.exec db (q "SELECT SLEEP(1)")) in
-                            holders := r :: !holders )
+                            Mutex.protect m (fun () -> holders := r :: !holders) )
                       done ;
                       Time.sleep Weft.Clock.Mono (Span.ms 200) ;
                       Fiber.fork s (fun () ->
-                          waiter := first (Db.exec db (q "SELECT 1")) ) ;
+                          Atomic.set waiter (first (Db.exec db (q "SELECT 1"))) ) ;
                       Time.sleep Weft.Clock.Mono (Span.ms 100) ) ;
                   after :=
                     match Db.exec (Option.get !last) (q "SELECT 2") with
@@ -276,8 +280,9 @@ let deterministic =
                         m ) ;
               (* The holders end their statements. Their connections come back
                  to a closed pool, and the pool aborts them. *)
-              equal (list string) ["Int 0"; "Int 0"] !holders ;
-              equal string "Connection_lost" !waiter ;
+              equal (list string) ["Int 0"; "Int 0"]
+                (Mutex.protect m (fun () -> !holders)) ;
+              equal string "Connection_lost" (Atomic.get waiter) ;
               equal string "Db.t used after with_db" !after ;
               wait_until "end of the sessions of the test user" (fun () ->
                   user_sessions ~after:first_id () = 0 ) ) ) ]
