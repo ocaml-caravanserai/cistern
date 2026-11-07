@@ -702,7 +702,7 @@ Defaults:
 ### Handshake
 
 1. Read the server greeting (protocol v10): capabilities, the authentication plugin, the 20-byte scramble, and the MariaDB extended capabilities when the `CLIENT_MYSQL` bit is clear. The greeting decides only the framing and the capabilities.
-2. Client capabilities: `CLIENT_PROTOCOL_41`, `CLIENT_SECURE_CONNECTION`, `CLIENT_PLUGIN_AUTH`, `CLIENT_DEPRECATE_EOF`, `CLIENT_FOUND_ROWS`, `CLIENT_TRANSACTIONS`, `CLIENT_CONNECT_WITH_DB`, `CLIENT_MULTI_RESULTS`, and `CLIENT_SSL` with TLS. Not set: `CLIENT_MULTI_STATEMENTS`, `CLIENT_LOCAL_FILES`, `CLIENT_SESSION_TRACK`, `MARIADB_CLIENT_PROGRESS`.
+2. Client capabilities: `CLIENT_PROTOCOL_41`, `CLIENT_SECURE_CONNECTION`, `CLIENT_PLUGIN_AUTH`, `CLIENT_DEPRECATE_EOF`, `CLIENT_FOUND_ROWS`, `CLIENT_TRANSACTIONS`, `CLIENT_CONNECT_WITH_DB`, `CLIENT_MULTI_RESULTS`, and `CLIENT_SSL` with TLS (phase 1.4), each only if the server has it. A server with no `CLIENT_PROTOCOL_41`, `CLIENT_SECURE_CONNECTION`, `CLIENT_PLUGIN_AUTH`, `CLIENT_DEPRECATE_EOF` or `CLIENT_CONNECT_WITH_DB` gives `Connect`. A greeting of another protocol also gives `Connect`. The first auth response uses the plugin of the greeting if it is one of the two plugins. Else it uses the native scramble with the name `mysql_native_password`, and the server then switches. Not set: `CLIENT_MULTI_STATEMENTS`, `CLIENT_LOCAL_FILES`, `CLIENT_SESSION_TRACK`, `MARIADB_CLIENT_PROGRESS`.
 3. Character set byte in the handshake: 45 (`utf8mb4_general_ci`), which exists on the two servers.
 4. TLS: the client sends the SSL request packet (sequence id 1; on MariaDB with the same extended capabilities in bytes 28 to 31), then starts `Weft_tls.client`. The reader must have no buffered bytes at this point. If it has, the client fails. The handshake response then has sequence id 2. Under `REQUIRED` and stronger modes, a server without `CLIENT_SSL` fails.
 5. The client checks at creation that the application set the TLS random generator (`mirage-crypto-rng`).
@@ -724,14 +724,18 @@ The socket rule is an explicit opt-in for every socket. A check of the path is n
 
 In other cases the client fails with `Connect "the server asks for full authentication; use VERIFY_IDENTITY, ssl-fingerprint, or allow-cleartext=socket"`. Thus a server or an attacker that answers `0x04` cannot get the password. With `DISABLED` over TCP, the first connect after each server restart needs the full path, so it fails with this message (documented).
 
-- `AuthSwitchRequest` to one of the two plugins: the client uses the first 20 bytes of the new plugin data (20 bytes and a NUL). Another length fails. A switch to another plugin gives `Connect "unsupported authentication plugin <name>"`. For example, MariaDB `root` uses `unix_socket` by default.
+- One function, `may_send_cleartext`, decides at the one place that writes the password: in phase 1.1, a Unix socket with `allow-cleartext=socket` (the opt-in is a part of the socket address). The password goes with a NUL at the end. When the gate refuses, the connection closes and nothing more goes.
+- `AuthMoreData` is accepted only for `caching_sha2_password`, and only `0x01 0x03` (then an OK) and `0x01 0x04` (then the gate). Another byte, a public key, or `0x04` after `0x03` gives `Connect`.
+- An empty password gives an empty auth response for the two plugins.
+- Note for `ssl-mode=DISABLED`: over plain TCP, the two scrambles let a passive listener attack the password offline, and the OK of MariaDB after the authentication holds a hash of the password hash.
+- `AuthSwitchRequest`, at most one, to one of the two plugins: the client uses the first 20 bytes of the new plugin data (20 bytes and a NUL). Another length fails. A switch to another plugin gives `Connect "unsupported authentication plugin <name>"`. A name that is not 1 to 64 printable ASCII bytes is escaped and cut. For example, MariaDB `root` uses `unix_socket` by default.
 - The integration tests run with TLS (`VERIFY_IDENTITY` with the test CA, and `ssl-fingerprint`) or a Unix socket with `allow-cleartext=socket`, and one test empties the authentication cache first.
 
 ### Session
 
 Three round trips after the authentication:
 
-1. `SELECT CONNECTION_ID(), @@version, @@version_comment, @@hostname, @@port, @@server_id, @@wait_timeout, @@innodb_rollback_on_timeout, @@max_allowed_packet`. All names exist on the two servers. The dialect comes from `@@version` and `@@version_comment` (`Dialect.of_version`): the text `mariadb` in one of them, with no regard to case, gives MariaDB, else MySQL. The pinned MySQL build has the comment `Source distribution`, thus the comment cannot identify MySQL. `@@version` has no `5.5.5-` prefix on the pinned servers. A version that does not start with `<major>.<minor>.<patch>` gives `Driver`.
+1. `SELECT CONNECTION_ID(), @@version, @@version_comment, @@hostname, @@port, @@server_id, @@wait_timeout, @@innodb_rollback_on_timeout, @@max_allowed_packet`. All names exist on the two servers. The dialect comes from `@@version` and `@@version_comment` (`Dialect.of_version`): the text `mariadb` in one of them, with no regard to case, gives MariaDB, else MySQL. The pinned MySQL build has the comment `Source distribution`, thus the comment cannot identify MySQL. `@@version` has no `5.5.5-` prefix on the pinned servers. A version that does not start with `<major>.<minor>.<patch>` gives `Connect`.
 2. `SET NAMES utf8mb4 COLLATE <collation of the dialect>, time_zone = '+00:00', sql_mode = 'STRICT_ALL_TABLES,NO_BACKSLASH_ESCAPES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION', autocommit = 1`. The `sql_mode` is a complete value, because some global modes break Cistern (for example MariaDB `EMPTY_STRING_IS_NULL`).
 3. Identity, in one `SELECT` that the dialect chooses (with no `CLIENT_MULTI_STATEMENTS`, one round trip has one statement):
    - MySQL: `SELECT @@server_uuid, UNIX_TIMESTAMP() - (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Uptime')`.
@@ -740,6 +744,14 @@ Three round trips after the authentication:
    - Any user can read `performance_schema.global_status` on MySQL 8.4 (verified in round 5: `table_global_status.cc` uses `pfs_truncatable_world_acl`).
    - If the query fails, `KILL` is off for this pool, and an event says why.
    - If the thread id of the greeting (4 bytes) is not the low 32 bits of `CONNECTION_ID()`, a proxy is probably between the client and the server. Then `KILL` is off for this pool, and an event says why. Not verified: that each common proxy (ProxySQL, MaxScale, MySQL Router) gives such a difference. `kill=false` stays the documented setting for proxies.
+
+The rules of the connect:
+
+- One timeout of 10 s covers the DNS resolve, the connect, the greeting, the authentication and the round trips of the session.
+- A host name goes to `Weft.Dns.resolve`, and the client tries the addresses in order. It tries the next address only after a network error. Thus a first address that accepts and never answers uses all of the 10 s.
+- An IP address and `localhost` go to the connect with no resolve.
+- Each failure of the connect gives `Connect msg`. When a server error caused it, `msg` has the error number. It does not have the server message, which can hold a user name.
+- After a failure of the transport, a bad packet, or a server error that ends the session, the connection is broken. Each later call gives `Connection_lost` before any I/O, and `close` sends no `COM_QUIT`.
 
 The identity of a connection is (`@@server_uuid` on MySQL, or (`@@hostname`, `@@port`, `@@server_id`) on MariaDB; the start time). `@@server_uuid` stays the same after a MySQL restart, so the start time is always part of the identity. With the exact start time, (identity, `CONNECTION_ID()`) names one session. Thread ids are not used again in one server lifetime before they wrap (believed, not verified). Thus version 1 has no `PROCESSLIST` check before `KILL`.
 
@@ -868,7 +880,7 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: close the connection
   - Each library with the mutation backend and a `.ml` file is in the `libraries` of a test stanza of a suite of `SUITES`, and each such test stanza links with `-linkall`. `make check-scope` examines this, so that the catalogue of the suites has each mutation site. `ppx_cistern` has no mutation backend until phase 3.
   - Before the mutation run, the suites run with no mutant armed, and a failure stops the gate. In the mutation run, each suite writes a verdict file or tells that no mutant is in its scope. A suite that does neither stopped early, and the gate fails.
 - The integration suites run under their own dune alias, not under `@runtest`. Thus `dune runtest` and the `checks` of the flake never need a database server.
-- Simulator tests (`Weft_sim`):
+- Simulator tests (`Weft_sim`), the suite `test/sim` of `SUITES`. A fake server listens on an address of the in-memory network and plays a script of packets that the test writes with its own encoders. The real `Connection.connect` connects to it, so that the address rules, the DNS, the timeout and each authentication path run in the gate. The fake server keeps each byte that it gets. At the end of each test, each fd of the simulator must be closed:
   - The weft shell of the pool: 1000 fibers, 4 virtual domains, 8 connections, timeouts and cancels at the same time as checkins; a connect fiber that raises does not stop `with_db`.
   - Deadlines with no real time, and deadlines that do not stay on a reused flow.
   - Cancel: the `KILL` goes to the control connection with the right id; a changed identity drops it; the slot is free after its age limit, and a waiter gets it without another operation; a control connection that the server closed (4031) is opened again, and the `KILL` is sent; an outer cancel of `with_db` still sends the queued `KILL`s; `with_db` ends when the killer is cancelled during a `sync`.
