@@ -132,4 +132,17 @@ val close : t -> unit
 module Private : sig
   val reset_connection : t -> (unit, Cistern_core.Error.t) result
   (** [COM_RESET_CONNECTION] alone, with no [SET] and no [COM_INIT_DB]. *)
+
+  val last_error : t -> Message.err option
+  (** The error packet of the last call, if its result came from one. Each call
+      clears it first, also a call on a broken connection. The claims tests read
+      the error number and the SQLSTATE of the server with it. *)
+
+  val query_text :
+       t
+    -> Cistern_core.Raw.t
+    -> (string option array list, Cistern_core.Error.t) result
+  (** [query_text t r] is {!query} with the text of the values as the server
+      sent them, with no map to [Value.t]. The claims tests read the text of
+      [DOUBLE] with it. *)
 end
