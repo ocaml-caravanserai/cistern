@@ -7,7 +7,11 @@
 
 module Writer = Weft_flow.Writer
 
-let written f =
+(* [written_with create f]: the bytes that [f] writes to the writer that
+   [create] makes. *)
+let written_with create f =
   let out = Buffer.create 64 in
-  let w = Writer.create (Weft_flow.Flow.of_string "" out) in
+  let w = create (Weft_flow.Flow.of_string "" out) in
   f w ; Writer.flush w ; Buffer.contents out
+
+let written f = written_with (fun flow -> Writer.create flow) f

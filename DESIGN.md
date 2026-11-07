@@ -117,8 +117,8 @@ All numbers of version 1 are in this table. The other sections refer to it.
 | Longest wait of an outer cancel of `with_db` | About 45 s: a `COMMIT` in its shield (30 s), then the drain (15 s). Documented. |
 | Keys in one `IN (...)` | 1000 |
 | Identifier length | 64 characters |
-| Statement size (write) | Less than the smaller of 16 MiB − 1 and `@@max_allowed_packet` (read at connect). The client checks the length before it sends. A hex literal doubles the size of a value, so one value can have at most about 8 MiB. |
-| Row size (read) | Less than 16 MiB − 1 for each packet |
+| Statement size (write) | The payload of `COM_QUERY` (1 byte and the SQL text) must be less than the smaller of `0xFFFFFF` and `@@max_allowed_packet` (read at connect), because the server refuses a payload equal to `max_allowed_packet` (verified on the pinned servers). Thus the SQL text has at most the smaller of the two, minus 2 bytes. The client checks the length before it sends (`Packet.query_fits`). A hex literal doubles the size of a value, so one value can have at most about 8 MiB. |
+| Row size (read) | At most `0xFFFFFE` bytes for each packet. A packet with the length `0xFFFFFF` (16 MiB or more) gives `Decode`, and the connection breaks |
 
 ## Repository and build
 
@@ -757,7 +757,8 @@ If any of these fails, the connection closes, and the checkout takes another con
 - A result header of `0xFB` (a `LOCAL INFILE` request) closes the connection with an error.
 - At checkout, the client calls `read_now` on the flow (not `readable`, because a TLS record with no data makes `readable` true). If the stream ended, or a packet came that the client did not ask for (for example error 4031, or 1053, or 1927), the client closes the connection and takes another one. No command was sent, so this is safe. This applies only at checkout. In a `Tx`, or between the operations of one statement, the same condition gives `Connection_lost`.
 - If the stream ends after a write, the write was sent: a write gives `Outcome_unknown`, and a read is tried one more time on another connection (only outside a `Tx`).
-- `Weft_flow.Writer` with packet frames (3-byte length and sequence id). One flush for each round trip. `Weft_flow.Reader` with `ensure`, integer reads and views at offsets.
+- `Weft_flow.Writer` with packet frames (3-byte length and sequence id). One flush for each round trip. `Weft_flow.Reader` with `ensure` and integer reads. The packet layer reads the 4 bytes of the header, consumes them, then reads the payload: an `ensure` of the header and a payload near 16 MiB would raise `Reader.Too_large`. The writer has a maximum frame of `0xFFFFFE` bytes and the header.
+- The sequence ids. Each command starts at 0 (the client), and each packet adds 1, modulo 256 (a result of 300 rows wraps). The authentication continues from the greeting (0) to the final OK, also across an `AuthSwitchRequest` and `AuthMoreData`. A reply packet with another id breaks the connection. An ERR with the id 0 where the first packet of the reply (id 1) is expected came before the command (rule R-SEQ0, for example 4031 at the idle timeout): see "Order of the error rules". Later in a reply (after the column count, or during the authentication), an ERR with the id 0 is a sequence error.
 
 ## Concurrency with weft
 
