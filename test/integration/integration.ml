@@ -282,9 +282,10 @@ let () =
     match Sys.getenv_opt "CISTERN_GROUP" with
     | None | Some "" | Some "deterministic" ->
         (* The Db tests first: they count the sessions of the test user. *)
-        (Db_tests.deterministic :: tests) @ [query_tests; Claims.deterministic]
+        (Db_tests.deterministic :: Tx_tests.deterministic :: tests)
+        @ [query_tests; Claims.deterministic]
     | Some "timing" ->
-        [Db_tests.timing; Claims.timing]
+        [Db_tests.timing; Tx_tests.timing; Claims.timing]
     | Some "shutdown" ->
         [Claims.shutdown]
     | Some g ->

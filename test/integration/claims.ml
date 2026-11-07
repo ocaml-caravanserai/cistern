@@ -160,7 +160,7 @@ let c3 =
           exec_ok c "DROP TABLE c3" ) )
 
 let c4 =
-  on both "C4: IN_TRANS in the OK of COM_PING" (fun () ->
+  on all "C4: IN_TRANS in the OK of COM_PING" (fun () ->
       warm () ;
       with_conn (user_conn ()) (fun c ->
           table c "c4" "(id INT PRIMARY KEY) ENGINE=InnoDB" ;
@@ -636,6 +636,83 @@ let c26 =
                 (admin (Printf.sprintf "SELECT COUNT(*) FROM %s.c26" database)) ;
               exec_ok c "DROP TABLE c26" ) ) )
 
+(* C27 (the fact R4 of the plan review of phase 1.3): root holds FLUSH TABLES
+   WITH READ LOCK on its own connection, the COMMIT of the test user waits, and
+   root polls PROCESSLIST until it sees the COMMIT, then KILL QUERY. *)
+let c27 =
+  on all "C27: KILL QUERY of a COMMIT that waits: 1317, a rollback" (fun () ->
+      warm () ;
+      with_conn (user_conn ()) (fun c ->
+          table c "c27" "(id INT PRIMARY KEY) ENGINE=InnoDB" ;
+          let id = (Conn.info c).connection_id in
+          exec_ok c "START TRANSACTION" ;
+          exec_ok c "INSERT INTO c27 VALUES (1)" ;
+          let commit =
+            with_conn (root ()) (fun r ->
+                exec_ok r "FLUSH TABLES WITH READ LOCK" ;
+                Fun.protect
+                  ~finally:(fun () -> exec_ok r "UNLOCK TABLES")
+                  (fun () ->
+                    Weft.Fiber.scope (fun s ->
+                        let p =
+                          Weft.Fiber.fork_promise s (fun () ->
+                              exec c (sql "COMMIT") )
+                        in
+                        let waits () =
+                          admin
+                            (Printf.sprintf
+                               "SELECT COUNT(*) FROM \
+                                information_schema.PROCESSLIST WHERE ID = %Ld \
+                                AND INFO = 'COMMIT'"
+                               id )
+                          = "1"
+                        in
+                        let rec poll n =
+                          if not (waits ()) then
+                            if n = 0 then failwith "c27: no COMMIT that waits"
+                            else (
+                              Weft.Time.sleep Weft.Clock.Mono (Weft.Span.ms 50) ;
+                              poll (n - 1) )
+                        in
+                        poll 100 ;
+                        ignore (admin (Printf.sprintf "KILL QUERY %Ld" id)) ;
+                        Weft.Promise.await p ) ) )
+          in
+          is_true ~msg:("1317: " ^ commit)
+            (String.starts_with ~prefix:"1317 70100" commit) ;
+          (* The connection stays, with no transaction, and the write is
+             gone. *)
+          equal string "ok" (unit_text (Conn.ping c)) ;
+          is_false (in_trans c) ;
+          equal string "0"
+            (admin (Printf.sprintf "SELECT COUNT(*) FROM %s.c27" database)) ;
+          exec_ok c "DROP TABLE c27" ) )
+
+(* C28 (the facts R1 and P7 of the plan of phase 1.3, and V4). *)
+let c28 =
+  on all "C28: a failed DDL commits first, TRUNCATE commits" (fun () ->
+      warm () ;
+      with_conn (user_conn ()) (fun c ->
+          table c "c28" "(id INT PRIMARY KEY) ENGINE=InnoDB" ;
+          table c "c28b" "(id INT) ENGINE=InnoDB" ;
+          exec_ok c "START TRANSACTION" ;
+          exec_ok c "INSERT INTO c28 VALUES (1)" ;
+          equal string "1050 42S01: Driver 1050 42S01"
+            (exec c (sql "CREATE TABLE c28 (id INT)")) ;
+          equal string "ok" (unit_text (Conn.ping c)) ;
+          is_false ~msg:"the ping after 1050" (in_trans c) ;
+          exec_ok c "START TRANSACTION" ;
+          exec_ok c "INSERT INTO c28 VALUES (2)" ;
+          is_true (in_trans c) ;
+          exec_ok c "TRUNCATE TABLE c28b" ;
+          is_false ~msg:"the OK of TRUNCATE" (in_trans c) ;
+          exec_ok c "ROLLBACK" ;
+          equal string "1,2"
+            (admin
+               (Printf.sprintf "SELECT GROUP_CONCAT(id ORDER BY id) FROM %s.c28"
+                  database ) ) ;
+          exec_ok c "DROP TABLE c28, c28b" ) )
+
 let deterministic =
   group "claims"
     [ c1
@@ -656,7 +733,9 @@ let deterministic =
     ; c20
     ; c21
     ; c22
-    ; c26 ]
+    ; c26
+    ; c27
+    ; c28 ]
 
 (* The timing claims. A connection A waits on a row lock that the admin holds;
    the killer polls the server until A waits, then acts. *)
