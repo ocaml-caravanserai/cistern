@@ -50,6 +50,11 @@ jobs:
       - name: Test
         if: ${{ steps.nix.outcome == 'success' && !cancelled() }}
         run: nix develop -c dune runtest --force
+      # The slow storm of the sim suite and random seeds of the stateful
+      # suite (DESIGN.md, "Tests"). The default run uses fixed seeds.
+      - name: Slow tests
+        if: ${{ steps.nix.outcome == 'success' && !cancelled() }}
+        run: nix develop -c make sim-slow
       # The packages and the checks of flake.nix, in the nix sandbox. A file
       # that the source of a package does not have gives a failure here.
       - name: Check the flake

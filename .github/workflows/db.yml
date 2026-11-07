@@ -85,3 +85,14 @@ jobs:
       - uses: cachix/install-nix-action@v31
       - name: Error names
         run: make db-errors
+
+  # The slow tests (make sim-slow): the storm of 1000 fibers of the sim suite,
+  # and random seeds in the stateful suite. No server runs.
+  slow:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Slow tests
+        run: nix develop -c make sim-slow
