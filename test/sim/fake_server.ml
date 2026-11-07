@@ -49,6 +49,22 @@ let err code msg = "\xff" ^ u16 code ^ "#28000" ^ msg
 
 let terminator = "\xfe\x00\x00\x02\x00\x00\x00"
 
+(* An OK packet (0x00) or a terminator (0xFE) with counts and status flags.
+   [affected] and [insert] are 8-byte values. *)
+let ok_with ?(header = '\x00') ?(affected = 0L) ?(insert = 0L) ?(status = 2) ()
+    =
+  let n8 v =
+    if Int64.compare v 0L >= 0 && Int64.compare v 251L < 0 then
+      String.make 1 (Char.chr (Int64.to_int v))
+    else
+      "\xfe"
+      ^ String.init 8 (fun i ->
+          Char.chr
+            (Int64.to_int
+               (Int64.logand (Int64.shift_right_logical v (8 * i)) 0xFFL) ) )
+  in
+  String.make 1 header ^ n8 affected ^ n8 insert ^ u16 status ^ "\x00\x00"
+
 let column name =
   "\x03def\x00\x00\x00" ^ lstr name
   ^ "\x00\x0c\x21\x00\x00\x01\x00\x00\xfd\x00\x00\x00\x00\x00"
@@ -86,6 +102,9 @@ type step =
   | Close  (** Close the connection. *)
   | Reset  (** Reset the connection. *)
   | Hang  (** Wait with no end. *)
+  | Read_bytes of int
+      (** Read at least this number of bytes, with no packet: [raw] keeps them.
+      *)
 
 (* The packets that the server read, and each byte that it got: [raw] from [pos]
    is the part of a packet that it did not read. *)
@@ -149,6 +168,8 @@ let play server flow script =
         Flow.reset flow
     | Hang :: _ ->
         sync never
+    | Read_bytes n :: rest ->
+        fill server flow n ; go rest
   in
   incr server_sockets ;
   Fun.protect

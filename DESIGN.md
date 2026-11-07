@@ -761,16 +761,23 @@ The identity of a connection is (`@@server_uuid` on MySQL, or (`@@hostname`, `@@
 
 Session reset. At checkin, the client marks the connection "dirty" if it ran a raw statement, or if the last OK packet had `SERVER_STATUS_IN_TRANS` outside a `Tx`. The checkin does no I/O. At the next checkout of a dirty connection, before the statement and under the deadline of that caller, the client runs:
 
-1. `COM_RESET_CONNECTION`. It sets all session variables back to their global values.
-2. Step 2 again (the complete `SET`).
-3. `COM_INIT_DB <database of the configuration>`, because a reset probably keeps the database of a raw `USE` (not verified; the MySQL `THD::cleanup_connection` does not change the database).
+1. `COM_RESET_CONNECTION`. It sets all session variables back to their global values: `time_zone` becomes `SYSTEM`, `sql_mode` the global mode, and the collation the default of the server. It removes the user variables, and it rolls back an open transaction (its OK has `IN_TRANS` clear).
+2. Step 2 again (the complete `SET`), because of these changes.
+3. `COM_INIT_DB <database of the configuration>`, because a reset keeps the database of a raw `USE` (seen on the pinned servers in the probes of the review of phase 1.1; claim C3 tests it).
 
-If any of these fails, the connection closes, and the checkout takes another connection. No statement was sent, so this is safe. Version 1 does not use session state tracking, because the typed API does not change session state.
+`Connection.reset` (phase 1.1) runs the three steps, and it is the only reset that `cistern.mysql` exports. `COM_RESET_CONNECTION` alone is only for the tests. If any of these fails, the connection closes, and the checkout takes another connection. No statement was sent, so this is safe. Version 1 does not use session state tracking, because the typed API does not change session state.
 
 ### Commands and packets
 
 - `COM_QUERY` (with a loop while `SERVER_MORE_RESULTS_EXISTS` is set), `COM_PING`, `COM_RESET_CONNECTION`, `COM_INIT_DB`, `COM_QUIT`.
-- A result header of `0xFB` (a `LOCAL INFILE` request) closes the connection with an error.
+- A result header of `0xFB` (a `LOCAL INFILE` request) closes the connection with `Decode`.
+- The results of a `COM_QUERY` (`Connection.query` and `Connection.exec`):
+  - `query` gives the first result set, and reads the other results to the end. A statement with no result set gives no columns and no rows.
+  - `exec` reads all the results, and gives the counts of the last OK.
+  - An ERR in any part is the result, and the parts before it are dropped.
+  - A value that does not decode gives `Decode` after the client read the whole reply. The connection stays usable.
+- The client checks the payload rule ("Limits and defaults") and the literals of `Raw` before it sends a byte. A failure gives `Invalid_value`, and the connection stays usable.
+- `Connection.status` gives the status flags of the last OK packet (for example `SERVER_STATUS_IN_TRANS`).
 - The values of a text result set (`Column`). The type code, the `UNSIGNED` flag (0x20) and the character set of the column definition choose the `Value.t`. Only the character set 63 (binary) has a meaning.
 
   | Type code | `Value.t` |
