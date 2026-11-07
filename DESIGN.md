@@ -41,8 +41,10 @@ At run time, for each statement:
 | Server | Version | Default authentication plugin |
 |---|---|---|
 | MySQL | 8.4 (LTS) | `caching_sha2_password` |
-| MariaDB | 11.4 (LTS) | `mysql_native_password` (not verified) |
-| MariaDB | 11.8 (LTS) | `mysql_native_password` (not verified) |
+| MariaDB | 11.4 (LTS) | `mysql_native_password` |
+| MariaDB | 11.8 (LTS) | `mysql_native_password` |
+
+The greeting of each server names its default plugin, and `CREATE USER ... IDENTIFIED BY` gives the same plugin (verified on MySQL 8.4.11, MariaDB 11.4.13 and 11.8.8 on 2026-11-07).
 
 In version 1:
 
@@ -971,5 +973,7 @@ The reviews of drafts 4 and 5 produced this PostgreSQL design. Keep it for the l
 ## Status
 
 Draft 12, 2026-11-06. It fixes the findings of review round 5 on draft 11. You approved it on 2026-11-06. Phase 0 started on 2026-11-06: weft PR 1a (ocaml-caravanserai/weft#55) and weft PR 1b (ocaml-caravanserai/weft#56) are merged. The owner merged PR 1b before phase 1.1, so the flake uses weft main. weft PR 1c (`weft-tls`) is merged too (ocaml-caravanserai/weft#58, 6f05d17), and weft main has `lib.tlsPackage`. Cistern takes it in phase 1.4. The caravan PR is done (ocaml-caravanserai/caravan#36, 2026-11-06): caravan main uses `weft.flow` and `weft-tls`. Thus all four prerequisite PRs are done: weft #55, #56 and #58, and caravan #36.
+
+Phase 0 is done (2026-11-07): ocaml-caravanserai/cistern#1 (the skeleton), #2, #3 and #4 (`cistern.core`) and #5 (the test servers). The CI of #5 passed on all jobs, also the three macOS legs of `db.yml`. Phase 1.1 starts with its plan of six pull requests.
 
 Round 5 found 3 critical defects. Two of them were in fixes of round 4 (the session reset and the killer drain), and one was a gap from an earlier draft (`Decimal`). Most of the critical and major findings are in the cancel path with `KILL`. Thus phases 1.1 to 1.4 ship without `KILL` (`kill=false`), and phase 1.5 adds it. The remaining risk is in server behavior that only a real server can show (the "not verified" claims). Phase 1.1 tests these claims first.
