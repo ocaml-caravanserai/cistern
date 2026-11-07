@@ -20,6 +20,8 @@
   weft
   (ptime
    (>= 1.2.0))
+  (digestif
+   (>= 1.0.0))
   (windtrap
    (and
     :with-test
