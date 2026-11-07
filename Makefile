@@ -40,7 +40,7 @@ DUNE := $(if $(IN_NIX_SHELL),dune,nix develop -c dune)
 MUTATE := --instrument-with ppx_windtrap.mutate
 
 # The suites of the gate. They use no database server.
-SUITES := test/unit test/prop test/ocaml55
+SUITES := test/unit test/prop test/sim test/ocaml55
 
 # The changed lines since BASE, as the output of `git diff -U0`. windtrap
 # needs an absolute path, because each suite runs in its own directory of

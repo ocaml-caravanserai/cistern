@@ -1,0 +1,9 @@
+; The simulator suite of cistern.mysql (DESIGN.md, "Tests"): a fake server in
+; the in-memory network of Weft_sim, and the real Connection.connect. -linkall
+; puts each module of the libraries in the catalogue of the mutation gate (make
+; check-scope).
+
+(test
+ (name test_sim)
+ (libraries cistern.core cistern.mysql weft weft.flow weft.sim windtrap)
+ (link_flags (-linkall)))
