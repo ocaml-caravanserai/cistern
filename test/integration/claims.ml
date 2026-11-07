@@ -595,6 +595,47 @@ let c22 =
             r ;
           equal string "ok" (unit_text (Conn.ping c)) ) )
 
+(* C26: a global completion_type = CHAIN chains a new transaction at each COMMIT
+   (its OK has IN_TRANS set). The session of Cistern sets NO_CHAIN in round trip
+   2 and after a reset. The global value comes back to DEFAULT after the test,
+   also if an earlier run stopped with CHAIN. *)
+let c26 =
+  on all "C26: completion_type = NO_CHAIN in the session" (fun () ->
+      warm () ;
+      Fun.protect
+        ~finally:(fun () ->
+          ignore (admin "SET GLOBAL completion_type = DEFAULT") )
+        (fun () ->
+          ignore (admin "SET GLOBAL completion_type = 'CHAIN'") ;
+          with_conn (user_conn ()) (fun c ->
+              table c "c26" "(id INT PRIMARY KEY) ENGINE=InnoDB" ;
+              let commit_then_flag () =
+                exec_ok c "START TRANSACTION" ;
+                exec_ok c "INSERT INTO c26 SELECT COUNT(*) FROM c26" ;
+                exec_ok c "COMMIT" ;
+                in_trans c
+              in
+              equal string "Text \"NO_CHAIN\""
+                (one_text c (sql "SELECT @@session.completion_type")) ;
+              is_false (commit_then_flag ()) ;
+              (* The reset gives the global CHAIN, then the SET of Cistern. *)
+              equal string "ok" (unit_text (Conn.reset c)) ;
+              equal string "Text \"NO_CHAIN\""
+                (one_text c (sql "SELECT @@session.completion_type")) ;
+              is_false (commit_then_flag ()) ;
+              (* The control: CHAIN in the session. The OK of COMMIT has
+                 IN_TRANS set (a new transaction), and the write is committed.
+                 Then a reset of the same connection gives NO_CHAIN again. *)
+              exec_ok c "SET SESSION completion_type = 'CHAIN'" ;
+              is_true ~msg:"CHAIN in the session" (commit_then_flag ()) ;
+              equal string "ok" (unit_text (Conn.reset c)) ;
+              equal string "Text \"NO_CHAIN\""
+                (one_text c (sql "SELECT @@session.completion_type")) ;
+              is_false (commit_then_flag ()) ;
+              equal string "4"
+                (admin (Printf.sprintf "SELECT COUNT(*) FROM %s.c26" database)) ;
+              exec_ok c "DROP TABLE c26" ) ) )
+
 let deterministic =
   group "claims"
     [ c1
@@ -614,7 +655,8 @@ let deterministic =
     ; c19
     ; c20
     ; c21
-    ; c22 ]
+    ; c22
+    ; c26 ]
 
 (* The timing claims. A connection A waits on a row lock that the admin holds;
    the killer polls the server until A waits, then acts. *)

@@ -34,7 +34,9 @@ val connect : Config.t -> (t, Cistern_core.Error.t) result
        @@max_allowed_packet]. The dialect comes from [@@version] and
       [@@version_comment].
     + [SET NAMES utf8mb4 COLLATE <collation of the dialect>, time_zone =
-       '+00:00', sql_mode = '<the complete mode>', autocommit = 1].
+       '+00:00', sql_mode = '<the complete mode>', autocommit = 1,
+       completion_type = 'NO_CHAIN'], so that a [COMMIT] never chains a new
+      transaction and never ends the session.
 
     The rules:
     - A configuration that needs TLS gives

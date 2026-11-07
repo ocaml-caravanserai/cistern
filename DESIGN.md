@@ -755,7 +755,7 @@ In other cases the client fails with `Connect "the server asks for full authenti
 Three round trips after the authentication:
 
 1. `SELECT CONNECTION_ID(), @@version, @@version_comment, @@hostname, @@port, @@server_id, @@wait_timeout, @@innodb_rollback_on_timeout, @@max_allowed_packet`. All names exist on the two servers. The dialect comes from `@@version` and `@@version_comment` (`Dialect.of_version`): the text `mariadb` in one of them, with no regard to case, gives MariaDB, else MySQL. The pinned MySQL build has the comment `Source distribution`, thus the comment cannot identify MySQL. `@@version` has no `5.5.5-` prefix on the pinned servers. A version that does not start with `<major>.<minor>.<patch>` gives `Connect`.
-2. `SET NAMES utf8mb4 COLLATE <collation of the dialect>, time_zone = '+00:00', sql_mode = 'STRICT_ALL_TABLES,NO_BACKSLASH_ESCAPES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION', autocommit = 1`. The `sql_mode` is a complete value, because some global modes break Cistern (for example MariaDB `EMPTY_STRING_IS_NULL`).
+2. `SET NAMES utf8mb4 COLLATE <collation of the dialect>, time_zone = '+00:00', sql_mode = 'STRICT_ALL_TABLES,NO_BACKSLASH_ESCAPES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION', autocommit = 1, completion_type = 'NO_CHAIN'`. The `sql_mode` is a complete value, because some global modes break Cistern (for example MariaDB `EMPTY_STRING_IS_NULL`). `completion_type` is set because a global `CHAIN` makes each `COMMIT` start a new transaction, and its OK then has `SERVER_STATUS_IN_TRANS` set (claim C26), and a global `RELEASE` ends the session after each `COMMIT`.
 3. Identity, in one `SELECT` that the dialect chooses (with no `CLIENT_MULTI_STATEMENTS`, one round trip has one statement):
    - MySQL: `SELECT @@server_uuid, UNIX_TIMESTAMP() - (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Uptime')`.
    - MariaDB: `SELECT UNIX_TIMESTAMP() - (SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS WHERE VARIABLE_NAME = 'UPTIME')`.
@@ -998,6 +998,7 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: abort the connection
 | C21: `FOR SHARE` | 8.4, 11.8 | MariaDB 1064 for `FOR SHARE`, OK for `LOCK IN SHARE MODE`. MySQL OK for the two |
 | C22: `CHECK` and the statement timeout | 8.4, 11.8 | MySQL 3819, MariaDB 4025: `Check`. A recursive CTE with a limit of 100 ms: MySQL 3024, MariaDB 1969 (70100): `Statement_timeout`. The connection stays usable |
 | C25: `caching_sha2_password` | 8.4 | The integration suite (phase 1.1c2) |
+| C26: `completion_type` | 8.4, 11.4, 11.8 | With a global `CHAIN`, the session of Cistern reads `NO_CHAIN` (also after `Connection.reset`), and the OK of `COMMIT` has `IN_TRANS` clear. With `CHAIN` in the session (the control), the OK of `COMMIT` has `IN_TRANS` set, and the write is committed. Then `Connection.reset` of the same connection gives `NO_CHAIN` again |
 
 The killer of the timing claims polls `information_schema.PROCESSLIST` and `INNODB_TRX` every 250 ms until the write waits on the lock. A faster poll sees the same old rows each time: InnoDB fills `INNODB_TRX` again only when nobody read it for 100 ms.
 
