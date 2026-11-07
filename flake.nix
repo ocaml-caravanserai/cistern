@@ -92,6 +92,7 @@
           buildDunePackage,
           weft,
           ptime,
+          digestif,
         }:
         buildDunePackage {
           pname = "cistern";
@@ -101,6 +102,7 @@
           propagatedBuildInputs = [
             weft
             ptime
+            digestif
           ];
           doCheck = false;
           meta = meta lib // {

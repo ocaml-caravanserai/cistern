@@ -117,8 +117,8 @@ All numbers of version 1 are in this table. The other sections refer to it.
 | Longest wait of an outer cancel of `with_db` | About 45 s: a `COMMIT` in its shield (30 s), then the drain (15 s). Documented. |
 | Keys in one `IN (...)` | 1000 |
 | Identifier length | 64 characters |
-| Statement size (write) | Less than the smaller of 16 MiB − 1 and `@@max_allowed_packet` (read at connect). The client checks the length before it sends. A hex literal doubles the size of a value, so one value can have at most about 8 MiB. |
-| Row size (read) | Less than 16 MiB − 1 for each packet |
+| Statement size (write) | The payload of `COM_QUERY` (1 byte and the SQL text) must be less than the smaller of `0xFFFFFF` and `@@max_allowed_packet` (read at connect), because the server refuses a payload equal to `max_allowed_packet` (verified on the pinned servers). Thus the SQL text has at most the smaller of the two, minus 2 bytes. The client checks the length before it sends (`Packet.query_fits`). A hex literal doubles the size of a value, so one value can have at most about 8 MiB. |
+| Row size (read) | At most `0xFFFFFE` bytes for each packet. A packet with the length `0xFFFFFF` (16 MiB or more) gives `Decode`, and the connection breaks |
 
 ## Repository and build
 
@@ -755,9 +755,12 @@ If any of these fails, the connection closes, and the checkout takes another con
 
 - `COM_QUERY` (with a loop while `SERVER_MORE_RESULTS_EXISTS` is set), `COM_PING`, `COM_RESET_CONNECTION`, `COM_INIT_DB`, `COM_QUIT`.
 - A result header of `0xFB` (a `LOCAL INFILE` request) closes the connection with an error.
+- A result set is the column count (1 to 65535, alone in its packet), the column definitions, the rows (`Resultset` keeps them as `string option array`), and the terminator OK. A row cannot start with `0xFE`, because its first value would need a packet of 16 MiB. An ERR after the columns or after some rows is the reply, and the rows before it are dropped. An error of the reader tells if it came after the column count: the server then ran the statement. The end of a result set is decoded only as a terminator (`0xFE`), and an OK only as `0x00`, so that an `AuthSwitchRequest` (`0xFE`) is never an OK. The reader keeps all the rows of a result in memory, with no limit of the number of rows: the deadline of phase 1.2 bounds the time of a read.
 - At checkout, the client calls `read_now` on the flow (not `readable`, because a TLS record with no data makes `readable` true). If the stream ended, or a packet came that the client did not ask for (for example error 4031, or 1053, or 1927), the client closes the connection and takes another one. No command was sent, so this is safe. This applies only at checkout. In a `Tx`, or between the operations of one statement, the same condition gives `Connection_lost`.
 - If the stream ends after a write, the write was sent: a write gives `Outcome_unknown`, and a read is tried one more time on another connection (only outside a `Tx`).
-- `Weft_flow.Writer` with packet frames (3-byte length and sequence id). One flush for each round trip. `Weft_flow.Reader` with `ensure`, integer reads and views at offsets.
+- `Weft_flow.Writer` with packet frames (3-byte length and sequence id). One flush for each round trip. `Weft_flow.Reader` with `ensure` and integer reads. The packet layer reads the 4 bytes of the header, consumes them, then reads the payload: an `ensure` of the header and a payload near 16 MiB would raise `Reader.Too_large`. The writer has a maximum frame of `0xFFFFFE` bytes and the header.
+- The server must have `CLIENT_PROTOCOL_41`, `CLIENT_SECURE_CONNECTION`, `CLIENT_PLUGIN_AUTH` and `CLIENT_DEPRECATE_EOF` (the three pinned servers have them). Thus no message is a classic EOF packet: the end of a result set is an OK packet that starts with `0xFE`, with the layout of an OK (the status flags before the warnings). The handshake response has 0 in the MariaDB extended capabilities, because `MARIADB_CLIENT_EXTENDED_METADATA` and `CACHE_METADATA` change the column definitions. The OK decoder ignores the bytes after the warnings (an info text, or the 66 bytes of MariaDB after the authentication). Affected rows and the last insert id are unsigned 64-bit values: a value above `Int64.max_int` is a negative `int64` with the same 64 bits.
+- The sequence ids. Each command starts at 0 (the client), and each packet adds 1, modulo 256 (a result of 300 rows wraps). The authentication continues from the greeting (0) to the final OK, also across an `AuthSwitchRequest` and `AuthMoreData`. A reply packet with another id breaks the connection. An ERR with the id 0 where the first packet of the reply (id 1) is expected came before the command (rule R-SEQ0, for example 4031 at the idle timeout): see "Order of the error rules". Later in a reply (after the column count, or during the authentication), an ERR with the id 0 is a sequence error.
 
 ## Concurrency with weft
 

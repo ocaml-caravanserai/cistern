@@ -4,5 +4,5 @@
 
 (test
  (name test_unit)
- (libraries cistern.core cistern.names cistern.mysql windtrap)
+ (libraries cistern.core cistern.names cistern.mysql weft.flow windtrap)
  (link_flags (-linkall)))

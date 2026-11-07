@@ -17,4 +17,9 @@ let () =
        ; Test_dialect.tests
        ; Test_names.tests
        ; Test_schema.tests
-       ; Test_config.tests ] )
+       ; Test_config.tests
+       ; Test_wire.tests
+       ; Test_packet.tests
+       ; Test_message.tests
+       ; Test_resultset.tests
+       ; Test_scramble.tests ] )

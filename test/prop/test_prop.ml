@@ -14,4 +14,6 @@ let () =
        ; Prop_mapping.tests
        ; Prop_event.tests
        ; Prop_names.tests
-       ; Prop_config.tests ] )
+       ; Prop_config.tests
+       ; Prop_wire.tests
+       ; Prop_message.tests ] )
