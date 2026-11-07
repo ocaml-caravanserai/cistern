@@ -39,6 +39,28 @@ let tests =
                ++ (v (Float Float.nan) ++ sql " FROM t WHERE a =")
                ++ v (Bytes "x") ) ) ;
           equal string "" (redacted (sql "")) )
+    ; cases "first_word" ~id:fst
+        [ ("a word", fun () -> (sql "SELECT 1", Some "SELECT"))
+        ; ( "leading white space"
+          , fun () -> (sql " \t\r\n commit", Some "commit") )
+        ; ( "the word ends at a value"
+          , fun () -> (sql "SET" ++ v (Int 1L), Some "SET") )
+        ; ( "a word over two fragments"
+          , fun () -> (sql "SE" ++ sql "T x", Some "SET") )
+        ; ("a longer word", fun () -> (sql "SETTINGS", Some "SETTINGS"))
+        ; ("a value first", fun () -> (v (Int 1L) ++ sql "SELECT", None))
+        ; ("white space, then a value", fun () -> (sql "  " ++ v Null, None))
+        ; ("a comment first", fun () -> (sql "/* c */ COMMIT", None))
+        ; ("parentheses first", fun () -> (sql "(SELECT 1)", None))
+        ; ("an underscore first", fun () -> (sql "_x", None))
+        ; ("the word ends at a digit", fun () -> (sql "ab1", Some "ab"))
+        ; ("empty", fun () -> (sql "", None))
+        ; ("white space only", fun () -> (sql " \n", None))
+        ; ("a vertical tab first", fun () -> (sql "\x0bCOMMIT", None))
+        ; ("a form feed first", fun () -> (sql "\x0cCOMMIT", None)) ]
+        (fun (_, f) ->
+          let r, expected = f () in
+          equal (option string) expected (first_word r) )
     ; cases "a value with no literal" ~id:fst
         [ ( "NaN"
           , fun () ->

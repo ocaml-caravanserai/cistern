@@ -34,6 +34,16 @@ val redacted : t -> string
     query hook"). It never fails. A literal that a program writes into a {!sql}
     fragment is not redacted: [sql] takes only program text. *)
 
+val first_word : t -> string option
+(** [first_word r] is the first word of the text of [r]: after leading white
+    space (space, tab, CR, LF), the ASCII letters up to the first other
+    character or the first value, as written. It is [None] if a value, another
+    character or the end comes before the first letter: for example for
+    [v x ++ sql "SELECT"], ["(SELECT 1)"] and ["/* c */ COMMIT"]. Other white
+    space bytes (['\x0b'], ['\x0c']) are other characters: ["\x0bCOMMIT"] gives
+    [None]. The [Tx] of phase 1.3 refuses some first words, and [None]
+    (DESIGN.md, "Transactions"). *)
+
 (** The result of a raw query: the names of the columns, and the rows in the
     order of the server. Each row has one value for each column. *)
 type result = {columns: string array; rows: Value.t array list}
