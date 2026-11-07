@@ -12,7 +12,7 @@ let () =
   let slow =
     match Sys.getenv_opt "CISTERN_SLOW" with
     | Some _ ->
-        [Test_pool.slow_tests]
+        [Test_pool.slow_tests; Test_tx.slow_tests]
     | None ->
         []
   in
@@ -23,5 +23,6 @@ let () =
          ; Test_query.tests
          ; Test_query.pool_tests
          ; Test_pool.tests
-         ; Test_tx.tests ]
+         ; Test_tx.tests
+         ; Test_tx.storm_tests ]
        @ slow ) )

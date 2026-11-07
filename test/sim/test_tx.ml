@@ -1279,3 +1279,226 @@ let tests =
                     "cancelled" ) ;
           (* The closed pool comes first, as in Db.exec. *)
           equal string "Db.t used after with_db" !r ) ]
+
+(* The storm of Db.transaction and Db.exec (the plan of phase 1.3, 4.2, and the
+   assertions of review C2). [fibers] fibers on 4 virtual domains and a pool of
+   8, in three waves. Half of them run Db.exec, half run Db.transaction with 1
+   to 3 statements, a wait between them, and a deadlock of the fake server in
+   about 1 statement of 10. One fiber of 4 gets a cancel. Each statement has a
+   text of its own, so that the events can be matched with the commands of the
+   fake server. *)
+let tx_permitted =
+  [ "ok"
+  ; "cancelled"
+  ; "Timeout"
+  ; "Pool_exhausted"
+  ; "Retryable deadlock"
+  ; "Connection_lost"
+  ; "Outcome_unknown statement"
+  ; "Retryable rolled back"
+  ; "Outcome_unknown commit" ]
+
+(* The faults of COMMIT in the storm: most of the time none. A fault stays for 5
+   ms. *)
+let commit_faults =
+  [| None
+   ; None
+   ; None
+   ; None
+   ; Some (D.Commit_err 1213)
+   ; Some (D.Commit_err 1205)
+   ; Some (D.Commit_delay_err (30, 1213))
+   ; Some (D.Commit_delay 30) |]
+
+let tx_storm ~fibers ~seed ~seam =
+  Pool.Private.after_op :=
+    if seam then fun () -> Fiber.shield (fun () -> Time.sleep Mono (Span.ms 1))
+    else ignore ;
+  Fun.protect
+    ~finally:(fun () -> Pool.Private.after_op := ignore)
+    (fun () ->
+      let (outcomes, commits, set, cmds), events =
+        T.with_pool ~size:8 ~seed ~domains:4 ~checkout_timeout:(Span.ms 20)
+          (fun _ db pool ->
+            let outcomes = ref [] and commits = ref 0 in
+            let ended = Atomic.make 0 in
+            Fiber.scope (fun s ->
+                (* The fiber of the faults of COMMIT, until the last fiber of
+                   the storm ends. *)
+                Fiber.fork s (fun () ->
+                    let rs = Random.State.make [|seed; 0|] in
+                    while Atomic.get ended < fibers do
+                      Time.sleep Mono (Span.ms (10 + Random.State.int rs 20)) ;
+                      db.faults.commit <-
+                        commit_faults.(Random.State.int rs
+                                         (Array.length commit_faults)) ;
+                      Time.sleep Mono (Span.ms 5) ;
+                      db.faults.commit <- None
+                    done ) ;
+                for i = 1 to fibers do
+                  Fiber.fork s (fun () ->
+                      let rs = Random.State.make [|seed; i|] in
+                      let wave = [|0; 60; 200|].(Random.State.int rs 3) in
+                      Time.sleep Mono (Span.ms (wave + Random.State.int rs 30)) ;
+                      let run () =
+                        if Random.State.bool rs then
+                          Result.map ignore
+                            (Db.exec pool (x (Printf.sprintf "UPDATE e%d" i)))
+                        else
+                          let n = 1 + Random.State.int rs 3 in
+                          let timeout =
+                            Span.ms (60 + Random.State.int rs 100)
+                          in
+                          let r =
+                            Db.transaction ~timeout pool (fun tx ->
+                                for k = 1 to n do
+                                  let word =
+                                    if Random.State.int rs 10 = 0 then
+                                      "DEADLOCK"
+                                    else "UPDATE"
+                                  in
+                                  let statement () =
+                                    ignore
+                                      (Tx.exec tx
+                                         (x
+                                            (Printf.sprintf "%s t%d_%d" word i k) ) )
+                                  in
+                                  (* One statement of 3 in a savepoint, and half
+                                     of these scopes end with a Cistern_error
+                                     (ROLLBACK TO). *)
+                                  ( match Random.State.int rs 6 with
+                                  | 0 ->
+                                      ignore
+                                        (Tx.savepoint tx (fun _ -> statement ()))
+                                  | 1 ->
+                                      ignore
+                                        (Tx.savepoint tx (fun _ ->
+                                             statement () ;
+                                             raise (E.Cistern_error E.Not_found) )
+                                        )
+                                  | _ ->
+                                      statement () ) ;
+                                  Time.sleep Mono
+                                    (Span.ms (Random.State.int rs 6))
+                                done )
+                          in
+                          if Result.is_ok r then incr commits ;
+                          r
+                      in
+                      let o =
+                        match
+                          if Random.State.int rs 4 = 0 then
+                            Fiber.with_timeout Mono
+                              (Span.ms (1 + Random.State.int rs 60))
+                              run
+                          else run ()
+                        with
+                        | Ok () ->
+                            "ok"
+                        | Error e ->
+                            T.error_text e
+                        | exception Fiber.Timeout ->
+                            "cancelled"
+                        | exception Invalid_argument m ->
+                            "Invalid_argument " ^ m
+                        | exception e ->
+                            "exception " ^ Printexc.to_string e
+                      in
+                      outcomes := o :: !outcomes ;
+                      Atomic.incr ended )
+                done ) ;
+            Pool.Private.after_op := ignore ;
+            Time.sleep Mono (Span.ms 100) ;
+            ( !outcomes
+            , !commits
+            , Pool.tx_fibers (Db.Private.pool pool)
+            , List.rev db.log ) )
+      in
+      (outcomes, commits, set, cmds, T.queries events) )
+
+let count p l = List.length (List.filter p l)
+
+let check_tx_storm ~fibers (outcomes, commits, set, cmds, events) =
+  equal ~msg:"one outcome for each fiber" int fibers (List.length outcomes) ;
+  List.iter
+    (fun o ->
+      is_true ~msg:("a permitted outcome: " ^ o) (List.mem o tx_permitted) )
+    outcomes ;
+  equal ~msg:"no fiber in the set of Tx fibers" int 0 set ;
+  is_true
+    ~msg:(Printf.sprintf "at least 50 commits (%d)" commits)
+    (commits >= 50) ;
+  (* One event for each command that the fake server got: each statement has a
+     text of its own, and COMMIT and ROLLBACK are counted. *)
+  let unique s =
+    String.starts_with ~prefix:"UPDATE t" s
+    || String.starts_with ~prefix:"UPDATE e" s
+    || String.starts_with ~prefix:"DEADLOCK t" s
+  in
+  let event_sql e =
+    (* "query \"<sql>\" <outcome>" *)
+    match String.index_from_opt e 7 '"' with
+    | Some j ->
+        String.sub e 7 (j - 7)
+    | None ->
+        e
+  in
+  let sqls = List.map event_sql events in
+  List.iter
+    (fun c ->
+      if unique c then
+        equal
+          ~msg:("one event for the command " ^ c)
+          int 1
+          (count (( = ) c) sqls) )
+    cmds ;
+  List.iter
+    (fun c ->
+      equal ~msg:("the events of " ^ c) int
+        (count (( = ) c) cmds)
+        (count (( = ) c) sqls) )
+    ["COMMIT"; "ROLLBACK"] ;
+  (* A savepoint command that the margin stopped, or that a cancel cut before it
+     went, did not reach the fake server. *)
+  let went e =
+    not
+      ( String.ends_with ~suffix:"\" failed Timeout" e
+      || String.ends_with ~suffix:"\" cancelled sent=false" e )
+  in
+  List.iter
+    (fun c ->
+      equal ~msg:("the events of " ^ c) int
+        (count (( = ) c) cmds)
+        (count (fun e -> event_sql e = c && went e) events) )
+    (List.concat_map
+       (fun n ->
+         [ "SAVEPOINT cistern_sp_" ^ n
+         ; "RELEASE SAVEPOINT cistern_sp_" ^ n
+         ; "ROLLBACK TO SAVEPOINT cistern_sp_" ^ n ] )
+       ["1"; "2"; "3"] ) ;
+  equal ~msg:"the events of START TRANSACTION that went" int
+    (count (( = ) "START TRANSACTION") cmds)
+    (count
+       (fun e ->
+         e = "query \"START TRANSACTION\" done 0"
+         || e = "query \"START TRANSACTION\" cancelled sent=true" )
+       events )
+
+(* The storm over [seeds] seeds. The first 2 seeds run with no seam. With the
+   faults of COMMIT and the savepoints, the fewest commits of a seed were 60 of
+   200 and 78 of 1000 (the record of PR 1.3b2): the bound is 50. *)
+let tx_storm_test ~fibers ~seeds () =
+  for seed = 0 to seeds - 1 do
+    check_tx_storm ~fibers (tx_storm ~fibers ~seed ~seam:(seed >= 2))
+  done
+
+let storm_tests =
+  group "Db.transaction and Db.exec, the storm"
+    [test "200 fibers, 8 seeds, 4 domains" (tx_storm_test ~fibers:200 ~seeds:8)]
+
+(* The slow storm, outside the gate: make sim-slow (CISTERN_SLOW). *)
+let slow_tests =
+  group "Db.transaction and Db.exec, the storm, slow"
+    [ tag "slow"
+        (test "1000 fibers, 20 seeds, 4 domains"
+           (tx_storm_test ~fibers:1000 ~seeds:20) ) ]
