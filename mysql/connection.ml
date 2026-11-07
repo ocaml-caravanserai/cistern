@@ -77,12 +77,9 @@ let server_error what payload =
   | Error m ->
       fail "%s: %s" what m
 
-(* An IPv4 address (four dotted groups of digits), an IPv6 address (Config
-   checked its syntax), or localhost: no DNS resolve. *)
-let ip_literal host =
-  host = "localhost" || String.contains host ':'
-  || String.for_all (fun c -> Char.Ascii.is_digit c || c = '.') host
-     && List.length (String.split_on_char '.' host) = 4
+(* An IP literal (Config.ip_literal, the rule that Tls_setup uses for the name
+   of the certificate), or localhost: no DNS resolve. *)
+let ip_literal host = host = "localhost" || Config.ip_literal host
 
 let open_flow config =
   match Config.address config with
@@ -155,8 +152,8 @@ let scramble plugin ~password ~nonce =
 let plugin_text name = Wire.peer_text ~limit:64 name
 
 let gate_message () =
-  "the server asks for full authentication; use VERIFY_IDENTITY, \
-   ssl-fingerprint, or allow-cleartext=socket"
+  "the server asks for full authentication; use VERIFY_IDENTITY with ssl-ca, a \
+   pinned certificate (ssl-fingerprint), or allow-cleartext=socket"
 
 (* The clear-text gate. The one place that writes the password calls it. It
    reads the transport of the open connection and the address of the

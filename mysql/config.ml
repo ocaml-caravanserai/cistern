@@ -18,6 +18,7 @@ type t =
   ; password: string
   ; database: string
   ; tls: tls
+  ; authenticator: X509.Authenticator.t option
   ; kill: bool }
 
 let address t = t.address
@@ -30,11 +31,18 @@ let database t = t.database
 
 let tls t = t.tls
 
+let authenticator t = t.authenticator
+
 let kill t = t.kill
 
 let needs_tls t = t.tls <> No_tls
 
 let ( let* ) = Result.bind
+
+let ip_literal host =
+  String.contains host ':'
+  || String.for_all (fun c -> Char.Ascii.is_digit c || c = '.') host
+     && List.length (String.split_on_char '.' host) = 4
 
 let hex c =
   match c with
@@ -113,7 +121,7 @@ let ipv6 s =
 let control s = String.exists (fun c -> Char.code c < 0x20 || c = '\x7f') s
 
 (* The rules that of_url and make share. *)
-let check ~address ~tls ~user ~password ~database ~kill =
+let check ~address ~tls ~authenticator ~user ~password ~database ~kill =
   let paths =
     (match address with Tcp {host; _} -> [host] | Socket {path; _} -> [path])
     @ match tls with Tls {ca= Some ca; _} -> [ca] | _ -> []
@@ -139,7 +147,8 @@ let check ~address ~tls ~user ~password ~database ~kill =
         else Ok ()
     | Socket {path; _} ->
         if path = "" then Error "the socket path is empty"
-        else if tls <> No_tls then Error "version 1 has no TLS on a Unix socket"
+        else if tls <> No_tls || Option.is_some authenticator then
+          Error "version 1 has no TLS on a Unix socket"
         else Ok ()
   in
   let* () =
@@ -151,26 +160,38 @@ let check ~address ~tls ~user ~password ~database ~kill =
     | Tls {mode= Required; ca= Some _; _} ->
         Error
           "ssl-mode=REQUIRED has no ssl-ca: use VERIFY_CA or VERIFY_IDENTITY"
-    | Tls {mode= Verify_ca | Verify_identity; ca= None; fingerprint= None} ->
+    | Tls {mode= Required; _} when Option.is_some authenticator ->
+        Error
+          "ssl-mode=REQUIRED has no authenticator: use VERIFY_CA or \
+           VERIFY_IDENTITY"
+    | Tls {ca= Some _; _} when Option.is_some authenticator ->
+        Error "give ssl-ca or an authenticator, not both"
+    | Tls {mode= Verify_ca | Verify_identity; ca= None; fingerprint= None}
+      when Option.is_none authenticator ->
         Error
           "ssl-ca or ssl-fingerprint is necessary for VERIFY_CA and \
            VERIFY_IDENTITY"
+    | No_tls when Option.is_some authenticator ->
+        Error "an authenticator needs TLS: use VERIFY_CA or VERIFY_IDENTITY"
     | _ ->
         Ok ()
   in
-  Ok {address; user; password; database; tls; kill}
+  Ok {address; user; password; database; tls; authenticator; kill}
 
-let make ?tls ?(kill = true) ~address ~user ~password ~database () =
+let make ?tls ?authenticator ?(kill = true) ~address ~user ~password ~database
+    () =
   let* tls =
-    match (tls, address) with
-    | Some tls, _ ->
+    match (tls, address, authenticator) with
+    | Some tls, _, _ ->
         Ok tls
-    | None, Socket _ ->
+    | None, Socket _, _ ->
         Ok No_tls
-    | None, Tcp _ ->
+    | None, Tcp _, Some _ ->
+        Ok (Tls {mode= Verify_identity; ca= None; fingerprint= None})
+    | None, Tcp _, None ->
         Error "a TCP address must have a TLS setting"
   in
-  check ~address ~tls ~user ~password ~database ~kill
+  check ~address ~tls ~authenticator ~user ~password ~database ~kill
 
 (* The URL parser. No message has a part of the URL. *)
 
@@ -435,7 +456,7 @@ let of_url url =
                 "a TCP connection must have a TLS setting: give ssl-ca, \
                  ssl-fingerprint or ssl-mode" )
   in
-  check ~address ~tls ~user ~password ~database ~kill
+  check ~address ~tls ~authenticator:None ~user ~password ~database ~kill
 
 let pp_mode ppf m =
   Format.pp_print_string ppf
@@ -466,8 +487,10 @@ let pp ppf t =
   (* One line, with no break hints, so that the text does not depend on the
      margin of the formatter. *)
   Format.fprintf ppf
-    "{address = %a; user = %s; password = %s; database = %s; tls = %a; kill = \
-     %b}"
+    "{address = %a; user = %s; password = %s; database = %s; tls = %a%s; kill \
+     = %b}"
     pp_address t.address t.user
     (if t.password = "" then "" else "***")
-    t.database pp_tls t.tls t.kill
+    t.database pp_tls t.tls
+    (if Option.is_none t.authenticator then "" else " authenticator")
+    t.kill

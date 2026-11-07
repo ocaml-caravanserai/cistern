@@ -137,13 +137,13 @@ inputs = {
 ```
 
 - All dependencies come from the flake. Cistern does not use `opam install` or Docker. dune makes the `.opam` files only for the package metadata.
-- The OCaml scope is `ocaml-ng.ocamlPackages_5_5.overrideScope` with `weft = callPackage weft.lib.package {}`, `windtrap = callPackage windtrap.lib.windtrap {}`, `ppx_windtrap = callPackage windtrap.lib.ppx_windtrap {}`. This is the pattern of `~/projects/caravan/flake.nix`. Phase 1.4 (TLS) adds `weft-tls = callPackage weft.lib.tlsPackage {}`, the output of weft PR 1c (weft main has `lib = { inherit package tlsPackage; }`). Before phase 1.4, the flake does not refer to `lib.tlsPackage`, because no code of Cistern uses TLS before then.
-- The `weft` input is the main branch of weft. weft PRs 1a and 1b are merged, and `flake.lock` pins one commit. If the codec of phase 1.1 needs a change of `Reader` or `Writer`, a normal weft PR makes it, and an update of `flake.lock` takes it. weft PR 1c is merged. Phase 1.4 updates `flake.lock` and takes `lib.tlsPackage` from weft main.
+- The OCaml scope is `ocaml-ng.ocamlPackages_5_5.overrideScope` with `weft = callPackage weft.lib.package {}`, `windtrap = callPackage windtrap.lib.windtrap {}`, `ppx_windtrap = callPackage windtrap.lib.ppx_windtrap {}`. This is the pattern of `~/projects/caravan/flake.nix`. Phase 1.4 (TLS) adds `weft-tls = callPackage weft.lib.tlsPackage {}`, the output of weft PR 1c (weft main has `lib = { inherit package tlsPackage; }`), with its first user (PR 1.4b1, the TLS flow of `Connection`). PR 1.4a adds `tls`, `x509`, `domain-name` and `ipaddr`, which `Config` and `Tls_setup` use.
+- The `weft` input is the main branch of weft. weft PRs 1a and 1b are merged, and `flake.lock` pins one commit. If the codec of phase 1.1 needs a change of `Reader` or `Writer`, a normal weft PR makes it, and an update of `flake.lock` takes it. weft PR 1c is merged. The pinned commit (8520b5f, weft main on 2026-11-07) has `lib.tlsPackage`, thus phase 1.4 needs no update of `flake.lock`.
 - Systems: `x86_64-linux`, `aarch64-linux`, `aarch64-darwin`. nixpkgs dropped `x86_64-darwin`.
-- OCaml libraries from nixpkgs: `ppxlib`, `digestif` (SHA-1 and SHA-256), `mirage-crypto-rng`, `ptime`, `fmt`. `weft-tls` brings `tls` and `x509`. The tests also use `mirage-crypto-ec` (test certificates).
+- OCaml libraries from nixpkgs: `ppxlib`, `digestif` (SHA-1 and SHA-256), `ptime`, `tls`, `x509`, `domain-name`, `ipaddr` (phase 1.4a), `mirage-crypto-rng` (phase 1.4b1) and `fmt`. The tests also use `mirage-crypto-ec` and `mirage-crypto-rng` (test certificates).
 - Outputs: `lib.package`, `lib.ppxPackage`, `overlays.default`, `packages.<system>.cistern`, `packages.<system>.ppx_cistern`, `devShells.default`, `checks` (build and tests that need no database server), and `packages.<system>.server-mysql84`, `server-mariadb114` and `server-mariadb118` (the nixpkgs servers `mysql84` 8.4.11, `mariadb_114` 11.4.13 and `mariadb_118` 11.8.8, verified on 2026-11-06). The servers are not in the dev shell, so a `nix develop` does not download them. The server outputs come in phase 0 with `test/certgen` and the `db-up` targets, not with the first flake.
 - The dev shell uses `inputsFrom = [ cistern ppx_cistern ]`, so it has every library dependency of the two packages. It adds OCaml 5.5, dune, findlib, `windtrap`, `ppx_windtrap`, `ocaml-lsp`, `odoc`, and `ocamlformat_0_29_0` (pinned, as in weft).
-- Each PR adds a dependency together with its first user. For example, `ptime` comes with `Value`, and `x509` and `mirage-crypto-ec` come with `test/certgen`. At the end of version 1, the packages depend on `weft`, `ppxlib`, `digestif`, `mirage-crypto-rng`, `ptime`, `fmt` and (from phase 1.4) `weft-tls`, and the dev shell adds `mirage-crypto-ec` and `x509` for the tests.
+- Each PR adds a dependency together with its first user. For example, `ptime` comes with `Value`, and `x509` and `mirage-crypto-ec` come with `test/certgen`. At the end of version 1, the packages depend on `weft`, `ppxlib`, `digestif`, `mirage-crypto-rng`, `ptime`, `fmt`, and (from phase 1.4) `weft-tls`, `tls`, `x509`, `domain-name` and `ipaddr`. The dev shell adds `mirage-crypto-ec` for the tests.
 - `flake.lock` pins nixpkgs, weft and windtrap. The server versions follow nixpkgs.
 
 ### Database servers for the tests
@@ -244,7 +244,7 @@ cistern/
   names/    (cistern.names)   The rules of names, the names of indexes (only the stdlib)
   core/     (cistern.core)    Value, Dialect, literals, Schema, model AST, Decoder, Error, Event, MODEL
   sql/      (cistern.sql)     SQL AST, compiler from the model AST, serializer for each dialect, DDL
-  mysql/    (cistern.mysql)   Config and URL parser, connect, TLS, authentication, text protocol, sessions
+  mysql/    (cistern.mysql)   Config and URL parser, Tls_setup, connect, TLS, authentication, text protocol, sessions
   cistern/  (cistern)         Typed API, Raw, pool, killer, Tx, execution  (depends on core, sql, mysql)
   ppx/      (ppx_cistern)     The deriver
   test/  unit, prop, stateful, expect, sim, integration, nounix, readme, typeerror, ocaml55
@@ -697,7 +697,13 @@ Rules:
 - `Config.t` is abstract, so that no generic printer shows the password. No message of `of_url` has a part of the URL.
 - Phase 1.1 parses the TLS settings with these final rules, but it has no TLS. The connect refuses each configuration that needs TLS, with `Connect "TLS is not supported before phase 1.4"`, before the DNS resolve and before a socket opens.
 
-The database is necessary: a URL without it gives an error, because the session reset needs it for `COM_INIT_DB`. `Config.of_url` gives `(Config.t, string) result`. `Config.make ?tls ?kill ~address ~user ~password ~database ()` takes the same values, with the same checks (one shared function). Phase 1.4 adds `?authenticator:X509.Authenticator.t` to `Config.make`. The CA file is read with `Weft.File`. The printers of `Config.t` and the `Connect` events never show the password.
+The database is necessary: a URL without it gives an error, because the session reset needs it for `COM_INIT_DB`. `Config.of_url` gives `(Config.t, string) result`. `Config.make ?tls ?authenticator ?kill ~address ~user ~password ~database ()` takes the same values, with the same checks (one shared function). The rules of `?authenticator:X509.Authenticator.t` (phase 1.4):
+
+- It needs TLS on TCP. A TCP address with an authenticator and no `tls` gives `VERIFY_IDENTITY`.
+- `VERIFY_CA` and `VERIFY_IDENTITY` accept it in place of `ssl-ca` or `ssl-fingerprint`. With `ssl-ca`, or with `REQUIRED`, it is an error. With `ssl-fingerprint`, the two checks run.
+- The check of the chain and of the name is the task of the authenticator. Cistern gives it the host or the IP address of the configuration under `VERIFY_IDENTITY`, and no name under `VERIFY_CA`.
+- An authenticator alone never makes the session verified for the clear-text rule ("Authentication"), because it can accept each certificate (for example `X509.Authenticator.of_string "none"`). Version 1 has no flag to change this.
+- A configuration with an authenticator holds a function: compare its fields, not the configuration with `=`. The CA file is read with `Weft.File`. The printers of `Config.t` and the `Connect` events never show the password.
 
 `ssl-mode` uses the MySQL names:
 
@@ -706,9 +712,21 @@ The database is necessary: a URL without it gives an error, because the session 
 | `DISABLED` | No | None |
 | `REQUIRED` | Yes | None, if the configuration has no `ssl-fingerprint`. Documented: no protection against an attacker in the middle. With `ssl-fingerprint`, the pin is checked. With `ssl-ca`, the configuration is an error |
 | `VERIFY_CA` | Yes | The chain only, with `ssl-ca` or the authenticator. No peer name is set. |
-| `VERIFY_IDENTITY` | Yes | The chain and the name: `Tls.Config.peer` for a host name, `Tls.Config.ip` for an IP address |
+| `VERIFY_IDENTITY` | Yes | The chain and the name: `~peer_name` for a host name (also `localhost`), `~ip` for an IP address. The name always comes from the host of the configuration, never from the resolved address |
 
-`ssl-fingerprint=sha256:<hex>` pins the SHA-256 hash of the server certificate (`X509.Authenticator.server_cert_fingerprint`). The pin is checked in each mode. It needs TLS, and it is a verified identity for the clear-text rule, the same as `VERIFY_IDENTITY`.
+`ssl-fingerprint=sha256:<hex>` pins the SHA-256 hash of the server certificate (`X509.Authenticator.cert_fingerprint`, x509 1.2.0). The pin is checked in each mode, also with a CA (the two checks run). It needs TLS, and it is a verified identity for the clear-text rule. The pin also checks the validity dates of the certificate: a pinned certificate that expired fails. `VERIFY_CA` with only a pin checks the pin alone, with no name. `VERIFY_IDENTITY` with only a pin also checks the name. Thus a pinned certificate with no host name (the certificate that MySQL makes) needs `REQUIRED` with the pin, the default of a URL with only `ssl-fingerprint`. Each check gets the time of the wall clock of weft (`Tls_setup.now`). If the time is not known, each check fails, because x509 checks no time then.
+
+The configurations that are verified for the clear-text rule (`Tls_setup.make`, with a unit table for each row):
+
+| Configuration | Check of the certificate | Verified |
+|---|---|---|
+| `REQUIRED` | None | No |
+| `REQUIRED` with a pin | The pin, no name | Yes |
+| `VERIFY_CA` with `ssl-ca` | The chain, no name | No |
+| `VERIFY_CA` with a pin (and maybe `ssl-ca` or an authenticator) | The pin (and the chain), no name | Yes |
+| `VERIFY_CA` or `VERIFY_IDENTITY` with only an authenticator | The authenticator | No |
+| `VERIFY_IDENTITY` with `ssl-ca` | The chain and the name | Yes |
+| `VERIFY_IDENTITY` with a pin (and maybe `ssl-ca` or an authenticator) | The pin and the name (and the chain) | Yes |
 
 Defaults:
 
@@ -735,13 +753,15 @@ Defaults:
 
 The clear-text password of the full path goes only:
 
-- under `VERIFY_IDENTITY`;
-- with `ssl-fingerprint`;
+- under `VERIFY_IDENTITY` with `ssl-ca`;
+- with a pinned certificate (`ssl-fingerprint`), in each mode;
 - on a Unix socket with `allow-cleartext=socket`.
+
+An authenticator of the program alone is not enough ("Configuration", the table of the verified configurations).
 
 The socket rule is an explicit opt-in for every socket. A check of the path is not safe: on macOS `/tmp` is a link to `/private/tmp`, and other directories (for example `/dev/shm`) are also writable by all users. While the server is down, a local user can make a socket at such a path. The client does not have the owner of the directory (`Weft.File.stat` gives `perm` but no owner), so it cannot check the directory.
 
-In other cases the client fails with `Connect "the server asks for full authentication; use VERIFY_IDENTITY, ssl-fingerprint, or allow-cleartext=socket"`. Thus a server or an attacker that answers `0x04` cannot get the password. With `DISABLED` over TCP, the first connect after each server restart needs the full path, so it fails with this message (documented).
+In other cases the client fails with `Connect "the server asks for full authentication; use VERIFY_IDENTITY with ssl-ca, a pinned certificate (ssl-fingerprint), or allow-cleartext=socket"`. Thus a server or an attacker that answers `0x04` cannot get the password. With `DISABLED` over TCP, the first connect after each server restart needs the full path, so it fails with this message (documented).
 
 - One function, `may_send_cleartext`, decides at the one place that writes the password: in phase 1.1, a Unix socket with `allow-cleartext=socket` (the opt-in is a part of the socket address). The password goes with a NUL at the end. When the gate refuses, the connection closes and nothing more goes.
 - `AuthMoreData` is accepted only for `caching_sha2_password`, and only `0x01 0x03` (then an OK) and `0x01 0x04` (then the gate). Another byte, a public key, or `0x04` after `0x03` gives `Connect`.

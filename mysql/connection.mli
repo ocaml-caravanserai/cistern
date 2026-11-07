@@ -53,9 +53,10 @@ val connect : Config.t -> (t, Cistern_core.Error.t) result
       [caching_sha2_password]. The full path sends the password in clear text
       only on a Unix socket with [allow-cleartext=socket]. Else the connection
       closes, no password byte goes, and the result is
-      [Connect "the server asks for full authentication; use VERIFY_IDENTITY,
-       ssl-fingerprint, or allow-cleartext=socket"]. At most one
-      [AuthSwitchRequest], to one of the two plugins, with 20 bytes and a NUL.
+      [Connect "the server asks for full authentication; use VERIFY_IDENTITY
+       with ssl-ca, a pinned certificate (ssl-fingerprint), or
+       allow-cleartext=socket"]. At most one [AuthSwitchRequest], to one of the
+      two plugins, with 20 bytes and a NUL.
     - Each failure gives [Connect msg]. When a server error caused it, [msg] has
       the error number, but not the server message, which can hold a user name.
       A plugin name of the server is escaped if it is not 1 to 64 printable

@@ -22,6 +22,12 @@
    (>= 1.2.0))
   (digestif
    (>= 1.0.0))
+  (tls
+   (>= 2.1.0))
+  (x509
+   (>= 1.0.0))
+  domain-name
+  ipaddr
   (windtrap
    (and
     :with-test
@@ -30,14 +36,8 @@
    (and
     :with-test
     (>= 0.3.0)))
-  (x509
-   (and
-    :with-test
-    (>= 1.0.0)))
   (mirage-crypto-ec :with-test)
   (mirage-crypto-rng :with-test)
-  (ipaddr :with-test)
-  (domain-name :with-test)
   (fmt :with-test)))
 
 (package

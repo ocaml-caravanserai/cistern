@@ -15,6 +15,7 @@
   weft
   weft.flow
   weft.sim
+  ptime
   windtrap)
  (deps
   (env_var CISTERN_SLOW))
