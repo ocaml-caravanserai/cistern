@@ -6,4 +6,16 @@
 
 (executable
  (name integration)
- (libraries cistern.core cistern.mysql unix weft weft.os windtrap))
+ (libraries
+  cistern.core
+  cistern.mysql
+  ptime
+  unix
+  weft
+  weft.flow
+  weft.os
+  windtrap))
+
+; The model of the text of DOUBLE (claim C10) is that of the property suite.
+
+(copy_files# ../prop/server_text.ml)

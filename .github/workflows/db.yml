@@ -51,6 +51,12 @@ jobs:
         run: make db-check SERVER=${{ matrix.server }}
       - name: Integration tests
         run: make integration SERVER=${{ matrix.server }}
+      # The timing claims and the claim that stops the server run only here,
+      # not in the integration job of a pull request (DESIGN.md, "CI jobs").
+      - name: Timing claims
+        run: make integration-timing SERVER=${{ matrix.server }}
+      - name: Shutdown claim
+        run: make integration-shutdown SERVER=${{ matrix.server }}
       - name: Stop the server
         if: ${{ steps.nix.outcome == 'success' && !cancelled() }}
         run: make db-down SERVER=${{ matrix.server }}

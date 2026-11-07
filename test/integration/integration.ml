@@ -275,4 +275,19 @@ let tests =
                     equal string "connected" (connect_ping (on_tcp ())) ) ) ] ]
     else [] )
 
-let () = exit (Windtrap.run "integration" (tests @ [query_tests]))
+(* The group of tests: CISTERN_GROUP is deterministic (the default), timing or
+   shutdown (DESIGN.md, "CI jobs"). *)
+let () =
+  let group =
+    match Sys.getenv_opt "CISTERN_GROUP" with
+    | None | Some "" | Some "deterministic" ->
+        tests @ [query_tests; Claims.deterministic]
+    | Some "timing" ->
+        [Claims.timing]
+    | Some "shutdown" ->
+        [Claims.shutdown]
+    | Some g ->
+        prerr_endline ("integration: unknown CISTERN_GROUP " ^ g) ;
+        exit 2
+  in
+  exit (Windtrap.run "integration" group)
