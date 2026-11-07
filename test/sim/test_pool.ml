@@ -68,19 +68,32 @@ let check_end pool =
     [idle; in_use; opening; closing; waiting]
 
 (* [with_pool ?size ... f]: a pool on the fake server, with the events in a
-   list. After with_db, it does the checks of [check_end]. *)
+   list. After with_db, it does the checks of [check_end]. With [tls] (phase
+   1.4), the fake server runs TLS, and the pool uses VERIFY_IDENTITY with the
+   test CA: the generator is seeded again at the start, and the simulation has
+   the time 2025 and the CA files of Tls_fixture. *)
 let with_pool ?(size = 2) ?max_lifetime ?checkout_timeout ?(seed = 0)
-    ?(domains = 1) ?(setup = fun _ -> ()) f =
+    ?(domains = 1) ?(setup = fun _ -> ()) ?(tls = false) f =
   let events = ref [] in
+  if tls then Tls_fixture.seed () ;
   let result =
     D.run ~seed ~domains (fun sim db ->
+        let config =
+          if tls then (
+            Tls_fixture.at_2025 sim ;
+            Tls_fixture.install () ;
+            db.faults.tls <- Some (Tls_fixture.server_config Tls_fixture.pki) ;
+            Tls_fixture.config ~host:"10.0.0.9" ~ca:Tls_fixture.ca_file
+              Verify_identity )
+          else D.config ()
+        in
         setup db ;
         let last = ref None in
         let r =
           Db.with_db ~pool_size:size ?max_lifetime ?checkout_timeout
             ~random:(Random.State.make [|seed|])
             ~on_query:(fun e -> events := event_text e :: !events)
-            (D.config ())
+            config
             (fun pool ->
               last := Some pool ;
               f sim db pool )

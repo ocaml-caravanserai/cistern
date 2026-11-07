@@ -45,7 +45,8 @@ module Private = struct
     ; checkin_lost: int
     ; cancel_in_reset: int
     ; expired_at_checkout: int
-    ; stale_at_checkout: int }
+    ; stale_at_checkout: int
+    ; cancel_in_stale: int }
 
   let waiter_lost = Atomic.make 0
 
@@ -57,12 +58,15 @@ module Private = struct
 
   let stale_at_checkout = Atomic.make 0
 
+  let cancel_in_stale = Atomic.make 0
+
   let counters () =
     { waiter_lost= Atomic.get waiter_lost
     ; checkin_lost= Atomic.get checkin_lost
     ; cancel_in_reset= Atomic.get cancel_in_reset
     ; expired_at_checkout= Atomic.get expired_at_checkout
-    ; stale_at_checkout= Atomic.get stale_at_checkout }
+    ; stale_at_checkout= Atomic.get stale_at_checkout
+    ; cancel_in_stale= Atomic.get cancel_in_stale }
 
   let reset_counters () =
     List.iter
@@ -71,7 +75,8 @@ module Private = struct
       ; checkin_lost
       ; cancel_in_reset
       ; expired_at_checkout
-      ; stale_at_checkout ]
+      ; stale_at_checkout
+      ; cancel_in_stale ]
 
   let sockets t = Atomic.get t.sockets
 
@@ -480,6 +485,7 @@ let with_conn t ~start ~deadline f =
          the connection first. *)
       match Connection.stale c with
       | exception (Fiber.Cancelled _ as ex) ->
+          Atomic.incr Private.cancel_in_stale ;
           Cancel_step ex
       | true ->
           Stale

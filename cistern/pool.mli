@@ -167,7 +167,9 @@ module Private : sig
     ; checkin_lost: int  (** A hand-off found its waiter abandoned. *)
     ; cancel_in_reset: int  (** A cancel during a session reset. *)
     ; expired_at_checkout: int  (** Idle entries too old at a checkout. *)
-    ; stale_at_checkout: int  (** Idle entries that the stale check found. *) }
+    ; stale_at_checkout: int  (** Idle entries that the stale check found. *)
+    ; cancel_in_stale: int
+          (** A cancel in the stale check (at the lock of a TLS session). *) }
 
   val counters : unit -> counters
 

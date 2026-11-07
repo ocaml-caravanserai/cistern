@@ -79,6 +79,7 @@ type t =
   ; mutable handshaking: int
   ; mutable handshaking_max: int
   ; mutable connects: int
+  ; mutable tls_sessions: int  (** The connections that went on over TLS. *)
   ; mutable commands: int
   ; mutable resets: int
   ; mutable quits: int
@@ -368,6 +369,7 @@ let serve db flow =
               Reader.consume !r held ;
               let tls, _ = Weft_tls.server config (Flow.prepend start tcp) in
               flow := tls ;
+              db.tls_sessions <- db.tls_sessions + 1 ;
               r := Reader.create tls ;
               ignore (read_packet !r) ;
               3
@@ -420,6 +422,7 @@ let run ?(domains = 1) ?(seed = 0) f =
         ; handshaking= 0
         ; handshaking_max= 0
         ; connects= 0
+        ; tls_sessions= 0
         ; commands= 0
         ; resets= 0
         ; quits= 0
