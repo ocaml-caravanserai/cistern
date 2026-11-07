@@ -3,7 +3,10 @@
    obtain one at https://mozilla.org/MPL/2.0/. *)
 
 type t =
-  {ca: X509.Certificate.t; cert: X509.Certificate.t; key: X509.Private_key.t}
+  { ca: X509.Certificate.t
+  ; cert: X509.Certificate.t
+  ; key: X509.Private_key.t
+  ; other_ca: X509.Certificate.t }
 
 let time s = Option.get (Ptime.of_float_s s)
 
@@ -33,40 +36,61 @@ let request cn key =
   | Error (`Msg m) ->
       failwith m
 
-let make () =
-  let ca_key = X509.Private_key.generate `P256 in
+(* A self-signed CA with the common name [cn]. *)
+let new_ca cn =
+  let key = X509.Private_key.generate `P256 in
   let ca =
-    sign
-      (request "cistern test CA" ca_key)
+    sign (request cn key)
       ~extensions:
         X509.Extension.(
           empty
           |> add Basic_constraints (true, (true, None))
           |> add Key_usage (true, [`Key_cert_sign]) )
-      ca_key "cistern test CA"
+      key cn
   in
+  (ca, key)
+
+let make ?(cn = "localhost") ?(dns = ["localhost"]) ?(ips = ["127.0.0.1"]) () =
+  let ca, ca_key = new_ca "cistern test CA" in
+  let other_ca, _ = new_ca "cistern other CA" in
   let key = X509.Private_key.generate `P256 in
+  (* One entry for each kind: [add] replaces the list of a kind. *)
   let names =
-    X509.General_name.(
-      singleton DNS ["localhost"]
-      |> add IP [Ipaddr.to_octets (Ipaddr.of_string_exn "127.0.0.1")] )
+    let dns =
+      if dns = [] then X509.General_name.empty
+      else X509.General_name.singleton DNS dns
+    in
+    if ips = [] then dns
+    else
+      X509.General_name.add IP
+        (List.map (fun ip -> Ipaddr.to_octets (Ipaddr.of_string_exn ip)) ips)
+        dns
   in
-  let cert =
-    sign (request "localhost" key)
-      ~extensions:
-        X509.Extension.(
-          empty
-          |> add Subject_alt_name (false, names)
-          |> add Ext_key_usage (false, [`Server_auth])
-          |> add Basic_constraints (true, (false, None)) )
-      ca_key "cistern test CA"
+  let extensions =
+    X509.Extension.(
+      empty
+      |> add Ext_key_usage (false, [`Server_auth])
+      |> add Basic_constraints (true, (false, None)) )
   in
-  {ca; cert; key}
+  let extensions =
+    if dns = [] && ips = [] then extensions
+    else X509.Extension.add Subject_alt_name (false, names) extensions
+  in
+  let cert = sign (request cn key) ~extensions ca_key "cistern test CA" in
+  {ca; cert; key; other_ca}
+
+let fingerprint cert =
+  String.concat ""
+    (List.map
+       (fun c -> Printf.sprintf "%02x" (Char.code c))
+       (List.of_seq (String.to_seq (X509.Certificate.fingerprint `SHA256 cert))) )
 
 let files t =
   [ ("ca.pem", X509.Certificate.encode_pem t.ca)
   ; ("server-cert.pem", X509.Certificate.encode_pem t.cert)
-  ; ("server-key.pem", X509.Private_key.encode_pem t.key) ]
+  ; ("server-key.pem", X509.Private_key.encode_pem t.key)
+  ; ("server-cert.sha256", fingerprint t.cert)
+  ; ("other-ca.pem", X509.Certificate.encode_pem t.other_ca) ]
 
 (* A new file with the mode [perm]. *)
 let write_file path perm text =

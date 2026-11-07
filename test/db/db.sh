@@ -173,7 +173,8 @@ up() {
   [ -x "$mysqld" ] || die "no $mysqld"
   certs=$DB_DIR/certs
   if [ ! -f "$certs/ca.pem" ] || [ ! -f "$certs/server-cert.pem" ] ||
-    [ ! -f "$certs/server-key.pem" ]; then
+    [ ! -f "$certs/server-key.pem" ] ||
+    [ ! -f "$certs/server-cert.sha256" ] || [ ! -f "$certs/other-ca.pem" ]; then
     # The check above makes sure that db.sh made $certs, if it exists.
     rm -rf "${DB_DIR:?}/certs"
     mkdir -p "$DB_DIR"
@@ -268,7 +269,8 @@ up() {
     for v in "DB_SERVER=$name" "DB_STORE=$store" "DB_VERSION=$version" \
       "DB_PORT=$port" "DB_SOCKET=$sock" "DB_USER=$user" \
       "DB_PASSWORD=$PASSWORD" "DB_DATABASE=$DATABASE" \
-      "DB_CA=$certs/ca.pem" "DB_PLUGIN=$plugin" "DB_ADMIN_USER=root" \
+      "DB_CA=$certs/ca.pem" "DB_FINGERPRINT=$(cat "$certs/server-cert.sha256")" \
+      "DB_OTHER_CA=$certs/other-ca.pem" "DB_PLUGIN=$plugin" "DB_ADMIN_USER=root" \
       "DB_PID=$pid"; do
       printf "%s='%s'\n" "${v%%=*}" "${v#*=}"
     done

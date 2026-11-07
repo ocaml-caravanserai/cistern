@@ -151,7 +151,7 @@ inputs = {
 `make db-up SERVER=<name>`:
 
 1. Gets the server with `nix build --no-link --print-out-paths '.#server-<name>^out'`. The flake has `packages.<system>.server-mysql84`, `server-mariadb114` and `server-mariadb118`. They are not in the dev shell, and `nix flake check` does not build them.
-2. Makes a test CA and a server certificate with `test/certgen`, a small OCaml program that uses `x509` and `mirage-crypto-ec` (the method of weft's `test/tls/tls_support.ml`). No `openssl` is necessary. The keys are ECDSA P-256: the three servers accept them, and use TLS 1.3. The server certificate has the names `localhost` and `127.0.0.1`, and is valid from 2020 to 2040. `test/certgen` is test code: it is not in the package, and the mutation gate does not examine it. `dune runtest` runs its test.
+2. Makes a test CA and a server certificate with `test/certgen`, a small OCaml program that uses `x509` and `mirage-crypto-ec` (the method of weft's `test/tls/tls_support.ml`). No `openssl` is necessary. The keys are ECDSA P-256: the three servers accept them, and use TLS 1.3. The server certificate has the names `localhost` and `127.0.0.1`, and is valid from 2020 to 2040. `certgen` also writes `server-cert.sha256` (the SHA-256 of the DER of the server certificate, in lowercase hex: the value of `ssl-fingerprint`) and `other-ca.pem` (a second CA with no certificate in use, for the tests of a CA of another PKI). A directory of an older `certgen` with no such file is made again. `test/certgen` is test code: it is not in the package, and the mutation gate does not examine it. `dune runtest` runs its test.
 3. Initializes a new data directory in `.db/<name>` on each `db-up`. The data is not in `_build`, because `dune clean` deletes `_build`.
    - `DB_DIR` changes `.db`. `db-up` removes or uses a directory only if it has the file `.cistern-db`, which `db.sh` writes. Else `db-up` stops.
    - The directories `.db/<name>` and `.db/certs` have the mode 700. Thus only the owner can use the socket of root. In `.db/certs`, `ca.pem` and `server-cert.pem` have the mode 644, and `server-key.pem` has the mode 600.
@@ -180,7 +180,7 @@ inputs = {
    - The users have the host `%` and the fixed password `cistern`. The bind address keeps them local. A connection on the Unix socket also gets `<user>@%`.
 5. Writes `.db/<name>/env`, with shell assignments of these values:
    - `DB_SERVER`, `DB_STORE`, `DB_VERSION` (from `@@version`) and `DB_PID`.
-   - `DB_PORT`, `DB_SOCKET`, `DB_USER`, `DB_PASSWORD`, `DB_DATABASE`, `DB_CA` and `DB_PLUGIN`.
+   - `DB_PORT`, `DB_SOCKET`, `DB_USER`, `DB_PASSWORD`, `DB_DATABASE`, `DB_CA`, `DB_FINGERPRINT` (the hex of `server-cert.sha256`), `DB_OTHER_CA` and `DB_PLUGIN`.
    - `DB_ADMIN_USER`: root on `DB_SOCKET`, with no password. These rights are necessary for some claims of phase 1.1, for example `read_only` and `SHUTDOWN`.
 
 `mysql_native_password` is tested only on MariaDB, because MySQL 8.4 disables it by default.
