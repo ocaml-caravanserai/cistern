@@ -74,3 +74,40 @@ jobs:
       - name: Mutation gate
         if: ${{ steps.nix.outcome == 'success' && !cancelled() && runner.os == 'Linux' && github.event_name == 'pull_request' }}
         run: nix develop -c make mutate BASE=HEAD^1
+
+  # The integration suite (DESIGN.md, "CI jobs") on the test servers of make
+  # db-up, on Linux. MySQL 8.4 and MariaDB 11.8 run on each pull request and
+  # each push to main. MariaDB 11.4 runs on each push to main (and each night
+  # in db.yml). The make targets run outside the dev shell, as in db.yml.
+  integration:
+    strategy:
+      fail-fast: false
+      matrix:
+        server: ${{ fromJSON(github.event_name == 'push' && '["mysql84", "mariadb118", "mariadb114"]' || '["mysql84", "mariadb118"]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        id: nix
+      - name: Start the server
+        run: make db-up SERVER=${{ matrix.server }}
+      - name: Integration tests
+        run: make integration SERVER=${{ matrix.server }}
+      - name: Stop the server
+        if: ${{ steps.nix.outcome == 'success' && !cancelled() }}
+        run: make db-down SERVER=${{ matrix.server }}
+      # .db/ is a hidden directory. A new run of the job replaces the
+      # artifact.
+      - name: Logs
+        if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-integration-${{ matrix.server }}
+          include-hidden-files: true
+          if-no-files-found: ignore
+          overwrite: true
+          path: |
+            .db/${{ matrix.server }}/error.log
+            .db/${{ matrix.server }}/init.log
+            .db/${{ matrix.server }}/server.out
