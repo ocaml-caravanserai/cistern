@@ -494,7 +494,7 @@ let deterministic =
 let timing =
   group
     ("Db.transaction timing on " ^ server)
-    [ test "a lock wait cut by the deadline of the Tx: Timeout (D5)" (fun () ->
+    [ test "a lock wait cut by a statement deadline: Timeout (D5)" (fun () ->
           with_table "lw" (fun db _ ->
               ignore (Db.exec_exn db (x "INSERT INTO lw (id) VALUES (1)")) ;
               let locked = Ivar.create () and release = Ivar.create () in
@@ -522,10 +522,15 @@ let timing =
                       (fun () ->
                         await "the lock of the holder" locked ;
                         t0 := Time.now mono ;
+                        (* The statement deadline (300 ms) comes before the
+                           deadline of the Tx (500 ms). With the two at the same
+                           instant, the timer of the callback can fire first (it
+                           did on macOS), and then Tx.exec raises Cancelled: the
+                           test must not depend on the order of two timers. *)
                         Db.transaction ~timeout:(Span.ms 500) db (fun tx ->
                             wait :=
                               ok_text
-                                (Tx.exec tx
+                                (Tx.exec ~timeout:(Span.ms 300) tx
                                    (x "UPDATE lw SET v = 2 WHERE id = 1") ) ;
                             "waiter" ) )
                   in
@@ -533,7 +538,7 @@ let timing =
                   equal ~msg:"the UPDATE that waits" string
                     "Outcome_unknown statement" !wait ;
                   equal ~msg:"the transaction" string "Timeout" (tx_text r) ;
-                  is_true ~msg:"at the deadline" (t >= 0.49 && t < 1.5) ;
+                  is_true ~msg:"at the statement deadline" (t >= 0.29 && t < 1.2) ;
                   equal ~msg:"the holder" string "ok holder"
                     (Weft.Promise.await holder) ) ;
               equal ~msg:"the value of the holder" string "1"

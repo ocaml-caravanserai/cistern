@@ -489,6 +489,52 @@ let makes =
 
 let shown = result string string
 
+(* An authenticator that accepts each certificate (phase 1.4). *)
+let auth : X509.Authenticator.t = fun ?ip:_ ~host:_ _ -> Ok None
+
+(* [show], and "|auth" if the configuration has an authenticator. *)
+let show_auth c =
+  show c ^ if Option.is_some (C.authenticator c) then "|auth" else ""
+
+(* The rules of an authenticator (the plan of phase 1.4, D3). *)
+let auth_makes =
+  let make ?tls address =
+    C.make ?tls ~authenticator:auth ~address ~user:"u" ~password:"p"
+      ~database:"db" ()
+  in
+  [ ( "TCP with no tls: VERIFY_IDENTITY"
+    , (fun () -> make (tcp "h"))
+    , Ok "tcp h:3306|u|p|db|VERIFY_IDENTITY ca=- fp=-|true|auth" )
+  ; ( "VERIFY_CA with no ssl-ca"
+    , (fun () -> make ~tls:(tls Verify_ca) (tcp "h"))
+    , Ok "tcp h:3306|u|p|db|VERIFY_CA ca=- fp=-|true|auth" )
+  ; ( "VERIFY_IDENTITY with a pin"
+    , (fun () -> make ~tls:(tls ~fingerprint:fp32 Verify_identity) (tcp "h"))
+    , Ok ("tcp h:3306|u|p|db|VERIFY_IDENTITY ca=- fp=" ^ hex fp32 ^ "|true|auth")
+    )
+  ; ( "REQUIRED"
+    , (fun () -> make ~tls:(tls Required) (tcp "h"))
+    , Error
+        "ssl-mode=REQUIRED has no authenticator: use VERIFY_CA or \
+         VERIFY_IDENTITY" )
+  ; ( "REQUIRED with a pin"
+    , (fun () -> make ~tls:(tls ~fingerprint:fp32 Required) (tcp "h"))
+    , Error
+        "ssl-mode=REQUIRED has no authenticator: use VERIFY_CA or \
+         VERIFY_IDENTITY" )
+  ; ( "with ssl-ca"
+    , (fun () -> make ~tls:(tls ~ca:"/ca.pem" Verify_ca) (tcp "h"))
+    , Error "give ssl-ca or an authenticator, not both" )
+  ; ( "with ssl-ca and VERIFY_IDENTITY"
+    , (fun () -> make ~tls:(tls ~ca:"/ca.pem" Verify_identity) (tcp "h"))
+    , Error "give ssl-ca or an authenticator, not both" )
+  ; ( "DISABLED"
+    , (fun () -> make ~tls:C.No_tls (tcp "h"))
+    , Error "an authenticator needs TLS: use VERIFY_CA or VERIFY_IDENTITY" )
+  ; ( "a socket"
+    , (fun () -> make (sock "/s"))
+    , Error "version 1 has no TLS on a Unix socket" ) ]
+
 let tests =
   group "Config"
     [ cases "of_url" ~id:fst urls (fun (url, expected) ->
@@ -498,6 +544,33 @@ let tests =
         makes
         (fun (_, got, expected) ->
           equal shown expected (Result.map show (got ())) )
+    ; cases "ip_literal" ~id:fst
+        [ ("127.0.0.1", true)
+        ; ("::1", true)
+        ; ("fe80::1", true)
+        ; ("1.2.3.999", true)
+        ; ("localhost", false)
+        ; ("db.a.example.com", false)
+        ; ("1.2.3", false)
+        ; ("a.1.2.3", false) ]
+        (fun (host, expected) -> equal bool expected (C.ip_literal host))
+    ; cases "make with an authenticator"
+        ~id:(fun (n, _, _) -> n)
+        auth_makes
+        (fun (_, got, expected) ->
+          equal shown expected (Result.map show_auth (got ())) )
+    ; test "of_url has no authenticator, and pp shows one" (fun () ->
+          equal shown (Ok "tcp h:3306|u|p|db|VERIFY_IDENTITY ca=/c fp=-|true")
+            (Result.map show_auth (C.of_url "mysql://u:p@h/db?ssl-ca=/c")) ;
+          let c =
+            Result.get_ok
+              (C.make ~authenticator:auth ~address:(tcp "h") ~user:"u"
+                 ~password:"p" ~database:"db" () )
+          in
+          equal string
+            "{address = tcp h:3306; user = u; password = ***; database = db; \
+             tls = VERIFY_IDENTITY authenticator; kill = true}"
+            (Format.asprintf "%a" C.pp c) )
     ; cases "no message has a part of the password" ~id:Fun.id secrets
         (fun pw ->
           List.iter

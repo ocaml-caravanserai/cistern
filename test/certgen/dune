@@ -24,4 +24,5 @@
   ptime
   mirage-crypto-rng.unix
   unix
+  digestif
   windtrap))

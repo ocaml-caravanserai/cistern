@@ -10,6 +10,22 @@ exception Malformed of string
 
 type cursor = {payload: string; mutable pos: int}
 
+let peer_text ~limit s =
+  let printable c = c >= ' ' && c <= '~' && c <> '"' && c <> '\\' in
+  let n = String.length s in
+  if n >= 1 && n <= limit && String.for_all printable s then s
+  else
+    let b = Buffer.create 64 in
+    Buffer.add_char b '"' ;
+    String.iter
+      (fun c ->
+        if printable c then Buffer.add_char b c
+        else Printf.bprintf b "\\x%02x" (Char.code c) )
+      (String.sub s 0 (Int.min n limit)) ;
+    Buffer.add_char b '"' ;
+    if n > limit then Buffer.add_string b "..." ;
+    Buffer.contents b
+
 let cursor payload = {payload; pos= 0}
 
 let remaining c = String.length c.payload - c.pos

@@ -11,5 +11,12 @@
   cistern.mysql
   weft
   weft.flow
+  cistern_certgen
+  x509
+  tls
+  domain-name
+  ipaddr
+  ptime
+  mirage-crypto-rng
   windtrap)
  (link_flags (-linkall)))

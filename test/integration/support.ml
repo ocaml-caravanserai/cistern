@@ -163,8 +163,8 @@ let kill id =
   wait 100
 
 let gate =
-  "Connect the server asks for full authentication; use VERIFY_IDENTITY, \
-   ssl-fingerprint, or allow-cleartext=socket"
+  "Connect the server asks for full authentication; use VERIFY_IDENTITY with \
+   ssl-ca, a pinned certificate (ssl-fingerprint), or allow-cleartext=socket"
 
 let dialect_text (i : Conn.info) =
   match i.dialect with Mysql -> "mysql" | Mariadb -> "mariadb"

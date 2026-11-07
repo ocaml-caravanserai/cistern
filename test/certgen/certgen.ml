@@ -3,8 +3,8 @@
    obtain one at https://mozilla.org/MPL/2.0/. *)
 
 (* certgen DIR: make the directory DIR with ca.pem, server-cert.pem and
-   server-key.pem (DESIGN.md, "Database servers for the tests"). DIR must not
-   exist. *)
+   server-key.pem, server-cert.sha256 and other-ca.pem (DESIGN.md, "Database
+   servers for the tests"). DIR must not exist. *)
 
 let () =
   match Sys.argv with

@@ -45,8 +45,17 @@ val database : t -> string
 
 val tls : t -> tls
 
+val authenticator : t -> X509.Authenticator.t option
+(** The authenticator of {!make}. A URL has none. *)
+
 val kill : t -> bool
 (** [false] turns [KILL] off (phase 1.5). The default is [true]. *)
+
+val ip_literal : string -> bool
+(** [ip_literal host] is true for an IP literal: an IPv6 address (a host with a
+    [:]) or four dotted groups of digits. [localhost] is not one. The connect
+    uses it to skip the DNS resolve, and the TLS setup to check the IP address
+    in place of a host name, thus the two always agree. *)
 
 val needs_tls : t -> bool
 (** [needs_tls t] is true if [tls t] is not [No_tls]. *)
@@ -96,6 +105,7 @@ val of_url : string -> (t, string) result
 
 val make :
      ?tls:tls
+  -> ?authenticator:X509.Authenticator.t
   -> ?kill:bool
   -> address:address
   -> user:string
@@ -107,8 +117,26 @@ val make :
     rules of {!of_url}, from one shared check: the user, the password and the
     database, the syntax of the host (an IPv6 address has no brackets here), the
     port, the paths (not empty, no control character) and the TLS rules. The
-    default of [tls] is [No_tls] for a socket. A TCP address must have [tls].
-    The default of [kill] is [true]. *)
+    default of [tls] is [No_tls] for a socket. A TCP address must have [tls] or
+    [authenticator]. The default of [kill] is [true].
+
+    [authenticator] checks the certificate of the server in place of [ssl-ca]
+    (phase 1.4). The rules:
+    - It needs TLS on TCP. With no [tls], the mode is [Verify_identity].
+    - [Verify_ca] and [Verify_identity] accept it in place of [ssl-ca] or
+      [ssl-fingerprint]. With [ssl-ca], or with [Required], it is an error.
+    - With [ssl-fingerprint], the two checks run.
+    - The check of the chain and of the name is the task of [authenticator]:
+      Cistern gives it the host name or the IP address of the configuration
+      under [Verify_identity], and no name under [Verify_ca].
+    - An authenticator alone never makes the session verified for the full path
+      of [caching_sha2_password] (DESIGN.md, "Authentication"): an authenticator
+      can accept each certificate. The full path then gives the [Connect]
+      message of the clear-text rule. Give [ssl-fingerprint] too, or use
+      [ssl-ca] with [Verify_identity].
+
+    A configuration with an authenticator holds a function: compare its fields,
+    not the configuration with [=]. *)
 
 val pp : Format.formatter -> t -> unit
 (** [pp] prints the fields. The password shows as [***] if it is not empty. *)

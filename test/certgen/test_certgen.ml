@@ -49,7 +49,28 @@ let tests =
           is_false (verifies ~ip:(ip "127.0.0.2") ~host:None [pki.ca]) ;
           is_false (verifies ~ip:(ip "::1") ~host:None [pki.ca]) )
     ; test "the CA of another Pki does not verify" (fun () ->
-          is_false (verifies ~host:(host "localhost") [other.ca]) )
+          is_false (verifies ~host:(host "localhost") [other.ca]) ;
+          is_false (verifies ~host:(host "localhost") [pki.other_ca]) )
+    ; test "the names of make" (fun () ->
+          (* The names of the simulator, and no names at all. *)
+          let sim = Pki.make ~dns:[] ~ips:["10.0.0.9"; "127.0.0.1"] () in
+          let none =
+            Pki.make ~cn:"MySQL_Server_Auto_Generated" ~dns:[] ~ips:[] ()
+          in
+          let check ?ip ?host p =
+            Result.is_ok
+              (X509.Authenticator.chain_of_trust
+                 ~time:(fun () -> Some today)
+                 [p.Pki.ca] ?ip ~host:(Option.join host) [p.cert] )
+          in
+          is_true (check ~ip:(ip "10.0.0.9") ~host:None sim) ;
+          is_true (check ~ip:(ip "127.0.0.1") ~host:None sim) ;
+          is_false (check ~host:(host "localhost") sim) ;
+          is_false (check ~host:(host "localhost") none) ;
+          is_false (check ~ip:(ip "127.0.0.1") ~host:None none) ;
+          is_true (check ~host:None none) ;
+          equal (option bool) None
+            (Option.map (fun _ -> true) (extension Subject_alt_name none.cert)) )
     ; test "the validity is 2020 to 2040" (fun () ->
           let v time = verifies ~time ~host:(host "localhost") [pki.ca] in
           is_false (v (at "2019-12-31T23:59:59Z")) ;
@@ -73,7 +94,11 @@ let tests =
     ; test "the files decode to the same values" (fun () ->
           let fs = Pki.files pki in
           equal (list string)
-            ["ca.pem"; "server-cert.pem"; "server-key.pem"]
+            [ "ca.pem"
+            ; "server-cert.pem"
+            ; "server-key.pem"
+            ; "server-cert.sha256"
+            ; "other-ca.pem" ]
             (List.map fst fs) ;
           let text name = List.assoc name fs in
           let cert name =
@@ -82,6 +107,13 @@ let tests =
           let der = X509.Certificate.encode_der in
           equal string (der pki.ca) (der (cert "ca.pem")) ;
           equal string (der pki.cert) (der (cert "server-cert.pem")) ;
+          equal string (der pki.other_ca) (der (cert "other-ca.pem")) ;
+          (* The hex SHA-256 of the DER, as openssl x509 -fingerprint -sha256
+             gives it (in lowercase, with no colons). *)
+          equal string
+            (Digestif.SHA256.to_hex
+               (Digestif.SHA256.digest_string (der pki.cert)) )
+            (text "server-cert.sha256") ;
           is_true
             (String.starts_with ~prefix:"-----BEGIN PRIVATE KEY-----"
                (text "server-key.pem") ) ;
@@ -89,13 +121,17 @@ let tests =
             (X509.Private_key.encode_pem
                (Result.get_ok
                   (X509.Private_key.decode_pem (text "server-key.pem")) ) ) )
-    ; test "write makes the directory with the three files" (fun () ->
+    ; test "write makes the directory with the files" (fun () ->
           let parent = temp () in
           let dir = Filename.concat parent "certs" in
           equal (result unit string) (Ok ()) (Pki.write ~dir pki) ;
           equal (list string) ["certs"] (Array.to_list (Sys.readdir parent)) ;
           equal (list string)
-            ["ca.pem"; "server-cert.pem"; "server-key.pem"]
+            [ "ca.pem"
+            ; "other-ca.pem"
+            ; "server-cert.pem"
+            ; "server-cert.sha256"
+            ; "server-key.pem" ]
             (List.sort compare (Array.to_list (Sys.readdir dir))) ;
           List.iter
             (fun (name, text) ->

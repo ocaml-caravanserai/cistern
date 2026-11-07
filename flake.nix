@@ -93,6 +93,10 @@
           weft,
           ptime,
           digestif,
+          tls,
+          x509,
+          domain-name,
+          ipaddr,
         }:
         buildDunePackage {
           pname = "cistern";
@@ -103,6 +107,10 @@
             weft
             ptime
             digestif
+            tls
+            x509
+            domain-name
+            ipaddr
           ];
           doCheck = false;
           meta = meta lib // {
@@ -152,11 +160,8 @@
       testLibraries = ocamlPackages: [
         ocamlPackages.windtrap
         ocamlPackages.ppx_windtrap
-        ocamlPackages.x509
         ocamlPackages.mirage-crypto-ec
         ocamlPackages.mirage-crypto-rng
-        ocamlPackages.ipaddr
-        ocamlPackages.domain-name
         ocamlPackages.fmt
       ];
 

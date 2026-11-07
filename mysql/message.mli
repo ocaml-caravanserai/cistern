@@ -63,6 +63,15 @@ val greeting : string -> (greeting, string) result
     the auth data: it then gives "greeting: the packet is too short". The
     connect checks the capabilities of a greeting that decodes. *)
 
+val write_ssl_request :
+  Weft_flow.Writer.t -> capabilities:int -> charset:int -> unit
+(** [write_ssl_request w ~capabilities ~charset] writes the payload of the SSL
+    request (phase 1.4): the first 32 bytes of {!write_handshake_response}, with
+    the same function. Thus bytes 28 to 31 (the MariaDB extended capabilities)
+    are 0 in the two packets.
+
+    @raise Invalid_argument if the capabilities do not have [Ssl]. *)
+
 val write_handshake_response :
      Weft_flow.Writer.t
   -> capabilities:int

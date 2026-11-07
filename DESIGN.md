@@ -137,13 +137,13 @@ inputs = {
 ```
 
 - All dependencies come from the flake. Cistern does not use `opam install` or Docker. dune makes the `.opam` files only for the package metadata.
-- The OCaml scope is `ocaml-ng.ocamlPackages_5_5.overrideScope` with `weft = callPackage weft.lib.package {}`, `windtrap = callPackage windtrap.lib.windtrap {}`, `ppx_windtrap = callPackage windtrap.lib.ppx_windtrap {}`. This is the pattern of `~/projects/caravan/flake.nix`. Phase 1.4 (TLS) adds `weft-tls = callPackage weft.lib.tlsPackage {}`, the output of weft PR 1c (weft main has `lib = { inherit package tlsPackage; }`). Before phase 1.4, the flake does not refer to `lib.tlsPackage`, because no code of Cistern uses TLS before then.
-- The `weft` input is the main branch of weft. weft PRs 1a and 1b are merged, and `flake.lock` pins one commit. If the codec of phase 1.1 needs a change of `Reader` or `Writer`, a normal weft PR makes it, and an update of `flake.lock` takes it. weft PR 1c is merged. Phase 1.4 updates `flake.lock` and takes `lib.tlsPackage` from weft main.
+- The OCaml scope is `ocaml-ng.ocamlPackages_5_5.overrideScope` with `weft = callPackage weft.lib.package {}`, `windtrap = callPackage windtrap.lib.windtrap {}`, `ppx_windtrap = callPackage windtrap.lib.ppx_windtrap {}`. This is the pattern of `~/projects/caravan/flake.nix`. Phase 1.4 (TLS) adds `weft-tls = callPackage weft.lib.tlsPackage {}`, the output of weft PR 1c (weft main has `lib = { inherit package tlsPackage; }`), with its first user (PR 1.4b1, the TLS flow of `Connection`). PR 1.4a adds `tls`, `x509`, `domain-name` and `ipaddr`, which `Config` and `Tls_setup` use.
+- The `weft` input is the main branch of weft. weft PRs 1a and 1b are merged, and `flake.lock` pins one commit. If the codec of phase 1.1 needs a change of `Reader` or `Writer`, a normal weft PR makes it, and an update of `flake.lock` takes it. weft PR 1c is merged. The pinned commit (8520b5f, weft main on 2026-11-07) has `lib.tlsPackage`, thus phase 1.4 needs no update of `flake.lock`.
 - Systems: `x86_64-linux`, `aarch64-linux`, `aarch64-darwin`. nixpkgs dropped `x86_64-darwin`.
-- OCaml libraries from nixpkgs: `ppxlib`, `digestif` (SHA-1 and SHA-256), `mirage-crypto-rng`, `ptime`, `fmt`. `weft-tls` brings `tls` and `x509`. The tests also use `mirage-crypto-ec` (test certificates).
+- OCaml libraries from nixpkgs: `ppxlib`, `digestif` (SHA-1 and SHA-256), `ptime`, `tls`, `x509`, `domain-name`, `ipaddr` (phase 1.4a), `mirage-crypto-rng` (phase 1.4b1) and `fmt`. The tests also use `mirage-crypto-ec` and `mirage-crypto-rng` (test certificates).
 - Outputs: `lib.package`, `lib.ppxPackage`, `overlays.default`, `packages.<system>.cistern`, `packages.<system>.ppx_cistern`, `devShells.default`, `checks` (build and tests that need no database server), and `packages.<system>.server-mysql84`, `server-mariadb114` and `server-mariadb118` (the nixpkgs servers `mysql84` 8.4.11, `mariadb_114` 11.4.13 and `mariadb_118` 11.8.8, verified on 2026-11-06). The servers are not in the dev shell, so a `nix develop` does not download them. The server outputs come in phase 0 with `test/certgen` and the `db-up` targets, not with the first flake.
 - The dev shell uses `inputsFrom = [ cistern ppx_cistern ]`, so it has every library dependency of the two packages. It adds OCaml 5.5, dune, findlib, `windtrap`, `ppx_windtrap`, `ocaml-lsp`, `odoc`, and `ocamlformat_0_29_0` (pinned, as in weft).
-- Each PR adds a dependency together with its first user. For example, `ptime` comes with `Value`, and `x509` and `mirage-crypto-ec` come with `test/certgen`. At the end of version 1, the packages depend on `weft`, `ppxlib`, `digestif`, `mirage-crypto-rng`, `ptime`, `fmt` and (from phase 1.4) `weft-tls`, and the dev shell adds `mirage-crypto-ec` and `x509` for the tests.
+- Each PR adds a dependency together with its first user. For example, `ptime` comes with `Value`, and `x509` and `mirage-crypto-ec` come with `test/certgen`. At the end of version 1, the packages depend on `weft`, `ppxlib`, `digestif`, `mirage-crypto-rng`, `ptime`, `fmt`, and (from phase 1.4) `weft-tls`, `tls`, `x509`, `domain-name` and `ipaddr`. The dev shell adds `mirage-crypto-ec` for the tests.
 - `flake.lock` pins nixpkgs, weft and windtrap. The server versions follow nixpkgs.
 
 ### Database servers for the tests
@@ -151,7 +151,7 @@ inputs = {
 `make db-up SERVER=<name>`:
 
 1. Gets the server with `nix build --no-link --print-out-paths '.#server-<name>^out'`. The flake has `packages.<system>.server-mysql84`, `server-mariadb114` and `server-mariadb118`. They are not in the dev shell, and `nix flake check` does not build them.
-2. Makes a test CA and a server certificate with `test/certgen`, a small OCaml program that uses `x509` and `mirage-crypto-ec` (the method of weft's `test/tls/tls_support.ml`). No `openssl` is necessary. The keys are ECDSA P-256: the three servers accept them, and use TLS 1.3. The server certificate has the names `localhost` and `127.0.0.1`, and is valid from 2020 to 2040. `test/certgen` is test code: it is not in the package, and the mutation gate does not examine it. `dune runtest` runs its test.
+2. Makes a test CA and a server certificate with `test/certgen`, a small OCaml program that uses `x509` and `mirage-crypto-ec` (the method of weft's `test/tls/tls_support.ml`). No `openssl` is necessary. The keys are ECDSA P-256: the three servers accept them, and use TLS 1.3. The server certificate has the names `localhost` and `127.0.0.1`, and is valid from 2020 to 2040. `certgen` also writes `server-cert.sha256` (the SHA-256 of the DER of the server certificate, in lowercase hex: the value of `ssl-fingerprint`) and `other-ca.pem` (a second CA with no certificate in use, for the tests of a CA of another PKI). A directory of an older `certgen` with no such file is made again. `test/certgen` is test code: it is not in the package, and the mutation gate does not examine it. `dune runtest` runs its test.
 3. Initializes a new data directory in `.db/<name>` on each `db-up`. The data is not in `_build`, because `dune clean` deletes `_build`.
    - `DB_DIR` changes `.db`. `db-up` removes or uses a directory only if it has the file `.cistern-db`, which `db.sh` writes. Else `db-up` stops.
    - The directories `.db/<name>` and `.db/certs` have the mode 700. Thus only the owner can use the socket of root. In `.db/certs`, `ca.pem` and `server-cert.pem` have the mode 644, and `server-key.pem` has the mode 600.
@@ -180,7 +180,7 @@ inputs = {
    - The users have the host `%` and the fixed password `cistern`. The bind address keeps them local. A connection on the Unix socket also gets `<user>@%`.
 5. Writes `.db/<name>/env`, with shell assignments of these values:
    - `DB_SERVER`, `DB_STORE`, `DB_VERSION` (from `@@version`) and `DB_PID`.
-   - `DB_PORT`, `DB_SOCKET`, `DB_USER`, `DB_PASSWORD`, `DB_DATABASE`, `DB_CA` and `DB_PLUGIN`.
+   - `DB_PORT`, `DB_SOCKET`, `DB_USER`, `DB_PASSWORD`, `DB_DATABASE`, `DB_CA`, `DB_FINGERPRINT` (the hex of `server-cert.sha256`), `DB_OTHER_CA` and `DB_PLUGIN`.
    - `DB_ADMIN_USER`: root on `DB_SOCKET`, with no password. These rights are necessary for some claims of phase 1.1, for example `read_only` and `SHUTDOWN`.
 
 `mysql_native_password` is tested only on MariaDB, because MySQL 8.4 disables it by default.
@@ -244,7 +244,7 @@ cistern/
   names/    (cistern.names)   The rules of names, the names of indexes (only the stdlib)
   core/     (cistern.core)    Value, Dialect, literals, Schema, model AST, Decoder, Error, Event, MODEL
   sql/      (cistern.sql)     SQL AST, compiler from the model AST, serializer for each dialect, DDL
-  mysql/    (cistern.mysql)   Config and URL parser, connect, TLS, authentication, text protocol, sessions
+  mysql/    (cistern.mysql)   Config and URL parser, Tls_setup, connect, TLS, authentication, text protocol, sessions
   cistern/  (cistern)         Typed API, Raw, pool, killer, Tx, execution  (depends on core, sql, mysql)
   ppx/      (ppx_cistern)     The deriver
   test/  unit, prop, stateful, expect, sim, integration, nounix, readme, typeerror, ocaml55
@@ -697,7 +697,13 @@ Rules:
 - `Config.t` is abstract, so that no generic printer shows the password. No message of `of_url` has a part of the URL.
 - Phase 1.1 parses the TLS settings with these final rules, but it has no TLS. The connect refuses each configuration that needs TLS, with `Connect "TLS is not supported before phase 1.4"`, before the DNS resolve and before a socket opens.
 
-The database is necessary: a URL without it gives an error, because the session reset needs it for `COM_INIT_DB`. `Config.of_url` gives `(Config.t, string) result`. `Config.make ?tls ?kill ~address ~user ~password ~database ()` takes the same values, with the same checks (one shared function). Phase 1.4 adds `?authenticator:X509.Authenticator.t` to `Config.make`. The CA file is read with `Weft.File`. The printers of `Config.t` and the `Connect` events never show the password.
+The database is necessary: a URL without it gives an error, because the session reset needs it for `COM_INIT_DB`. `Config.of_url` gives `(Config.t, string) result`. `Config.make ?tls ?authenticator ?kill ~address ~user ~password ~database ()` takes the same values, with the same checks (one shared function). The rules of `?authenticator:X509.Authenticator.t` (phase 1.4):
+
+- It needs TLS on TCP. A TCP address with an authenticator and no `tls` gives `VERIFY_IDENTITY`.
+- `VERIFY_CA` and `VERIFY_IDENTITY` accept it in place of `ssl-ca` or `ssl-fingerprint`. With `ssl-ca`, or with `REQUIRED`, it is an error. With `ssl-fingerprint`, the two checks run.
+- The check of the chain and of the name is the task of the authenticator. Cistern gives it the host or the IP address of the configuration under `VERIFY_IDENTITY`, and no name under `VERIFY_CA`.
+- An authenticator alone never makes the session verified for the clear-text rule ("Authentication"), because it can accept each certificate (for example `X509.Authenticator.of_string "none"`). Version 1 has no flag to change this.
+- A configuration with an authenticator holds a function: compare its fields, not the configuration with `=`. The CA file is read with `Weft.File`. The printers of `Config.t` and the `Connect` events never show the password.
 
 `ssl-mode` uses the MySQL names:
 
@@ -706,9 +712,21 @@ The database is necessary: a URL without it gives an error, because the session 
 | `DISABLED` | No | None |
 | `REQUIRED` | Yes | None, if the configuration has no `ssl-fingerprint`. Documented: no protection against an attacker in the middle. With `ssl-fingerprint`, the pin is checked. With `ssl-ca`, the configuration is an error |
 | `VERIFY_CA` | Yes | The chain only, with `ssl-ca` or the authenticator. No peer name is set. |
-| `VERIFY_IDENTITY` | Yes | The chain and the name: `Tls.Config.peer` for a host name, `Tls.Config.ip` for an IP address |
+| `VERIFY_IDENTITY` | Yes | The chain and the name: `~peer_name` for a host name (also `localhost`), `~ip` for an IP address. The name always comes from the host of the configuration, never from the resolved address |
 
-`ssl-fingerprint=sha256:<hex>` pins the SHA-256 hash of the server certificate (`X509.Authenticator.server_cert_fingerprint`). The pin is checked in each mode. It needs TLS, and it is a verified identity for the clear-text rule, the same as `VERIFY_IDENTITY`.
+`ssl-fingerprint=sha256:<hex>` pins the SHA-256 hash of the server certificate (`X509.Authenticator.cert_fingerprint`, x509 1.2.0). The pin is checked in each mode, also with a CA (the two checks run). It needs TLS, and it is a verified identity for the clear-text rule. The pin also checks the validity dates of the certificate: a pinned certificate that expired fails. `VERIFY_CA` with only a pin checks the pin alone, with no name. `VERIFY_IDENTITY` with only a pin also checks the name. Thus a pinned certificate with no host name (the certificate that MySQL makes) needs `REQUIRED` with the pin, the default of a URL with only `ssl-fingerprint`. Each check gets the time of the wall clock of weft (`Tls_setup.now`). If the time is not known, each check fails, because x509 checks no time then.
+
+The configurations that are verified for the clear-text rule (`Tls_setup.make`, with a unit table for each row):
+
+| Configuration | Check of the certificate | Verified |
+|---|---|---|
+| `REQUIRED` | None | No |
+| `REQUIRED` with a pin | The pin, no name | Yes |
+| `VERIFY_CA` with `ssl-ca` | The chain, no name | No |
+| `VERIFY_CA` with a pin (and maybe `ssl-ca` or an authenticator) | The pin (and the chain), no name | Yes |
+| `VERIFY_CA` or `VERIFY_IDENTITY` with only an authenticator | The authenticator | No |
+| `VERIFY_IDENTITY` with `ssl-ca` | The chain and the name | Yes |
+| `VERIFY_IDENTITY` with a pin (and maybe `ssl-ca` or an authenticator) | The pin and the name (and the chain) | Yes |
 
 Defaults:
 
@@ -723,7 +741,7 @@ Defaults:
 1. Read the server greeting (protocol v10): capabilities, the authentication plugin, the 20-byte scramble, and the MariaDB extended capabilities when the `CLIENT_MYSQL` bit is clear. The greeting decides only the framing and the capabilities.
 2. Client capabilities: `CLIENT_PROTOCOL_41`, `CLIENT_SECURE_CONNECTION`, `CLIENT_PLUGIN_AUTH`, `CLIENT_DEPRECATE_EOF`, `CLIENT_FOUND_ROWS`, `CLIENT_TRANSACTIONS`, `CLIENT_CONNECT_WITH_DB`, `CLIENT_MULTI_RESULTS`, and `CLIENT_SSL` with TLS (phase 1.4), each only if the server has it. A server with no `CLIENT_PROTOCOL_41`, `CLIENT_SECURE_CONNECTION`, `CLIENT_PLUGIN_AUTH`, `CLIENT_DEPRECATE_EOF` or `CLIENT_CONNECT_WITH_DB` gives `Connect`. A greeting of another protocol also gives `Connect`. The first auth response uses the plugin of the greeting if it is one of the two plugins. Else it uses the native scramble with the name `mysql_native_password`, and the server then switches. Not set: `CLIENT_MULTI_STATEMENTS`, `CLIENT_LOCAL_FILES`, `CLIENT_SESSION_TRACK`, `MARIADB_CLIENT_PROGRESS`.
 3. Character set byte in the handshake: 45 (`utf8mb4_general_ci`), which exists on the two servers.
-4. TLS: the client sends the SSL request packet (sequence id 1; on MariaDB with the same extended capabilities in bytes 28 to 31), then starts `Weft_tls.client`. The reader must have no buffered bytes at this point. If it has, the client fails. The handshake response then has sequence id 2. Under `REQUIRED` and stronger modes, a server without `CLIENT_SSL` fails.
+4. TLS: the client sends the SSL request packet (sequence id 1). It is the first 32 bytes of the handshake response, from the same function (`Message.write_ssl_request`), thus the capabilities, the character set and bytes 28 to 31 (the MariaDB extended capabilities, 0) are the same in the two packets. Then the client starts `Weft_tls.client`. The reader must have no buffered bytes at this point. If it has, the client fails. The handshake response then has sequence id 2. Under `REQUIRED` and stronger modes, a server without `CLIENT_SSL` fails.
 5. The client checks at creation that the application set the TLS random generator (`mirage-crypto-rng`).
 
 ### Authentication
@@ -735,19 +753,21 @@ Defaults:
 
 The clear-text password of the full path goes only:
 
-- under `VERIFY_IDENTITY`;
-- with `ssl-fingerprint`;
+- under `VERIFY_IDENTITY` with `ssl-ca`;
+- with a pinned certificate (`ssl-fingerprint`), in each mode;
 - on a Unix socket with `allow-cleartext=socket`.
+
+An authenticator of the program alone is not enough ("Configuration", the table of the verified configurations).
 
 The socket rule is an explicit opt-in for every socket. A check of the path is not safe: on macOS `/tmp` is a link to `/private/tmp`, and other directories (for example `/dev/shm`) are also writable by all users. While the server is down, a local user can make a socket at such a path. The client does not have the owner of the directory (`Weft.File.stat` gives `perm` but no owner), so it cannot check the directory.
 
-In other cases the client fails with `Connect "the server asks for full authentication; use VERIFY_IDENTITY, ssl-fingerprint, or allow-cleartext=socket"`. Thus a server or an attacker that answers `0x04` cannot get the password. With `DISABLED` over TCP, the first connect after each server restart needs the full path, so it fails with this message (documented).
+In other cases the client fails with `Connect "the server asks for full authentication; use VERIFY_IDENTITY with ssl-ca, a pinned certificate (ssl-fingerprint), or allow-cleartext=socket"`. Thus a server or an attacker that answers `0x04` cannot get the password. With `DISABLED` over TCP, the first connect after each server restart needs the full path, so it fails with this message (documented).
 
 - One function, `may_send_cleartext`, decides at the one place that writes the password: in phase 1.1, a Unix socket with `allow-cleartext=socket` (the opt-in is a part of the socket address). The password goes with a NUL at the end. When the gate refuses, the connection closes and nothing more goes.
 - `AuthMoreData` is accepted only for `caching_sha2_password`, and only `0x01 0x03` (then an OK) and `0x01 0x04` (then the gate). Another byte, a public key, or `0x04` after `0x03` gives `Connect`.
 - An empty password gives an empty auth response for the two plugins.
 - Note for `ssl-mode=DISABLED`: over plain TCP, the two scrambles let a passive listener attack the password offline, and the OK of MariaDB after the authentication holds a hash of the password hash.
-- `AuthSwitchRequest`, at most one, to one of the two plugins: the client uses the first 20 bytes of the new plugin data (20 bytes and a NUL). Another length fails. A switch to another plugin gives `Connect "unsupported authentication plugin <name>"`. A name that is not 1 to 64 printable ASCII bytes is escaped and cut. For example, MariaDB `root` uses `unix_socket` by default.
+- `AuthSwitchRequest`, at most one, to one of the two plugins: the client uses the first 20 bytes of the new plugin data (20 bytes and a NUL). Another length fails. A switch to another plugin gives `Connect "unsupported authentication plugin <name>"`. A name that is not 1 to 64 printable ASCII bytes is escaped and cut (`Wire.peer_text ~limit:64`). The text of a TLS failure in a `Connect` message uses the same function with a limit of 200 (phase 1.4): x509 prints the whole certificate of the peer, which an attacker makes. For example, MariaDB `root` uses `unix_socket` by default.
 - The integration tests run with TLS (`VERIFY_IDENTITY` with the test CA, and `ssl-fingerprint`) or a Unix socket with `allow-cleartext=socket`, and one test empties the authentication cache first.
 
 ### Session
@@ -995,7 +1015,7 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: abort the connection
     - A `Tx` past its deadline of 300 ms gives `Timeout`, one `ROLLBACK`, and no write: the timer cancels a wait in the callback at the deadline, and the time check catches a callback that returns later (a wait in a shield). The test takes the time at the end of the callback, because on MySQL 8.4 the `ROLLBACK` of an `INSERT` into a new table can take up to about 1 s on the server (0.75 s to 0.94 s in the records, and not each time).
     - Root holds `FLUSH TABLES WITH READ LOCK`, and polls `PROCESSLIST` until the `COMMIT` of a `Tx` waits. `KILL QUERY` of the `COMMIT` gives `Outcome_unknown commit`, and after `UNLOCK TABLES` no write stays (V8). A cancel of the caller while the `COMMIT` waits gives the result of the `COMMIT` (the shield), and the write is committed.
     - With a global `completion_type = 'CHAIN'` (set back to `DEFAULT` at the end), two `Tx` commit on the same connection. Thus the OK of `COMMIT` had `IN_TRANS` clear, because else the checkin aborts the connection (V11, claim C26).
-    - The timing group (nightly): a `Tx` with a deadline of 500 ms that waits for a row lock gives `Outcome_unknown statement` for the `UPDATE` and `Timeout` for the `Tx`, and the holder of the lock commits. A `COMMIT` that waits 2.5 s on `FLUSH TABLES WITH READ LOCK`, after the deadline of 1 s of its `Tx`, commits: the flow deadline of `COMMIT` is at least 5 s.
+    - The timing group (nightly): in a `Tx` with a deadline of 500 ms, an `UPDATE` with a statement deadline of 300 ms waits for a row lock. It gives `Outcome_unknown statement`, the `Tx` gives `Timeout`, and the holder of the lock commits. The two deadlines are not at the same instant, because then the timer of the callback can fire first (it did on macOS), and the test would depend on the order of two timers. A `COMMIT` that waits 2.5 s on `FLUSH TABLES WITH READ LOCK`, after the deadline of 1 s of its `Tx`, commits: the flow deadline of `COMMIT` is at least 5 s.
   - Phase 1.1 runs Cistern's own client: the connect on the socket and on TCP (`ssl-mode=DISABLED`), the session values, the admin route (root on the socket with no password), a wrong password and an unknown database (1044 for the test user, which has no rights on other databases), and a socket path that does not exist (a network error, not a DNS error). After `KILL CONNECTION` from root, three pings give `Connection_lost`. The idle timeout is a timing test, thus it comes with the timing claims (phase 1.1e).
   - On MySQL, a TCP connection with `DISABLED` uses only the fast path of `caching_sha2_password`. Thus each TCP test first warms the cache with a connect on the socket with `allow-cleartext=socket`, and the tests do not depend on their order. A wrong password over TCP then gives the message of the gate, not 1045.
   - The MySQL sequence: `FLUSH PRIVILEGES` as root; TCP gives the message of the gate; the socket without the opt-in gives it too; the socket with the opt-in passes (the full path); then TCP passes (the fast path).

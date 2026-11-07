@@ -173,6 +173,22 @@ let tests =
             (Result.map greeting_text (M.greeting "")) ;
           equal res (Error "greeting: the packet is too short")
             (Result.map greeting_text (M.greeting (String.sub mysql84 0 40))) )
+    ; test "the SSL request" (fun () ->
+          (* The capabilities of MySQL (CLIENT_MYSQL set) and of MariaDB
+             (clear), with CLIENT_SSL: 32 bytes, and bytes 28 to 31 are 0. *)
+          List.iter
+            (fun caps ->
+              equal string
+                ( String.init 4 (fun i ->
+                      Char.chr ((caps lsr (8 * i)) land 0xFF) )
+                ^ "\x00\x00\x00\x01" ^ "\x2d" ^ String.make 23 '\x00' )
+                (Wire_io.written (fun w ->
+                     M.write_ssl_request w ~capabilities:caps ~charset:45 ) ) )
+            [0x81aa0b; 0x81aa0a] ;
+          raises (Invalid_argument "Message.write_ssl_request: no CLIENT_SSL")
+            (fun () ->
+              Wire_io.written (fun w ->
+                  M.write_ssl_request w ~capabilities:0x81a20a ~charset:45 ) ) )
     ; test "the handshake response" (fun () ->
           let out =
             Wire_io.written (fun w ->

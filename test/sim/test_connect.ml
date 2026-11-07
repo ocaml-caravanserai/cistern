@@ -77,8 +77,8 @@ let connect_close config sim =
   no_client_fd sim ; r
 
 let gate =
-  "Connect the server asks for full authentication; use VERIFY_IDENTITY, \
-   ssl-fingerprint, or allow-cleartext=socket"
+  "Connect the server asks for full authentication; use VERIFY_IDENTITY with \
+   ssl-ca, a pinned certificate (ssl-fingerprint), or allow-cleartext=socket"
 
 let caps_with_mysql = F.caps_mysql
 
@@ -141,7 +141,17 @@ let sha2_response =
 
 let tests =
   group "Connection"
-    [ test "native authentication on MariaDB, ping and close" (fun () ->
+    [ test "Tls_setup.now is the wall clock of weft" (fun () ->
+          (* The time of the check of a certificate (phase 1.4). *)
+          let t =
+            Weft_sim.run (fun sim ->
+                Weft_sim.set_posix sim
+                  (Weft.Time.posix_of_unix_s 1_750_000_000.) ;
+                Cistern_mysql.Tls_setup.now () )
+          in
+          equal (option string) (Some "2025-06-15T15:06:40Z")
+            (Option.map (Ptime.to_rfc3339 ~tz_offset_s:0) t) )
+    ; test "native authentication on MariaDB, ping and close" (fun () ->
           let result, received =
             F.run
               ( F.handshake ~greet:mariadb_greeting ~values:mariadb_session ()
