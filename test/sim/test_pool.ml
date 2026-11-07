@@ -304,7 +304,42 @@ let storm_test ~fibers ~seeds () =
 
 let tests =
   group "Db and the pool"
-    [ test "a query, and its events" (fun () ->
+    [ test "Pool.with_conn: Discard on a usable connection aborts it" (fun () ->
+          let r, _ =
+            with_pool ~size:1 (fun _ db pool ->
+                ignore (Db.exec pool (clean ())) ;
+                let p = Db.Private.pool pool in
+                let start = Pool.now p in
+                let deadline = Pool.add_span start (Span.s 5) in
+                let at_event = ref "" in
+                let usable = ref false in
+                let b =
+                  Pool.with_conn p ~start ~deadline (fun held ->
+                      usable := Cistern_mysql.Connection.usable held.c ;
+                      ( Pool.Value ()
+                      , (fun () ->
+                          (* The event comes after the checkin: the slot is
+                             free, and the socket is closed. *)
+                          let _, in_use, _, _, _ = Pool.Private.state p in
+                          at_event :=
+                            Printf.sprintf "sockets %d in use %d"
+                              (Pool.Private.sockets p) in_use )
+                      , Pool.Discard ) )
+                in
+                ( match b with
+                | Pool.Ran (Pool.Value (), event) ->
+                    event ()
+                | _ ->
+                    at_event := "no Ran" ) ;
+                (* The server sees the close. *)
+                Time.sleep Mono (Span.ms 1) ;
+                let open_after = db.open_now in
+                ignore (Db.exec pool (clean ())) ;
+                Printf.sprintf "%b %s, open %d, connects %d" !usable !at_event
+                  open_after db.connects )
+          in
+          equal string "true sockets 0 in use 0, open 0, connects 2" r )
+    ; test "a query, and its events" (fun () ->
           let r, events =
             with_pool (fun _ _ pool ->
                 result_text (Db.exec pool (q "SELECT 5")) )
