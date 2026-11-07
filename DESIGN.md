@@ -41,8 +41,10 @@ At run time, for each statement:
 | Server | Version | Default authentication plugin |
 |---|---|---|
 | MySQL | 8.4 (LTS) | `caching_sha2_password` |
-| MariaDB | 11.4 (LTS) | `mysql_native_password` (not verified) |
-| MariaDB | 11.8 (LTS) | `mysql_native_password` (not verified) |
+| MariaDB | 11.4 (LTS) | `mysql_native_password` |
+| MariaDB | 11.8 (LTS) | `mysql_native_password` |
+
+The greeting of each server names its default plugin, and `CREATE USER ... IDENTIFIED BY` gives the same plugin (verified on MySQL 8.4.11, MariaDB 11.4.13 and 11.8.8 on 2026-11-07).
 
 In version 1:
 
@@ -663,18 +665,31 @@ Rules:
 
 ### Configuration
 
-`Config.of_url` takes `mysql://` (`mariadb://` is an alias): user, password (percent-decoded), host, port, database, `socket=<path>`, `ssl-mode`, `ssl-ca=<path>`, `ssl-fingerprint=sha256:<hex>`, `allow-cleartext=socket`, `kill=true|false`. The database is necessary: a URL without it gives an error, because the session reset needs it for `COM_INIT_DB`. It gives `(Config.t, string) result`. `Config.make` takes the same values, and also `?authenticator:X509.Authenticator.t`. The CA file is read with `Weft.File`. The printers of `Config.t` and the `Connect` events never show the password.
+`Config.of_url` takes `mysql://` (`mariadb://` is an alias): user, password (percent-decoded), host, port (default 3306), database, `socket=<path>`, `ssl-mode`, `ssl-ca=<path>`, `ssl-fingerprint=sha256:<hex>`, `allow-cleartext=socket`, `kill=true|false` (default `true`). The rules of the URL:
+
+- The scheme is in lowercase. The URL must not have a space or a control character: use `%20` and the other escapes. `+` stays `+`.
+- In the URL, the characters `@`, `/`, `?` and `#` of the user and the password must be percent-encoded. The password can have `:`. A raw `@` in the database part is an error, because it is probably a part of a password that is not encoded.
+- After the decode, no value (the user, the password, the database, the host, the socket path, the CA path) has a control character. A NUL ends a string in the handshake and in the socket address of weft.
+- The host is an IPv4 address, a name, or an IPv6 address in brackets, with no zone id (`[fe80::1%25eth0]` is an error). `localhost` is TCP to 127.0.0.1, not the Unix socket (the MySQL client uses the socket for `localhost`). This is safe: TCP needs a TLS setting.
+- An unknown key, a key two times, an empty value, or a fragment (`#`) is an error. The keys, `sha256:`, `socket`, `true` and `false` are in lowercase. The `ssl-mode` values have no case.
+- `socket=` with a host or a port is an error. `socket=` refuses `ssl-ca`, `ssl-fingerprint` and each `ssl-mode` other than `DISABLED`: version 1 has no TLS on a Unix socket.
+- `allow-cleartext=socket` is only for `socket=`. Thus the opt-in is a part of the socket address, and a TCP configuration cannot hold it.
+- `ssl-mode=DISABLED` with `ssl-ca` or `ssl-fingerprint` is an error. `ssl-mode=REQUIRED` with `ssl-ca` is an error, because the CA would have no effect: use `VERIFY_CA` or `VERIFY_IDENTITY`. `VERIFY_CA` and `VERIFY_IDENTITY` need `ssl-ca` or `ssl-fingerprint` in a URL, because a URL has no authenticator.
+- `Config.t` is abstract, so that no generic printer shows the password. No message of `of_url` has a part of the URL.
+- Phase 1.1 parses the TLS settings with these final rules, but it has no TLS. The connect refuses each configuration that needs TLS, with `Connect "TLS is not supported before phase 1.4"`, before the DNS resolve and before a socket opens.
+
+The database is necessary: a URL without it gives an error, because the session reset needs it for `COM_INIT_DB`. `Config.of_url` gives `(Config.t, string) result`. `Config.make ?tls ?kill ~address ~user ~password ~database ()` takes the same values, with the same checks (one shared function). Phase 1.4 adds `?authenticator:X509.Authenticator.t` to `Config.make`. The CA file is read with `Weft.File`. The printers of `Config.t` and the `Connect` events never show the password.
 
 `ssl-mode` uses the MySQL names:
 
 | `ssl-mode` | TLS | Certificate check |
 |---|---|---|
 | `DISABLED` | No | None |
-| `REQUIRED` | Yes | None. Documented: no protection against an attacker in the middle. |
+| `REQUIRED` | Yes | None, if the configuration has no `ssl-fingerprint`. Documented: no protection against an attacker in the middle. With `ssl-fingerprint`, the pin is checked. With `ssl-ca`, the configuration is an error |
 | `VERIFY_CA` | Yes | The chain only, with `ssl-ca` or the authenticator. No peer name is set. |
 | `VERIFY_IDENTITY` | Yes | The chain and the name: `Tls.Config.peer` for a host name, `Tls.Config.ip` for an IP address |
 
-`ssl-fingerprint=sha256:<hex>` pins the SHA-256 hash of the server certificate (`X509.Authenticator.server_cert_fingerprint`). It needs TLS, and it is a verified identity for the clear-text rule, the same as `VERIFY_IDENTITY`.
+`ssl-fingerprint=sha256:<hex>` pins the SHA-256 hash of the server certificate (`X509.Authenticator.server_cert_fingerprint`). The pin is checked in each mode. It needs TLS, and it is a verified identity for the clear-text rule, the same as `VERIFY_IDENTITY`.
 
 Defaults:
 
@@ -971,5 +986,7 @@ The reviews of drafts 4 and 5 produced this PostgreSQL design. Keep it for the l
 ## Status
 
 Draft 12, 2026-11-06. It fixes the findings of review round 5 on draft 11. You approved it on 2026-11-06. Phase 0 started on 2026-11-06: weft PR 1a (ocaml-caravanserai/weft#55) and weft PR 1b (ocaml-caravanserai/weft#56) are merged. The owner merged PR 1b before phase 1.1, so the flake uses weft main. weft PR 1c (`weft-tls`) is merged too (ocaml-caravanserai/weft#58, 6f05d17), and weft main has `lib.tlsPackage`. Cistern takes it in phase 1.4. The caravan PR is done (ocaml-caravanserai/caravan#36, 2026-11-06): caravan main uses `weft.flow` and `weft-tls`. Thus all four prerequisite PRs are done: weft #55, #56 and #58, and caravan #36.
+
+Phase 0 is done (2026-11-07): ocaml-caravanserai/cistern#1 (the skeleton), #2, #3 and #4 (`cistern.core`) and #5 (the test servers). The CI of #5 passed on all jobs, also the three macOS legs of `db.yml`. Phase 1.1 starts with its plan of six pull requests.
 
 Round 5 found 3 critical defects. Two of them were in fixes of round 4 (the session reset and the killer drain), and one was a gap from an earlier draft (`Decimal`). Most of the critical and major findings are in the cancel path with `KILL`. Thus phases 1.1 to 1.4 ship without `KILL` (`kill=false`), and phase 1.5 adds it. The remaining risk is in server behavior that only a real server can show (the "not verified" claims). Phase 1.1 tests these claims first.
