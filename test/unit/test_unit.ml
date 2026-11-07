@@ -24,4 +24,5 @@ let () =
        ; Test_message.tests
        ; Test_resultset.tests
        ; Test_column.tests
+       ; Test_outcome.tests
        ; Test_scramble.tests ] )
