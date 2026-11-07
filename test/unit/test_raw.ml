@@ -32,6 +32,13 @@ let tests =
         (fun (_, f) ->
           let r, expected = f () in
           equal (result string string) (Ok expected) (text r) )
+    ; test "redacted" (fun () ->
+          equal string "SELECT ? , ?  FROM t WHERE a = ? "
+            (redacted
+               ( sql "SELECT" ++ v (Text "secret") ++ sql ","
+               ++ (v (Float Float.nan) ++ sql " FROM t WHERE a =")
+               ++ v (Bytes "x") ) ) ;
+          equal string "" (redacted (sql "")) )
     ; cases "a value with no literal" ~id:fst
         [ ( "NaN"
           , fun () ->

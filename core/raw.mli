@@ -28,6 +28,12 @@ val to_string : t -> (string, string) result
     contains the value. The caller makes
     [Invalid_value {code = None; message = msg}] from it. *)
 
+val redacted : t -> string
+(** [redacted r] is the text of [r] with [" ? "] in place of each literal: the
+    SQL of an event, which holds no value (DESIGN.md, "Shared state and the
+    query hook"). It never fails. A literal that a program writes into a {!sql}
+    fragment is not redacted: [sql] takes only program text. *)
+
 (** The result of a raw query: the names of the columns, and the rows in the
     order of the server. Each row has one value for each column. *)
 type result = {columns: string array; rows: Value.t array list}
