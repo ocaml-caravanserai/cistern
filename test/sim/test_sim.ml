@@ -22,5 +22,6 @@ let () =
          ; Test_connect.ping_tests
          ; Test_query.tests
          ; Test_query.pool_tests
-         ; Test_pool.tests ]
+         ; Test_pool.tests
+         ; Test_tx.tests ]
        @ slow ) )

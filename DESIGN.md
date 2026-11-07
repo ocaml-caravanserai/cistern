@@ -114,7 +114,7 @@ All numbers of version 1 are in this table. The other sections refer to it.
 | One `KILL` | 2 s |
 | Age limit of a `Killing` slot | 30 s (more than one connect plus `pool_size` kills), then the slot is free |
 | Kill drain at the end of `with_db` | 15 s (one connect plus a few kills) |
-| Longest wait of an outer cancel of `with_db` | About 45 s: a `COMMIT` in its shield (30 s), then the drain (15 s). Documented. |
+| Longest wait of an outer cancel of `with_db` | About 46 s: a `COMMIT` in its shield (30 s, and the guard 1 s later), then the drain (15 s). Documented. |
 | Keys in one `IN (...)` | 1000 |
 | Identifier length | 64 characters |
 | Statement size (write) | The payload of `COM_QUERY` (1 byte and the SQL text) must be less than the smaller of `0xFFFFFF` and `@@max_allowed_packet` (read at connect), because the server refuses a payload equal to `max_allowed_packet` (verified on the pinned servers). Thus the SQL text has at most the smaller of the two, minus 2 bytes. The client checks the length before it sends (`Packet.query_fits`). A hex literal doubles the size of a value, so one value can have at most about 8 MiB. |
@@ -438,7 +438,7 @@ Note: the field names of `Q` hide user values with the same names under `Todo.Q.
 
 ### Core user types
 
-The module `Cistern` gives the types of the user: `Db`, `Stmt`, `Raw`, `Error`, `Event`, `Value`, `Decimal`, `Dialect`, `Exec_result`, `Config` and the exception `Cistern_error`. The pool modules (`Pool`, `Pool_state`, `Exec`) are internal: only the tests use them, through `Cistern.Private`.
+The module `Cistern` gives the types of the user: `Db`, `Tx`, `Stmt`, `Raw`, `Error`, `Event`, `Value`, `Decimal`, `Dialect`, `Exec_result`, `Config` and the exception `Cistern_error`. The pool modules (`Pool`, `Pool_state`, `Exec`) are internal: only the tests use them, through `Cistern.Private`.
 
 ```ocaml
 module Db : sig
@@ -547,7 +547,7 @@ Order of the error rules:
 - The write rule: a statement counts as sent when the flush of its command packet returned. If the flush raised (`EPIPE`, `ECONNRESET`, a closed flow), the server did not get the whole packet, and the client gives `Connection_lost`. Phase 1.4 uses the same rule on a TLS flow.
 - Rule R-SEQ0: an ERR with the sequence id 0 where the first packet of the reply (id 1) is expected came before the command (for example 4031 at the idle timeout). The client gives `Connection_lost` and closes the connection, also for a write: the server did not read the command. Thus 4031 before the command is not `Outcome_unknown`. Claim C9 shows the two rules: after the idle timeout, a `ping` and an `INSERT` give `Connection_lost` on the two servers, on TCP (MySQL sends 4031) and on the socket (the write fails), and the row is not written.
 - `Outcome.decide` (`cistern.mysql`) is the table of these rules for one command. Each event breaks the connection, except two. A server error that `Error.of_server` does not map to `Connection_lost` leaves the connection usable (also 1317), except 1153, which breaks it. A value that does not decode leaves it usable too, because the client read the whole reply. A malformed packet gives `Outcome_unknown` for a write also after the column count: the statement ran, but a `CALL` can run more statements after its first result set, and the client cannot read their outcome. A `LOCAL INFILE` request gives `Decode`: the server waits for a file, thus it did not run the statement.
-- At the level of `Db.transaction`: if the client closed the connection before it sent `COMMIT`, the server rolled back. Then `Db.transaction` gives `Timeout` or `Connection_lost`, not `Outcome_unknown `Statement`, because a retry of the whole transaction is safe.
+- At the level of `Db.transaction`: if the client closed the connection before it sent `COMMIT`, the server rolled back. Then `Db.transaction` gives `Timeout` or `Connection_lost`, not `Outcome_unknown `Statement`, because a retry of the whole transaction is safe. This holds only if each write statement of the transaction was DML: a DDL statement or a `CALL` can commit by itself, and then `Outcome_unknown `Statement` stays ("Transactions").
 
 Error mapping. The key is (server, error number). A number that the table does not have uses the SQLSTATE: class `23` gives `Constraint_violation Other_constraint`, and `40001` gives `Retryable `Deadlock`.
 
@@ -887,42 +887,62 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: abort the connection
 
 ### Transactions
 
-- `Tx.t` holds one connection, an `Atomic` active flag, a failed flag with the first error, and the id of the fiber of the callback (`Fiber.self`). Use from another fiber, or after the end, raises `Invalid_argument`.
-- `Db.t` keeps an `Atomic` set of the fiber ids that hold a `Tx.t`. `Db.exec`, `Db.transaction`, `push_schema` and `check_schema` from such a fiber raise `Invalid_argument`, because they would wait for a second connection. A child fiber that the callback forks is not in the set (documented).
-- Errors. In MySQL and MariaDB, a failed statement rolls back only the statement, except some errors. Thus:
-  - These errors fail the `Tx`: 1213; 1205 when `@@innodb_rollback_on_timeout` is on; `Read_only`; `Timeout`; `Outcome_unknown`; `Connection_lost`; 1153; a cancel (the `Tx` fails, and `Cancelled` goes up).
-  - An OK packet (also the OK at the end of a result set) with `SERVER_STATUS_IN_TRANS` clear means that the server committed the transaction, for example after a raw DDL statement, `TRUNCATE` or `LOCK TABLES`. The writes before it are committed. The `Tx` fails with `Implicit_commit`, never with a `Retryable` error, so that the user does not run the committed writes again. Documented: raw statements with an implicit commit end the `Tx`.
-  - `Tx.exec` refuses (`Invalid_argument`) a raw statement whose first fragment, after leading white space, does not start with a letter, or starts with `BEGIN`, `START`, `COMMIT`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`, `XA`, `LOCK`, `UNLOCK` or `SET` (any case). A raw `START TRANSACTION` commits the open transaction and sets `SERVER_STATUS_IN_TRANS` again, so the flag cannot show it. This is a check of the first word, not a lexer.
-  - After an error whose number is not in the list of statement-only errors (constraint, `Invalid_value`, `Statement_timeout` numbers), the client sends `COM_PING` before it gives the error. An ERR packet has no status flags, and the OK of the ping shows `SERVER_STATUS_IN_TRANS`. If it is clear, the `Tx` fails. Verified in round 5 for MySQL (`sql_parse.cc`: `COM_PING` answers `my_ok`, and `trans_begin` sets the flag). Not verified for MariaDB.
-  - Other errors (constraint violations, `Invalid_value`, `Statement_timeout`, `Not_found`, `Decode`) leave the `Tx` usable. The user can handle them.
-  - A failed `Tx` gives its first error for each later `Tx.exec` and `Tx.savepoint`, with no I/O. Thus a write after a server rollback cannot run in autocommit mode.
-- `Tx.savepoint` and the nested create in a `Tx` use `SAVEPOINT`. The scope gets the same `Tx.t`.
-  - The callback returns: `RELEASE SAVEPOINT`, and the value.
-  - The callback raises `Cistern_error e`: `ROLLBACK TO SAVEPOINT`, and `Error e`.
-  - The callback raises another exception: `ROLLBACK TO SAVEPOINT`, then the exception again.
-  - An `Error` that `Tx.exec` gave and that the callback handled does not roll back the scope.
-  - If the savepoint is gone (error 1305 after a deadlock), the `Tx` fails.
-  - If the `Tx` failed or the fiber was cancelled, the scope ends with no I/O: no `RELEASE` and no `ROLLBACK TO SAVEPOINT`. The first error (or `Cancelled`) goes up.
-- The end of the callback:
-  - Before the end, the client calls `Fiber.check_cancel ()`. If the fiber was cancelled, the client closes the connection without `COMMIT` (the server rolls back an idle session when the connection closes), and `Cancelled` goes up. A statement in flight goes to the killer.
-  - It returns after the transaction deadline: `ROLLBACK`, and `Timeout`.
-  - It returns, and the `Tx` did not fail: `COMMIT`.
-  - It returns, and the `Tx` failed: `ROLLBACK` if the connection is open, and the first error.
-  - It raises `Cistern_error e`: `ROLLBACK`, and `Error e`.
-  - It raises another exception: `ROLLBACK`, then the exception again.
-- `COMMIT` and `ROLLBACK` run in `Fiber.shield` with their own deadline (see "Limits and defaults"), so the shield always has a time limit.
-- Replies to `COMMIT`:
-  - OK: success.
-  - 1213, 1205, 1180 (the two servers), 3101 (MySQL): `Retryable `Rolled_back`.
-  - An error for which `Error.interrupts` is true (1053 or 1317; 4031 on MySQL; 1927 on MariaDB) followed by the end of the stream, or no reply: `Outcome_unknown `Commit`, and the connection closes.
-  - Another error: `ROLLBACK`, and `Driver`.
+`Db.transaction ?timeout db f` (`cistern/tx.ml`) holds one entry of the pool for the whole callback, through `Pool.with_conn`. `?timeout` (default 30 s) is one deadline for the checkout, `START TRANSACTION`, the callback and its statements. The rules are pure functions in `Tx_rules`, with one unit row for each row of the tables below.
+
+- The fibers. `Tx.t` holds one connection and the id of the fiber of the callback (`Fiber.self`). `Tx.exec` and `Tx.savepoint` from another fiber, or after the end, raise `Invalid_argument`. `Db.t` keeps the set of the fibers that hold a `Tx` (`Set.Make (Fiber.Id)` in an `Atomic`). `Db.exec` and `Db.transaction` from such a fiber raise `Invalid_argument`, because they would wait for a second connection. One outer `match … with exception` removes the fiber from the set on each path. A child fiber of the callback is not in the set: its `Db.exec` waits for a second connection (with `pool_size = 1`, until `checkout_timeout`, then `Pool_exhausted`).
+- The start. A cancel before the checkout raises `Cancelled` with no event. The steps before the function of `Pool.with_conn` (a waiter at its limit, the margin, a failed reset, a cancel) give an event with the SQL `START TRANSACTION`. `START TRANSACTION` comes right after the margin check of the checkout. Its OK must have `SERVER_STATUS_IN_TRANS` set, else the connection is aborted, and the result is `Connection_lost`. The session sets `completion_type = 'NO_CHAIN'` (claim C26), thus `COMMIT` never chains a new transaction.
+- The callback runs in `Fiber.with_timeout` of the remaining transaction time, in the fiber of the caller (weft runs the body of `with_timeout` in the fiber of the caller).
+- `Tx.exec`:
+  - A failed `Tx` gives its first error, with no I/O and no event. Thus a write after a server rollback cannot run in autocommit mode.
+  - The first-word check (`Raw.first_word`): a raw statement whose first word is `BEGIN`, `START`, `COMMIT`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`, `XA`, `LOCK`, `UNLOCK`, `SET`, `EXECUTE` or `PREPARE` (any case), or that has no first word (a value, a comment or a parenthesis first, for example `(SELECT 1) UNION (SELECT 2)`), raises `Invalid_argument`. A raw `START TRANSACTION` commits the open transaction and sets the flag again (claim C2), so the flag cannot show it. A `CALL` of a procedure that commits is not detected (documented), and MariaDB permits `PREPARE … FROM 'START TRANSACTION'`.
+  - The deadline is the earlier of `?timeout` and the transaction deadline. The margin check comes before the statement. A margin failure of an earlier statement deadline fails only the statement. A margin failure of the transaction deadline fails the `Tx`.
+  - An OK with `SERVER_STATUS_IN_TRANS` clear (also at the end of a result set) means that the server committed (a raw DDL statement, `TRUNCATE`, `LOCK TABLES`): the `Tx` fails with `Implicit_commit`, and `Tx.exec` gives it. The writes before it are committed. It is never a `Retryable` error, so that the user does not run the committed writes again.
+- The errors of a statement (an ERR has no status flags, thus the client's flags are old after an error):
+
+| Class | Errors | `Tx` |
+|---|---|---|
+| Not usable | Any error after which the connection is not usable (for example `Decode` of a `LOCAL INFILE` request) | Fails, no ping |
+| Fail | 1213, 1205 when `@@innodb_rollback_on_timeout` is on, `Read_only`, `Timeout`, `Outcome_unknown`, `Connection_lost`, 1153 | Fails |
+| Statement-only | `Constraint_violation`, `Invalid_value`, `Statement_timeout`, `Not_found`, `Decode` on a usable connection | Stays usable |
+| Other | `Driver` (for example 1050, 1146, 1305), 1205 when `@@innodb_rollback_on_timeout` is off | `COM_PING`: `IN_TRANS` set keeps the `Tx`. `IN_TRANS` clear gives `Implicit_commit`: a failed DDL statement commits the transaction before it fails (1050, 1146 of `TRUNCATE`, 1051 on the pinned servers). The result and the event then say `Implicit_commit`, and they do not show the error of the server (for example 1050). A later version can add it to the event |
+
+- A cancel in a command of the `Tx` breaks the connection, and the server rolls back at the close. The `Tx` stores `Connection_lost` as its first error (`Outcome_unknown `Statement` for a sent statement that is not DML, and `Timeout` in place of `Connection_lost` if the transaction deadline passed, for a cancel by its timer), the event says `Cancelled`, and `Cancelled` goes to the callback. Only the cancel check at the end gives `Cancelled` from `Db.transaction`.
+- `Tx.savepoint` and the nested create in a `Tx` use `SAVEPOINT cistern_sp_<n>`. The scope gets the same `Tx.t`. A failure of `SAVEPOINT` is a statement error (the table above). A failure of `RELEASE SAVEPOINT` or `ROLLBACK TO SAVEPOINT` (for example 1305) fails the `Tx`.
+- The end, after the callback, reads the time once (weft's `with_timeout` gives the value of a body that returns after its timer) and the cancel check. A do-not-retry first error is `Implicit_commit`, or an `Outcome_unknown` of a `Tx` with a statement that is not DML. The first row that applies:
+
+| # | Condition | Commands | Result |
+|---|---|---|---|
+| 1 | The fiber is cancelled | Abort (the server rolls back an idle session when its connection closes) | `Cancelled` |
+| 2 | The callback raised `x` that is not `Cistern_error` (also `Fiber.Timeout` before the deadline) | `ROLLBACK` if the connection is usable | raise `x` again |
+| 3 | A do-not-retry first error | `ROLLBACK` if usable | that error |
+| 4 | The callback raised `Cistern_error e` | `ROLLBACK` if usable | `Error e` |
+| 5 | The deadline passed (a value or `Fiber.Timeout` after it) | `ROLLBACK` if usable | the first error (D5), else `Timeout` |
+| 6 | A first error, the callback returned | `ROLLBACK` if usable | the first error (D5) |
+| 7 | The `Tx` is good, a value before the deadline | `COMMIT` | the reply of `COMMIT` |
+
+  D5: `Outcome_unknown `Statement` of a `Tx` whose writes were all DML (`INSERT`, `UPDATE`, `DELETE`, `REPLACE`, `SELECT`, `WITH`, `VALUES`, `TABLE`) becomes `Timeout` (a deadline) or `Connection_lost`: the client closed the connection before `COMMIT`, thus the server rolled back, and a retry is safe.
+
+  The priority of row 3 changes the rule before phase 1.3, which gave `Error e` and the deadline `Timeout` in each case. A do-not-retry first error wins over them, because the writes before it can be committed, or the outcome of a statement that is not DML is not known. A program that gets `Timeout` or its own `Cistern_error e` can run the whole transaction again, and the committed writes then run two times: the case that `Implicit_commit` exists to prevent. A non-Cistern exception still goes up, because the program then sees an exception, not a result. The end of a savepoint uses the same rule (with no deadline row): a user exception (`ROLLBACK TO` if the `Tx` is good), a do-not-retry first error, `Cistern_error e` (`ROLLBACK TO` if good), the first error, else `RELEASE` and the value. An `Error` that `Tx.exec` gave and that the scope handled does not roll it back.
+- `COMMIT` and `ROLLBACK` run in `Fiber.shield`. Their flow deadline is the remaining transaction time, at least 5 s and at most 30 s ("Limits and defaults"), so that the sent rule holds. An outer `Fiber.with_timeout` 1 s later bounds the shield. A `ROLLBACK` that fails aborts the connection and never changes the result. The replies to `COMMIT`:
+
+| Reply | Result |
+|---|---|
+| OK, `IN_TRANS` clear | the value |
+| OK, `IN_TRANS` set (not expected with `NO_CHAIN`) | the value, and the checkin aborts the connection |
+| 1213, 1205, 1180, 3101 (MySQL) | `Retryable `Rolled_back`. A ping reads the flags again, and the connection stays. The ping runs in the shield of the end, under its flow deadline, thus a cancel during `COMMIT` does not stop it. A failed ping breaks the connection, and the checkin aborts it |
+| 1317 with the connection open | `Outcome_unknown `Commit`, and the connection is aborted. A `KILL QUERY` of a `COMMIT` that waits for a lock rolls back on the pinned servers, but no fact covers each case of 1317 |
+| 1053 (or 1927 on MariaDB) then the end, the end of the stream, a read deadline, the guard | `Outcome_unknown `Commit`, and the connection is aborted |
+| 4031 with the sequence id 0 (MySQL), a flush that failed, a write deadline | `COMMIT` did not run, and the server rolls back at the close: `Connection_lost` or `Timeout` |
+| Another error | `ROLLBACK`, and the error |
+
+- The checkin after the end gives the entry back as good if the connection is usable and `IN_TRANS` is clear. It is dirty if a raw statement ran. The events of `COMMIT` and `ROLLBACK` come after the checkin. A `Tx` in a fiber of an outer scope can outlive `with_db`: it keeps its connection to its end, and the checkin aborts it (`with_db` does not own the socket of a holder that escaped).
 - The cleanup uses `match ... with exception`, not `Fun.protect`, so that a failed `ROLLBACK` does not become `Fun.Finally_raised`.
 
 ### Shared state and the query hook
 
 - No `Hashtbl` is shared between domains. The transaction set is an `Atomic` value. The jitter uses a `Random.State.t` of the shell (a split of `?random`), under the mutex of the pool.
 - `on_query` gets events with a kind (`Query`, `Connect`, `Kill`, `Kill_dropped`, `Kill_off`), the redacted SQL, the duration, the number of rows and the error. Cistern catches its exceptions.
-  - `Query` events outside a `Tx` run after the checkin, in the fiber of the statement. In a `Tx`, they run after each statement. An event never changes the result of the statement.
+  - `Query` events outside a `Tx` run after the checkin, in the fiber of the statement. In a `Tx`, they run after each command (`START TRANSACTION`, each `Tx.exec`, the savepoint commands), while the fiber holds the entry, and the events of `COMMIT` and `ROLLBACK` run after the checkin. The ping after an error emits no event. An event never changes the result of the statement.
   - `Db.exec` emits exactly one `Query` event on each path: also for an error before the checkout, a waiter at its limit, and a cancel. Only two paths emit no event: a misuse (`Invalid_argument`) and the exception of a bug. The function of `Stmt.map` runs after the event, thus its exception gives no second event.
   - `Connect` events run in the connect fiber. `Kill` events run in the killer, outside its shields.
 - `Error.t` keeps the full server message for the program. A server message can hold a value of a row, for example 1062 "Duplicate entry 'x' for key 'email'". `Error.pp_summary` prints only the constructor, the kind of a constraint and the error number. The printer of the exception `Cistern_error`, which logging libraries call through `Printexc.to_string`, uses `Error.pp_summary`. Only an explicit `Error.pp` or `Error.to_string` gives the full message.
