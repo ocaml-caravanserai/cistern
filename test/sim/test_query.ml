@@ -87,7 +87,7 @@ let with_connection ?values steps client =
           "connect: " ^ error_text e
       | Ok c ->
           let r = client c in
-          Conn.close c ;
+          ignore (Conn.close c) ;
           equal ~msg:"the fds of the client" int 0 (F.client_fds sim) ;
           r )
 
@@ -405,7 +405,7 @@ let tests =
                 | Ok c ->
                     let a = exec_text (Conn.exec c (sql text)) in
                     let r = a ^ "; " ^ unit_text (Conn.ping c) in
-                    Conn.close c ;
+                    ignore (Conn.close c) ;
                     equal int 0 (F.client_fds sim) ;
                     r )
           in
@@ -433,7 +433,8 @@ let tests =
                 let r =
                   match Conn.connect (tcp ()) with
                   | Ok c ->
-                      Conn.close c ; "connected"
+                      ignore (Conn.close c) ;
+                      "connected"
                   | Error e ->
                       error_text e
                 in
@@ -626,3 +627,199 @@ let tests =
           is_true (String.ends_with ~suffix:"; Connection_lost" result) ;
           is_false (String.starts_with ~prefix:"ok" result) ;
           equal packets (List.map (fun p -> (0, p)) sent) received ) ]
+
+(* The deadline of a statement: [s] seconds from now. *)
+let deadline_in c s =
+  Conn.set_deadline c
+    (Weft.Time.add Weft.Clock.Mono (Weft.Time.now Weft.Clock.Mono) (Span.s s))
+
+(* The time of [f], and its result. *)
+let timed f =
+  let t0 = Time.now Mono in
+  let r = f () in
+  (r, Time.diff Mono (Time.now Mono) t0)
+
+let secs d = Printf.sprintf "%Ld s" (Int64.div (Span.to_ns d) 1_000_000_000L)
+
+let pool_tests =
+  group "Connection for the pool"
+    [ test "a read deadline" (fun () ->
+          let result, received =
+            after_handshake
+              (with_connection [F.Recv; F.Hang] (fun c ->
+                   deadline_in c 1 ;
+                   let r, d =
+                     timed (fun () -> exec_text (Conn.exec c (sql "INSERT")))
+                   in
+                   String.concat "; "
+                     [ r
+                     ; secs d
+                     ; string_of_bool (Conn.sent c)
+                     ; unit_text (Conn.ping c) ] ) )
+          in
+          equal string "Outcome_unknown statement; 1 s; true; Connection_lost"
+            result ;
+          equal packets [(0, q "INSERT")] received )
+    ; cases "a read deadline in a command that is not a write" ~id:fst
+        [ ("ping", fun c -> unit_text (Conn.ping c))
+        ; ( "a query of the kind Not_write"
+          , fun c ->
+              result_text
+                (Conn.query ~kind:Cistern_mysql.Outcome.Not_write c
+                   (sql "SELECT 1") ) ) ]
+        (fun (_, run) ->
+          let result, _ =
+            after_handshake
+              (with_connection [F.Recv; F.Hang] (fun c ->
+                   deadline_in c 1 ;
+                   let r, d = timed (fun () -> run c) in
+                   r ^ "; " ^ secs d ) )
+          in
+          equal string "Timeout; 1 s" result )
+    ; test "a write deadline" (fun () ->
+          (* The server reads nothing: 100 000 bytes do not fit in its receive
+             buffer (65536 bytes in the simulator). *)
+          let big = sql ("SELECT '" ^ String.make 100_000 'a' ^ "'") in
+          let result, received =
+            after_handshake
+              (with_connection [F.Hang] (fun c ->
+                   deadline_in c 1 ;
+                   let r, d = timed (fun () -> exec_text (Conn.exec c big)) in
+                   String.concat "; " [r; secs d; string_of_bool (Conn.sent c)] )
+              )
+          in
+          equal string "Timeout; 1 s; false" result ;
+          equal packets [] received )
+    ; test "no deadline after set_deadline None" (fun () ->
+          let result, _ =
+            after_handshake
+              (with_connection
+                 [F.Recv; F.Wait_ms 2000; F.Send (1, F.ok ())]
+                 (fun c ->
+                   deadline_in c 1 ;
+                   Conn.set_deadline c None ;
+                   unit_text (Conn.ping c) ) )
+          in
+          equal string "ok" result )
+    ; test "sent" (fun () ->
+          let result, _ =
+            after_handshake
+              (with_connection
+                 [ F.Recv
+                 ; F.Send (1, F.ok ())
+                 ; F.Recv
+                 ; F.Send (1, F.ok ())
+                 ; F.Recv
+                 ; F.Send (1, F.ok ())
+                 ; F.Recv
+                 ; F.Send (1, F.ok ())
+                 ; F.Recv
+                 ; F.Send (1, F.ok ()) ]
+                 (fun c ->
+                   let s () = string_of_bool (Conn.sent c) in
+                   let a = s () in
+                   ignore (Conn.exec c (sql "INSERT")) ;
+                   let b = s () in
+                   ignore (Conn.ping c) ;
+                   ignore (Conn.reset c) ;
+                   ignore (Conn.stale c) ;
+                   let d = s () in
+                   (* A value with no literal: nothing goes. *)
+                   ignore (Conn.exec c Raw.(v (Float Float.nan))) ;
+                   String.concat " " [a; b; d; s ()] ) )
+          in
+          equal string "false true true false" result )
+    ; test "sent after a cancel in a statement" (fun () ->
+          let result, _ =
+            after_handshake
+              (with_connection [F.Recv; F.Hang] (fun c ->
+                   match
+                     Fiber.with_timeout Mono (Span.s 1) (fun () ->
+                         Conn.exec c (sql "INSERT") )
+                   with
+                   | _ ->
+                       "no timeout"
+                   | exception Fiber.Timeout ->
+                       "timeout " ^ string_of_bool (Conn.sent c) ) )
+          in
+          equal string "timeout true" result )
+    ; test "abort in a cancelled fiber" (fun () ->
+          let result, received =
+            after_handshake
+              (with_connection [] (fun c ->
+                   match
+                     Fiber.with_timeout Mono (Span.ms 1) (fun () ->
+                         try Time.sleep Mono (Span.s 5)
+                         with Fiber.Cancelled _ as e ->
+                           let first = Conn.abort c in
+                           let second = Conn.abort c in
+                           let closed = Conn.close c in
+                           if first && (not second) && not closed then raise e
+                           else failwith "abort" )
+                   with
+                   | () ->
+                       "no timeout"
+                   | exception Fiber.Timeout ->
+                       "timeout " ^ unit_text (Conn.ping c) ) )
+          in
+          equal string "timeout Connection_lost" result ;
+          (* No COM_QUIT. *)
+          equal packets [] received )
+    ; test "abort while a command waits in another fiber" (fun () ->
+          let result, _ =
+            after_handshake
+              (with_connection [F.Recv; F.Hang] (fun c ->
+                   Fiber.scope (fun s ->
+                       let p =
+                         Fiber.fork_promise s (fun () ->
+                             exec_text (Conn.exec c (sql "INSERT")) )
+                       in
+                       Time.sleep Mono (Span.ms 1) ;
+                       ignore (Conn.abort c) ;
+                       Promise.await p ) ) )
+          in
+          equal string "Outcome_unknown statement" result )
+    ; cases "stale"
+        ~id:(fun (n, _, _, _) -> n)
+        [ ("an idle server", [], "false ok", [ping; quit])
+        ; ( "an error before a command (4031 with id 0)"
+          , [F.Send (0, F.err 4031 "idle")]
+          , "true Connection_lost"
+          , [] )
+        ; ("the end of the stream", [F.Close], "true Connection_lost", [])
+        ; ("a reset", [F.Reset], "true Connection_lost", []) ]
+        (fun (_, steps, expected, sent) ->
+          let result, received =
+            after_handshake
+              (with_connection
+                 (steps @ [F.Recv; F.Send (1, F.ok ())])
+                 (fun c ->
+                   Time.sleep Mono (Span.ms 1) ;
+                   let s = Conn.stale c in
+                   string_of_bool s ^ " " ^ unit_text (Conn.ping c) ) )
+          in
+          equal string expected result ;
+          (* A stale connection is broken: the ping sends nothing. *)
+          equal packets sent received )
+    ; test "stale: a byte in the reader" (fun () ->
+          (* The OK of round trip 2 and one more byte in one write: the reader
+             holds the byte after the connect. *)
+          let result, _ =
+            F.run
+              [ F.Send (0, F.greeting ())
+              ; F.Recv
+              ; F.Send (2, F.ok ())
+              ; F.Recv
+              ; F.Sends (1, F.result_set (F.session ()))
+              ; F.Recv
+              ; F.Raw (F.frame 1 (F.ok ()) ^ "x") ]
+              (fun _ ->
+                match Conn.connect (tcp ()) with
+                | Error e ->
+                    error_text e
+                | Ok c ->
+                    let s = Conn.stale c in
+                    ignore (Conn.close c) ;
+                    string_of_bool s )
+          in
+          equal string "true" result ) ]

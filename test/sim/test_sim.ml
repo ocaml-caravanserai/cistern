@@ -7,4 +7,7 @@
 let () =
   exit
     (Windtrap.run "sim"
-       [Test_connect.tests; Test_connect.ping_tests; Test_query.tests] )
+       [ Test_connect.tests
+       ; Test_connect.ping_tests
+       ; Test_query.tests
+       ; Test_query.pool_tests ] )

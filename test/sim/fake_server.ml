@@ -102,6 +102,7 @@ type step =
   | Close  (** Close the connection. *)
   | Reset  (** Reset the connection. *)
   | Hang  (** Wait with no end. *)
+  | Wait_ms of int  (** Wait this number of milliseconds. *)
   | Read_bytes of int
       (** Read at least this number of bytes, with no packet: [raw] keeps them.
       *)
@@ -168,6 +169,9 @@ let play server flow script =
         Flow.reset flow
     | Hang :: _ ->
         sync never
+    | Wait_ms ms :: rest ->
+        Time.sleep Mono (Span.ms ms) ;
+        go rest
     | Read_bytes n :: rest ->
         fill server flow n ; go rest
   in

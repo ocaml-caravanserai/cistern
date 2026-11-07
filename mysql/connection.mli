@@ -66,8 +66,8 @@ val info : t -> info
 (** {1 Commands}
 
     The outcome of each command follows DESIGN.md, "Order of the error rules"
-    ({!Outcome.decide}). [query] and [exec] are writes. [ping], [init_db] and
-    [reset] are not.
+    ({!Outcome.decide}). [query] and [exec] are writes by default (their
+    [?kind]). [ping], [init_db] and [reset] are not.
 
     - A command on a broken or closed connection gives [Connection_lost] before
       any I/O.
@@ -75,16 +75,27 @@ val info : t -> info
       [Connection_lost]: the server did not get the command.
     - The end of the stream after the flush gives [Outcome_unknown `Statement]
       for a write, else [Connection_lost].
+    - A deadline ({!set_deadline}) that passes in the flush gives [Timeout]: the
+      server did not get the whole command. A deadline that passes in a read
+      gives [Outcome_unknown `Statement] for a write, else [Timeout]. The two
+      break the connection.
     - A server error gives [Error.of_server], and the connection stays usable,
       except for 1153 and for an error that ends the session.
     - A cancel of the fiber breaks the connection, and [Weft.Fiber.Cancelled]
       goes up.
 
-    No command has a timeout: if the server does not answer, only a cancel of
-    the fiber stops it. *)
+    With no deadline, if the server does not answer, only a cancel of the fiber
+    stops a command. *)
+
+val set_deadline : t -> Weft.Clock.mono option -> unit
+(** [set_deadline t d] sets (or with [None] removes) the read and the write
+    deadline of the flow. It applies also to a command that waits at the time of
+    the call. The pool sets it before a statement and removes it at the checkin.
+*)
 
 val query :
-     t
+     ?kind:Outcome.command
+  -> t
   -> Cistern_core.Raw.t
   -> (Cistern_core.Raw.result, Cistern_core.Error.t) result
 (** [query t r] runs the raw statement [r] with [COM_QUERY], and gives its first
@@ -99,7 +110,8 @@ val query :
       after the client read the whole reply. The connection stays usable. *)
 
 val exec :
-     t
+     ?kind:Outcome.command
+  -> t
   -> Cistern_core.Raw.t
   -> (Cistern_core.Exec_result.t, Cistern_core.Error.t) result
 (** [exec t r] runs [r] as {!query} does, ignores the rows, and gives the counts
@@ -123,13 +135,39 @@ val status : t -> int
 (** [status t] is the status flags of the last OK packet
     ({!Message.has_status}), for example [In_trans]. *)
 
-val close : t -> unit
+val sent : t -> bool
+(** [sent t] is true if the last {!query} or {!exec} flushed its command packet.
+    [query] and [exec] clear it at their start, and no other call changes it.
+    After a cancel in a statement, the pool reads it for the event of the
+    statement. *)
+
+val stale : t -> bool
+(** [stale t] is the check of an idle connection at the checkout of the pool:
+    true if the connection is closed or broken, if the reader holds bytes, or if
+    the flow has bytes or the end of the stream ([Flow.read_now]: for example
+    error 4031 at the idle timeout of MySQL), or if the read raises. A stale
+    connection is broken. It waits for nothing. *)
+
+val abort : t -> bool
+(** [abort t] breaks the connection and closes the flow. It sends nothing, never
+    waits and never raises, also in a cancelled fiber. It uses no busy flag: a
+    command that waits in another fiber then raises [Flow.Closed]. It gives
+    [true] only for the first [abort] or {!close} of [t], also when two domains
+    call them at the same time. *)
+
+val close : t -> bool
 (** [close t] sends [COM_QUIT], with a write timeout of 1 s and no wait for a
-    reply, then closes the flow. A broken connection sends nothing. A second
-    [close] does nothing. *)
+    reply, then closes the flow. A broken connection sends nothing. In a
+    cancelled fiber the write raises [Weft.Fiber.Cancelled] after the flow
+    closes: use {!abort} there. It gives [true] only for the first {!abort} or
+    [close] of [t], also across domains. A later one does nothing. *)
 
 (** For the tests only. It can change in each version. *)
 module Private : sig
+  val claim : bool Atomic.t -> bool
+  (** The flag of {!abort} and {!close}: [claim a] sets [a], and gives [true]
+      only if [a] was not set. *)
+
   val reset_connection : t -> (unit, Cistern_core.Error.t) result
   (** [COM_RESET_CONNECTION] alone, with no [SET] and no [COM_INIT_DB]. *)
 

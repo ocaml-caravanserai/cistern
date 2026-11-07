@@ -257,7 +257,7 @@ let tests =
                               ~ok:(fun () -> "ok")
                               ~error:error_text (Conn.ping c) )
                       in
-                      Conn.close c ;
+                      ignore (Conn.close c) ;
                       equal (list string)
                         ["Connection_lost"; "Connection_lost"; "Connection_lost"]
                         pings )

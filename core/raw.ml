@@ -33,4 +33,16 @@ let to_string r =
   | exception No_literal m ->
       Error m
 
+let redacted r =
+  let b = Buffer.create 64 in
+  let rec add = function
+    | Sql s ->
+        Buffer.add_string b s
+    | V _ ->
+        Buffer.add_string b " ? "
+    | Cat (x, y) ->
+        add x ; add y
+  in
+  add r ; Buffer.contents b
+
 type result = {columns: string array; rows: Value.t array list}

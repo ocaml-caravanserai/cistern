@@ -14,6 +14,13 @@ type event =
   | Write_failed
       (** The flush of the command packet raised. The server did not get a
           complete command, thus it cannot run it. *)
+  | Write_deadline
+      (** The flush of the command packet passed its deadline. The writer raises
+          then only while it waits to write the rest of the packet, thus the
+          server did not get the whole command. A server runs a command only
+          when it has the whole packet. *)
+  | Read_deadline
+      (** A read of the reply passed its deadline, after the flush. *)
   | Before_command
       (** Rule R-SEQ0: an ERR with the sequence id 0 where the first packet of
           the reply (id 1) was expected. The server sent it before it read the
@@ -38,6 +45,10 @@ val decide :
 
     - [Write_failed] and [Before_command] give [Connection_lost], for each
       command: the statement did not run.
+    - [Write_deadline] gives [Timeout], for each command: the statement did not
+      go.
+    - [Read_deadline] gives [Outcome_unknown `Statement] for a write, else
+      [Timeout].
     - [Stream_ended] and [Bad_packet] give [Outcome_unknown `Statement] for a
       write, else [Connection_lost]. A [Bad_packet] after the column count is
       also [Outcome_unknown]: the statement ran, but a [CALL] can run more

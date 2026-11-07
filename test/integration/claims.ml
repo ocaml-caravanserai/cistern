@@ -673,7 +673,7 @@ let lock_wait ~act ~after =
                     Weft.Promise.await p )
               in
               let later = after a in
-              Conn.close a ;
+              ignore (Conn.close a) ;
               exec_ok holder "ROLLBACK" ;
               let written = one_text killer (sql "SELECT COUNT(*) FROM c8t") in
               exec_ok killer "DROP TABLE c8t" ;
@@ -776,7 +776,7 @@ let c8c =
             r
       in
       let later = later 120 in
-      List.iter Conn.close [holder; killer; a; idle] ;
+      List.iter (fun c -> ignore (Conn.close c)) [holder; killer; a; idle] ;
       (* MySQL sends 1053 to the running statement, then the end of the stream.
          MariaDB sends only the end of the stream. *)
       equal string
