@@ -999,7 +999,7 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: abort the connection
 | C1, C7: the default plugins and `CLIENT_MYSQL` | 8.4, 11.4, 11.8 | The greeting and `CREATE USER ... IDENTIFIED BY` give `caching_sha2_password` on MySQL and `mysql_native_password` on MariaDB. `CLIENT_MYSQL` is set only on MySQL, as `Dialect.of_version` tells |
 | C2: `START TRANSACTION` in a transaction | 8.4, 11.8 | It commits: after `ROLLBACK` the row exists |
 | C3: `COM_RESET_CONNECTION` | 8.4, 11.4, 11.8 | The database of `USE` stays. The user variables are gone, and `sql_mode` is the global value. The collation is the global value on MySQL (`utf8mb4_0900_ai_ci`), and the collation of the character set of the handshake on MariaDB (`utf8mb4_general_ci` on 11.4, `utf8mb4_uca1400_ai_ci` on 11.8). It rolls back an open transaction, and its OK has `IN_TRANS` clear |
-| C4: `IN_TRANS` in the OK of `COM_PING` | 8.4, 11.8 | Set after `START TRANSACTION` and after a write in it, clear after `COMMIT` |
+| C4: `IN_TRANS` in the OK of `COM_PING` | 8.4, 11.4, 11.8 | Set after `START TRANSACTION` and after a write in it, clear after `COMMIT` |
 | C5, C23: the start time | 8.4, 11.4, 11.8 | 1000 identity `SELECT`s on one connection and one on a second give one value. The test user reads `performance_schema.global_status` on MySQL |
 | C6: the thread id | 8.4, 11.4, 11.8 | The thread id of the greeting is `CONNECTION_ID()`, on the socket and on TCP |
 | C8a: `KILL CONNECTION` of an autocommit write (timing) | 8.4, 11.8 | The end of the stream with no ERR (no 1927): `Outcome_unknown`. No row is written |
@@ -1021,6 +1021,8 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: abort the connection
 | C22: `CHECK` and the statement timeout | 8.4, 11.8 | MySQL 3819, MariaDB 4025: `Check`. A recursive CTE with a limit of 100 ms: MySQL 3024, MariaDB 1969 (70100): `Statement_timeout`. The connection stays usable |
 | C25: `caching_sha2_password` | 8.4 | The integration suite (phase 1.1c2) |
 | C26: `completion_type` | 8.4, 11.4, 11.8 | With a global `CHAIN`, the session of Cistern reads `NO_CHAIN` (also after `Connection.reset`), and the OK of `COMMIT` has `IN_TRANS` clear. With `CHAIN` in the session (the control), the OK of `COMMIT` has `IN_TRANS` set, and the write is committed. Then `Connection.reset` of the same connection gives `NO_CHAIN` again |
+| C27: `KILL QUERY` of a `COMMIT` that waits | 8.4, 11.4, 11.8 | A `COMMIT` that waits on `FLUSH TABLES WITH READ LOCK` gives 1317 (70100) after `KILL QUERY`. The connection stays open, the ping gives `IN_TRANS` clear, and the write is gone. `Db.transaction` gives `Outcome_unknown commit` (the `Tx` tests), because no fact shows a rollback for each 1317 of a `COMMIT` |
+| C28: a failed DDL commits first | 8.4, 11.4, 11.8 | In a transaction, `CREATE TABLE` of a table that exists gives 1050 (42S01), the ping after it gives `IN_TRANS` clear, and the write before it is committed. The OK of `TRUNCATE` in a transaction has `IN_TRANS` clear, and the write before it is committed. `Db.transaction` gives `Implicit_commit` for the two (the `Tx` tests) |
 
 The killer of the timing claims polls `information_schema.PROCESSLIST` and `INNODB_TRX` every 250 ms until the write waits on the lock. A faster poll sees the same old rows each time: InnoDB fills `INNODB_TRX` again only when nobody read it for 100 ms.
 
