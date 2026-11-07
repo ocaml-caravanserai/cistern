@@ -540,8 +540,9 @@ Order of the error rules:
 - A write (`INSERT`, `UPDATE`, `DELETE`, any raw statement, `COMMIT`) that was sent with no clear reply gives `Outcome_unknown`. "No clear reply" is a deadline, the end of the stream or a reset, a reply that the client cannot read, or an error that `Error.of_server` maps to `Connection_lost`: 1053 (the two servers), 4031 (MySQL) or 1927 (MariaDB). The client gives `Outcome_unknown` at once after such an error, and it closes the connection with no more read, because its state is not known. This rule is the same for `COMMIT` (it gives `Outcome_unknown `Commit`) and for a write in autocommit mode. The user must not retry it blindly.
 - 1317 (`ER_QUERY_INTERRUPTED`, for example after `KILL QUERY`) gives `Driver`, and the connection stays usable. `Error.interrupts` names the four numbers. Its first user is the `COMMIT` rules of phase 1.3.
 - `Timeout` and `Connection_lost` are only for reads and for statements that were not sent.
+- A write that the server stops gives `Outcome_unknown`: `KILL CONNECTION` (the end of the stream, claim C8a) and `SHUTDOWN` (1053 then the end on MySQL, the end on MariaDB, claim C8c). `KILL QUERY` gives 1317 and leaves the connection usable (C8b).
 - The write rule: a statement counts as sent when the flush of its command packet returned. If the flush raised (`EPIPE`, `ECONNRESET`, a closed flow), the server did not get the whole packet, and the client gives `Connection_lost`. Phase 1.4 uses the same rule on a TLS flow.
-- Rule R-SEQ0: an ERR with the sequence id 0 where the first packet of the reply (id 1) is expected came before the command (for example 4031 at the idle timeout). The client gives `Connection_lost` and closes the connection, also for a write: the server did not read the command. Thus 4031 before the command is not `Outcome_unknown`.
+- Rule R-SEQ0: an ERR with the sequence id 0 where the first packet of the reply (id 1) is expected came before the command (for example 4031 at the idle timeout). The client gives `Connection_lost` and closes the connection, also for a write: the server did not read the command. Thus 4031 before the command is not `Outcome_unknown`. Claim C9 shows the two rules: after the idle timeout, a `ping` and an `INSERT` give `Connection_lost` on the two servers, on TCP (MySQL sends 4031) and on the socket (the write fails), and the row is not written.
 - `Outcome.decide` (`cistern.mysql`) is the table of these rules for one command. Each event breaks the connection, except two. A server error that `Error.of_server` does not map to `Connection_lost` leaves the connection usable (also 1317), except 1153, which breaks it. A value that does not decode leaves it usable too, because the client read the whole reply. A malformed packet gives `Outcome_unknown` for a write also after the column count: the statement ran, but a `CALL` can run more statements after its first result set, and the client cannot read their outcome. A `LOCAL INFILE` request gives `Decode`: the server waits for a file, thus it did not run the statement.
 - At the level of `Db.transaction`: if the client closed the connection before it sent `COMMIT`, the server rolled back. Then `Db.transaction` gives `Timeout` or `Connection_lost`, not `Outcome_unknown `Statement`, because a retry of the whole transaction is safe.
 
@@ -555,7 +556,7 @@ Error mapping. The key is (server, error number). A number that the table does n
 | `Check` | 3819 | 4025 (`ER_CONSTRAINT_FAILED`, verified in round 5) |
 | `Invalid_value` | 1406, 1264, 1265, 1365, 1366, 1292, 1690, 1367, 1301, and 1153 (see the note that follows) | the same |
 | `Retryable `Deadlock` | 1213 | 1213 |
-| `Retryable `Lock_timeout` | 1205 | 1205 (also for `NOWAIT`, not verified) |
+| `Retryable `Lock_timeout` | 1205 | 1205 (also for `NOWAIT`, claim C15) |
 | `Retryable `Rolled_back` | 3101 (`ER_TRANSACTION_ROLLBACK_DURING_COMMIT`) | none (3101 is a placeholder number) |
 | `Statement_timeout` | 3024 | 1969 (`ER_STATEMENT_TIMEOUT`, verified in round 5) |
 | `Connection_lost` (a read or an unsent statement; a sent write gives `Outcome_unknown`) | 4031, 1053, end of stream | 1927, 1053, end of stream |
@@ -565,6 +566,17 @@ Error mapping. The key is (server, error number). A number that the table does n
 The server gives no structured constraint name, so `Constraint_violation` has only the message.
 
 `perror` of the pinned packages (MySQL 8.4.11, MariaDB 11.4.13 and 11.8.8) confirmed each number of the table and its name on 2026-11-06. A number of one server is another error on the other server (MySQL 4025, MariaDB 3024, 3101 and 4031), or no error (MySQL 1927 and 1969, MariaDB 3819 and 3572). Thus the key is the pair. 2013 and 2006 are codes of the client library: a server never sends them. `Error.of_server` gives the meaning of an error packet alone. The rules that need the state of the connection ("Order of the error rules", "Transactions") are in the client.
+
+Notes of the claims of phase 1.1:
+
+- `--innodb-read-only` gives `Driver` for a write (1015 on MySQL, 1036 on MariaDB) and for DDL (1005 on MariaDB): 1015 and 1005 are generic numbers, and 1036 is `Driver` for one table. The failover case is `read_only` and `super_read_only` (1290) and a read-only transaction (1792), which give `Read_only` (claim C14). 1836 and 1874 stay `Read_only`. The suite cannot make them, because they need `--innodb-read-only` (a restart). The probe of the plan review made them on MySQL 8.4 with this option: 1836 for `CREATE TABLE` and `CREATE DATABASE`, 1874 for `CREATE TEMPORARY TABLE`.
+- 1300 (a string that is not valid in its character set) gives `Driver`. It comes only from raw SQL text or from DDL names, because the `Text` literal is valid UTF-8 and `Schema.check` refuses such names.
+- 1030 (MySQL) and 1005 (MariaDB) for a table name that is too long as a file name give `Driver`. `Schema.check` refuses such a name.
+- 1927 and 1053 keep `Connection_lost`. The claims did not make 1927: `KILL CONNECTION` gives the end of the stream with no error packet on the two servers (C8a). MariaDB sends no 1053 at `SHUTDOWN` (C8c).
+- 1762, 1169, 1859 and 3673 keep their rows, with `perror` as the proof: the claims did not make them on MySQL 8.4 and MariaDB 11.8 (C17).
+- A zero `DATETIME` or `TIMESTAMP` gives `Decode` (the session `sql_mode` has `NO_ZERO_DATE`, thus only old data has it).
+- The counts of an OK packet above `Int64.max_int` keep their 64 bits as a negative `int64`, because a `Decode` would hide a write that ran.
+- MariaDB stores an encoded surrogate in a `utf8mb4` column. A row with one gives `Decode` (C12).
 
 Error 1153 (packet too large): the server did not run the statement, but it closes the connection after the error. Thus the client gives `Invalid_value`, closes the connection, and fails the `Tx` (if any). The client size check (see "Limits and defaults") prevents this error in most cases.
 
