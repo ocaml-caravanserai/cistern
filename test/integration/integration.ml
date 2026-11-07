@@ -126,7 +126,9 @@ let client_env () =
   Array.of_list ("MYSQL_TEST_LOGIN_FILE=/dev/null" :: kept)
 
 (* A statement as root, with the client of the server, and its output with no
-   column names. Cistern's client has no query before phase 1.1d. *)
+   column names. FLUSH PRIVILEGES and KILL CONNECTION use the client of the
+   server, not Cistern's: the tests of the authentication and of KILL do not
+   then depend on the client that they test. *)
 let admin sql =
   let client = Filename.concat (get "DB_STORE") "bin/mysql" in
   (* The MariaDB client asks for TLS by default, also on the socket. *)
@@ -189,6 +191,284 @@ let expected_session () =
   Printf.sprintf "%s %s true"
     (if mysql then "mysql" else "mariadb")
     (get "DB_VERSION")
+
+(* The queries (phase 1.1d). *)
+
+module Raw = Cistern_core.Raw
+module Value = Cistern_core.Value
+
+let value_text (v : Value.t) =
+  match v with
+  | Null ->
+      "Null"
+  | Int i ->
+      Printf.sprintf "Int %Ld" i
+  | Float f ->
+      Printf.sprintf "Float %h" f
+  | Text s ->
+      Printf.sprintf "Text %S" s
+  | Bytes s ->
+      Printf.sprintf "Bytes %S" s
+  | Datetime t ->
+      "Datetime " ^ Ptime.to_rfc3339 ~frac_s:6 t
+  | Decimal d ->
+      "Decimal " ^ Cistern_core.Decimal.to_string d
+
+let rows_text = function
+  | Ok (r : Raw.result) ->
+      String.concat "," (Array.to_list r.columns)
+      ^ " | "
+      ^ String.concat " / "
+          (List.map
+             (fun row ->
+               String.concat ", " (Array.to_list (Array.map value_text row)) )
+             r.rows )
+  | Error e ->
+      error_text e
+
+let exec_text = function
+  | Ok (r : Cistern_core.Exec_result.t) ->
+      Printf.sprintf "%Ld %Ld" r.affected_rows r.last_insert_id
+  | Error e ->
+      error_text e
+
+let unit_text = function Ok () -> "ok" | Error e -> error_text e
+
+(* [with_conn config f]: [f] on a new connection, then close. *)
+let with_conn config f =
+  match Conn.connect config with
+  | Error e ->
+      failwith (error_text e)
+  | Ok c ->
+      Fun.protect ~finally:(fun () -> Conn.close c) (fun () -> f c)
+
+let exec_ok c sql =
+  match Conn.exec c (Raw.sql sql) with
+  | Ok _ ->
+      ()
+  | Error e ->
+      failwith (sql ^ ": " ^ error_text e)
+
+(* The table of each column type of the sim fixture
+   (test/sim/types_fixture.ml). *)
+let create_types =
+  "CREATE TABLE tt (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, ti \
+   TINYINT(1), u BIGINT UNSIGNED, d DECIMAL(65,30), b BIT(10), y YEAR, dt \
+   DATE, tm TIME(6), dtt DATETIME(6), ts TIMESTAMP NULL, j JSON, g GEOMETRY, \
+   en ENUM('a','b'), st SET('x','y'), f FLOAT, vb VARBINARY(10), bl BLOB, tx \
+   TEXT, ch CHAR(3), sm SMALLINT, mi MEDIUMINT, it INT, bi BIGINT, vc \
+   VARCHAR(10), db DOUBLE)"
+
+let insert_types =
+  Raw.(
+    sql
+      "INSERT INTO tt (ti, u, d, b, y, dt, tm, dtt, ts, j, g, en, st, f, vb, \
+       bl, tx, ch, sm, mi, it, bi, vc, db) VALUES (1, 18446744073709551615, \
+       -0.5, b'1000000101', 2024, '2024-02-29', '-838:59:59', '2024-01-02 \
+       03:04:05.5', '2024-01-02 03:04:05', '{\"a\": [1, 2]}', \
+       ST_GeomFromText('POINT(1 2)'), 'b', 'x,y', 3.5,"
+    ++ v (Bytes "\x00\xff") ++ sql "," ++ v (Bytes "\x01") ++ sql ","
+    ++ v (Text "h\xc3\xa9") ++ sql ", 'ab'," ++ v (Int (-32768L)) ++ sql ","
+    ++ v (Int 8388607L) ++ sql "," ++ v (Int (-2147483648L)) ++ sql ","
+    ++ v (Int Int64.min_int) ++ sql "," ++ v (Text "v\xc3\xa9") ++ sql ","
+    ++ v (Float (-2.5e-6)) ++ sql ")" )
+
+let select_types =
+  "SELECT id, ti, u, d, b, y, dt, tm, dtt, ts, j, g, en, st, f, vb, bl, tx, \
+   ch, sm, mi, it, bi, vc, db, NULL AS n, 1/3 AS q, -0e0 AS z, \
+   JSON_OBJECT('k', 1) AS jo, CAST(-1 AS SIGNED) AS s FROM tt"
+
+let types_expected () =
+  "id,ti,u,d,b,y,dt,tm,dtt,ts,j,g,en,st,f,vb,bl,tx,ch,sm,mi,it,bi,vc,db,n,q,z,jo,s \
+   | Int 1, Int 1, Decimal 18446744073709551615, Decimal \
+   -0.500000000000000000000000000000, Bytes \"\\002\\005\", Int 2024, Text \
+   \"2024-02-29\", Text \"-838:59:59.000000\", Datetime \
+   2024-01-02T03:04:05.500000-00:00, Datetime \
+   2024-01-02T03:04:05.000000-00:00, Text \"{\\\"a\\\": [1, 2]}\", Bytes \
+   \"\\000\\000\\000\\000\\001\\001\\000\\000\\000\\000\\000\\000\\000\\000\\000\\240?\\000\\000\\000\\000\\000\\000\\000@\", \
+   Text \"b\", Text \"x,y\", Float 0x1.cp+1, Bytes \"\\000\\255\", Bytes \
+   \"\\001\", Text \"h\\195\\169\", Text \"ab\", Int -32768, Int 8388607, Int \
+   -2147483648, Int -9223372036854775808, Text \"v\\195\\169\", Float \
+   -0x1.4f8b588e368f1p-19, Null, Decimal 0.3333, "
+  ^ (if mysql then "Float -0x0p+0" else "Float 0x0p+0")
+  ^ ", Text \"{\\\"k\\\": 1}\", Int -1"
+
+(* The connection of the admin: root on the socket, with Cistern's client. *)
+let root () = on_socket ~user:"root" ~password:"" ()
+
+let query_tests =
+  group ("queries on " ^ server)
+    [ test "each column type" (fun () ->
+          in_weft (fun () ->
+              warm () ;
+              List.iter
+                (fun config ->
+                  with_conn config (fun c ->
+                      exec_ok c "DROP TABLE IF EXISTS tt" ;
+                      exec_ok c create_types ;
+                      equal string "1 1" (exec_text (Conn.exec c insert_types)) ;
+                      equal string (types_expected ())
+                        (rows_text (Conn.query c (Raw.sql select_types))) ;
+                      exec_ok c "DROP TABLE tt" ) )
+                [on_socket ~clear:true (); on_tcp ()] ) )
+    ; test "last_insert_id, the found rows and status" (fun () ->
+          in_weft (fun () ->
+              warm () ;
+              with_conn (on_socket ~clear:true ()) (fun c ->
+                  exec_ok c "DROP TABLE IF EXISTS ai" ;
+                  exec_ok c
+                    "CREATE TABLE ai (id INT AUTO_INCREMENT PRIMARY KEY, v INT)" ;
+                  let ins = Raw.sql "INSERT INTO ai (v) VALUES (1), (1)" in
+                  (* The first value of the last INSERT. *)
+                  equal string "2 1" (exec_text (Conn.exec c ins)) ;
+                  equal string "2 3" (exec_text (Conn.exec c ins)) ;
+                  (* CLIENT_FOUND_ROWS: the rows that the UPDATE found, also
+                     with no change. *)
+                  equal string "4 0"
+                    (exec_text (Conn.exec c (Raw.sql "UPDATE ai SET v = 1"))) ;
+                  exec_ok c "START TRANSACTION" ;
+                  is_true (Conn.status c land 1 = 1) ;
+                  exec_ok c "COMMIT" ;
+                  is_true (Conn.status c land 1 = 0) ;
+                  equal string "Driver 1146 42S02"
+                    (rows_text (Conn.query c (Raw.sql "SELECT * FROM nowhere"))) ;
+                  equal string "ok" (unit_text (Conn.ping c)) ;
+                  exec_ok c "DROP TABLE ai" ) ) )
+    ; test "init_db and reset" (fun () ->
+          in_weft (fun () ->
+              warm () ;
+              with_conn (on_socket ~clear:true ()) (fun c ->
+                  let select () =
+                    rows_text
+                      (Conn.query c
+                         (Raw.sql "SELECT DATABASE() AS d, @v IS NULL AS n") )
+                  in
+                  exec_ok c "SET @v = 1" ;
+                  equal string "ok"
+                    (unit_text (Conn.init_db c "information_schema")) ;
+                  equal string "d,n | Text \"information_schema\", Int 0"
+                    (select ()) ;
+                  equal string "ok" (unit_text (Conn.reset c)) ;
+                  equal string
+                    ("d,n | Text \"" ^ database ^ "\", Int 1")
+                    (select ()) ;
+                  equal string "Driver 1044 42000"
+                    (unit_text (Conn.init_db c "nowhere")) ) ) )
+    ; test "literals through the server" (fun () ->
+          in_weft (fun () ->
+              warm () ;
+              let time ?(ps = 0L) date clock =
+                Option.get
+                  (Ptime.add_span
+                     (Option.get (Ptime.of_date_time (date, (clock, 0))))
+                     (Option.get (Ptime.Span.of_d_ps (0, ps))) )
+              in
+              let decimal s =
+                Value.Decimal (Option.get (Cistern_core.Decimal.of_string s))
+              in
+              let rows =
+                [ ( Value.Float 1.5
+                  , Value.Datetime
+                      (time ~ps:123_456_700_000L (2024, 2, 29) (23, 59, 59))
+                  , decimal "-123456789012345678901234567890.0123456789"
+                  , Value.Int Int64.min_int )
+                ; ( Value.Float (-0.0)
+                  , Value.Datetime (time (1000, 1, 1) (0, 0, 0))
+                  , decimal "0.0000000001"
+                  , Value.Int Int64.max_int )
+                ; ( Value.Float 5e-324
+                  , Value.Datetime
+                      (time ~ps:999_999_000_000L (9999, 12, 31) (23, 59, 59))
+                  , decimal "1.0000000000"
+                  , Value.Int 0L )
+                ; ( Value.Float Float.max_float
+                  , Value.Null
+                  , Value.Null
+                  , Value.Null ) ]
+              in
+              with_conn (on_socket ~clear:true ()) (fun c ->
+                  exec_ok c "DROP TABLE IF EXISTS lt" ;
+                  exec_ok c
+                    "CREATE TABLE lt (i INT PRIMARY KEY, f DOUBLE, t \
+                     DATETIME(6), d DECIMAL(40,10), b BIGINT)" ;
+                  List.iteri
+                    (fun i (f, t, d, b) ->
+                      equal string "1 0"
+                        (exec_text
+                           (Conn.exec c
+                              Raw.(
+                                sql
+                                  (Printf.sprintf "INSERT INTO lt VALUES (%d," i)
+                                ++ v f ++ sql "," ++ v t ++ sql "," ++ v d
+                                ++ sql "," ++ v b ++ sql ")" ) ) ) )
+                    rows ;
+                  (* The datetime keeps 6 digits (the literal truncates it), and
+                     MariaDB stores -0 as +0. *)
+                  let zero =
+                    if mysql then "Float -0x0p+0" else "Float 0x0p+0"
+                  in
+                  equal string
+                    ( "f,t,d,b | Float 0x1.8p+0, Datetime \
+                       2024-02-29T23:59:59.123456-00:00, Decimal \
+                       -123456789012345678901234567890.0123456789, Int \
+                       -9223372036854775808 / " ^ zero
+                    ^ ", Datetime 1000-01-01T00:00:00.000000-00:00, Decimal \
+                       0.0000000001, Int 9223372036854775807 / Float \
+                       0x0.0000000000001p-1022, Datetime \
+                       9999-12-31T23:59:59.999999-00:00, Decimal 1.0000000000, \
+                       Int 0 / Float 0x1.fffffffffffffp+1023, Null, Null, Null"
+                    )
+                    (rows_text
+                       (Conn.query c
+                          (Raw.sql "SELECT f, t, d, b FROM lt ORDER BY i") ) ) ;
+                  (* A SELECT of the literals: the datetime is a string. *)
+                  let f, t, d, b = List.hd rows in
+                  equal string
+                    "f,t,d,b | Float 0x1.8p+0, Text \"2024-02-29 \
+                     23:59:59.123456\", Decimal \
+                     -123456789012345678901234567890.0123456789, Int \
+                     -9223372036854775808"
+                    (rows_text
+                       (Conn.query c
+                          Raw.(
+                            sql "SELECT" ++ v f ++ sql "AS f," ++ v t
+                            ++ sql "AS t," ++ v d ++ sql "AS d," ++ v b
+                            ++ sql "AS b" ) ) ) ;
+                  exec_ok c "DROP TABLE lt" ) ) )
+    ; test "the size check at @@max_allowed_packet" (fun () ->
+          in_weft (fun () ->
+              warm () ;
+              (* The default of the server: a run that stops in the middle can
+                 leave 1 MiB, thus the test does not restore the value that it
+                 reads at the start. *)
+              let default = if mysql then 67108864 else 16777216 in
+              let set n =
+                with_conn (root ()) (fun c ->
+                    exec_ok c
+                      (Printf.sprintf "SET GLOBAL max_allowed_packet = %d" n) )
+              in
+              set 1048576 ;
+              Fun.protect
+                ~finally:(fun () -> set default)
+                (fun () ->
+                  with_conn (on_socket ~clear:true ()) (fun c ->
+                      equal int 1048576 (Conn.info c).max_allowed_packet ;
+                      (* [stmt n] is "DO '<a...>'" with a payload of [n] bytes:
+                         the command byte and the SQL text. *)
+                      let stmt n =
+                        Raw.sql ("DO '" ^ String.make (n - 6) 'a' ^ "'")
+                      in
+                      (* A payload of 1048576 bytes: refused before it goes. *)
+                      equal string "Invalid_value"
+                        (Result.fold
+                           ~ok:(fun _ -> "sent")
+                           ~error:(fun e ->
+                             Format.asprintf "%a" Cistern_core.Error.pp_summary
+                               e )
+                           (Conn.exec c (stmt 1048576)) ) ;
+                      (* One byte less: the server accepts it. *)
+                      equal string "0 0"
+                        (exec_text (Conn.exec c (stmt 1048575))) ) ) ) ) ]
 
 let tests =
   group
@@ -277,4 +557,4 @@ let tests =
                     equal string "connected" (connect_ping (on_tcp ())) ) ) ] ]
     else [] )
 
-let () = exit (Windtrap.run "integration" tests)
+let () = exit (Windtrap.run "integration" (tests @ [query_tests]))
