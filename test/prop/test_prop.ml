@@ -9,6 +9,7 @@ let () =
     (Windtrap.run "prop"
        [ Prop_decimal.tests
        ; Prop_literal.tests
+       ; Prop_raw.tests
        ; Prop_decoder.tests
        ; Prop_error.tests
        ; Prop_mapping.tests

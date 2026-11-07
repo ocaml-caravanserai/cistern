@@ -266,4 +266,11 @@ let tests =
               raises
                 (Invalid_argument
                    "Decoder.next: the run of this cursor returned" ) (fun () ->
-                  Decoder.next (Option.get !kept) Decoder.int64 ) ) ] ]
+                  Decoder.next (Option.get !kept) Decoder.int64 ) ) ]
+    ; test "map" (fun () ->
+          let d = Decoder.map succ Decoder.int in
+          equal (result int string) (Ok 2)
+            (Decoder.run (fun c -> Decoder.next c d) [|Some "1"|]) ;
+          equal (result int string)
+            (Error "column 0: expected an integer in the range of int")
+            (Decoder.run (fun c -> Decoder.next c d) [|Some "x"|]) ) ]

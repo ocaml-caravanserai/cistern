@@ -530,15 +530,19 @@ Rules:
 - `Query.update` and `Query.delete` with `offset`, `include_`, `for_update` or `for_share` raise `Invalid_argument` (MySQL has no `UPDATE ... OFFSET`). `count` and `exists` ignore `include_`, `for_update` and `for_share`.
 - A raw statement marks its connection, which then gets a session reset at checkin (see "Session").
 - `Value.t` has `Null`, `Int of int64`, `Float of float`, `Text of string`, `Bytes of string`, `Datetime of Ptime.t`, and `Decimal of Decimal.t` (for raw results such as `SUM`). `Decimal.t` is abstract. `Decimal.of_string` accepts only `-?[0-9]+(\.[0-9]+)?`, with at most 65 digits in total and at most 38 after the point (the `DECIMAL` limits of the servers: 65 digits, and a scale of at most 38 on MariaDB and 30 on MySQL), so that `Raw.v (Decimal d)` cannot carry SQL text.
+- The fragments of `Raw` (`sql`, `v`, `++` and `to_string`), `Raw.result` and `Exec_result.t` are in `cistern.core` (phase 1.1). `Connection.query` and `Connection.exec` of `cistern.mysql` run a `Raw.t` on one connection. `Raw.query` and `Raw.exec` with `Stmt.t` come with the pool (phase 1.2). `Raw.to_string` gives `Error msg` for a value with no literal, and the client makes `Invalid_value` from it.
 - The exception is `Cistern_error`, not `Error`, so that `open Cistern` does not hide the `Error` constructor of `result`.
 - A cancel of the fiber is never an `Error.t`. weft's `Cancelled` always goes up, also when a write was in flight. Then the `on_query` event of the statement records the unknown outcome, and the `Tx` (if any) fails.
 - A failure in a hook or in the checkin never changes the result of the statement.
 
 Order of the error rules:
 
-- A write (`INSERT`, `UPDATE`, `DELETE`, any raw statement, `COMMIT`) that was sent with no clear reply gives `Outcome_unknown`. "No clear reply" is a deadline, the end of the stream, or an error for which `Error.interrupts` is true followed by the end of the stream: 1053 or 1317 (the two servers), 4031 (MySQL) or 1927 (MariaDB). This rule is the same for `COMMIT` (it gives `Outcome_unknown `Commit`) and for a write in autocommit mode. The user must not retry it blindly.
-- `Error.of_server` gives `Connection_lost` for such an error also when the stream did not end. Then the client closes the connection, because its state is not known, and a write that it sent gives `Outcome_unknown`.
+- A write (`INSERT`, `UPDATE`, `DELETE`, any raw statement, `COMMIT`) that was sent with no clear reply gives `Outcome_unknown`. "No clear reply" is a deadline, the end of the stream or a reset, a reply that the client cannot read, or an error that `Error.of_server` maps to `Connection_lost`: 1053 (the two servers), 4031 (MySQL) or 1927 (MariaDB). The client gives `Outcome_unknown` at once after such an error, and it closes the connection with no more read, because its state is not known. This rule is the same for `COMMIT` (it gives `Outcome_unknown `Commit`) and for a write in autocommit mode. The user must not retry it blindly.
+- 1317 (`ER_QUERY_INTERRUPTED`, for example after `KILL QUERY`) gives `Driver`, and the connection stays usable. `Error.interrupts` names the four numbers. Its first user is the `COMMIT` rules of phase 1.3.
 - `Timeout` and `Connection_lost` are only for reads and for statements that were not sent.
+- The write rule: a statement counts as sent when the flush of its command packet returned. If the flush raised (`EPIPE`, `ECONNRESET`, a closed flow), the server did not get the whole packet, and the client gives `Connection_lost`. Phase 1.4 uses the same rule on a TLS flow.
+- Rule R-SEQ0: an ERR with the sequence id 0 where the first packet of the reply (id 1) is expected came before the command (for example 4031 at the idle timeout). The client gives `Connection_lost` and closes the connection, also for a write: the server did not read the command. Thus 4031 before the command is not `Outcome_unknown`.
+- `Outcome.decide` (`cistern.mysql`) is the table of these rules for one command. Each event breaks the connection, except two. A server error that `Error.of_server` does not map to `Connection_lost` leaves the connection usable (also 1317), except 1153, which breaks it. A value that does not decode leaves it usable too, because the client read the whole reply. A malformed packet gives `Outcome_unknown` for a write also after the column count: the statement ran, but a `CALL` can run more statements after its first result set, and the client cannot read their outcome. A `LOCAL INFILE` request gives `Decode`: the server waits for a file, thus it did not run the statement.
 - At the level of `Db.transaction`: if the client closed the connection before it sent `COMMIT`, the server rolled back. Then `Db.transaction` gives `Timeout` or `Connection_lost`, not `Outcome_unknown `Statement`, because a retry of the whole transaction is safe.
 
 Error mapping. The key is (server, error number). A number that the table does not have uses the SQLSTATE: class `23` gives `Constraint_violation Other_constraint`, and `40001` gives `Retryable `Deadlock`.
@@ -593,7 +597,7 @@ No value from a user is ever between quotes:
 | Value | Literal |
 |---|---|
 | `int64`, `int` | Decimal digits, with a sign. `Int64.min_int` is in the property tests. |
-| `float` | Cistern's own method: the shortest correctly rounded `%.{p}e` form that reads back to the same bits. For p from 0 to 16, the client formats the float with `%.{p}e`, takes the sign, the digits and the exponent from the result, skips one byte for the point, and writes its own point. No locale can change the literal, because the OCaml 5.5 runtime formats and reads floats in the "C" locale (`runtime/floats.c`: `caml_format_float` and `caml_float_of_string`, with `USE_LOCALE` and `strtod_l`). Always with an exponent and with no `+`, for example `1.5e0`, `1e-1` and `-0e0`, so that the server reads a `DOUBLE` and keeps the sign of `-0` (not verified). The form is not always the shortest decimal: 2^-1017 gives `7.1202363472230444e-307`. NaN and infinities give `Invalid_value` on the client. |
+| `float` | Cistern's own method: the shortest correctly rounded `%.{p}e` form that reads back to the same bits. For p from 0 to 16, the client formats the float with `%.{p}e`, takes the sign, the digits and the exponent from the result, skips one byte for the point, and writes its own point. No locale can change the literal, because the OCaml 5.5 runtime formats and reads floats in the "C" locale (`runtime/floats.c`: `caml_format_float` and `caml_float_of_string`, with `USE_LOCALE` and `strtod_l`). Always with an exponent and with no `+`, for example `1.5e0`, `1e-1` and `-0e0`, so that the server reads a `DOUBLE`. MySQL keeps the sign of `-0`. MariaDB 11.4 and 11.8 store and read `-0.0` as `+0`, also in a `SELECT` of the literal (`SELECT -0e0` gives `0`), thus a `-0.0` comes back as `0.0` from MariaDB (the integration suite, and claim C11). The form is not always the shortest decimal: 2^-1017 gives `7.1202363472230444e-307`. NaN and infinities give `Invalid_value` on the client. |
 | `bool` | `0` or `1` |
 | `string` | `_utf8mb4 X'<hex>'`. The client checks that the string is valid UTF-8 first. |
 | `bytes` | `X'<hex>'` |
@@ -757,16 +761,39 @@ The identity of a connection is (`@@server_uuid` on MySQL, or (`@@hostname`, `@@
 
 Session reset. At checkin, the client marks the connection "dirty" if it ran a raw statement, or if the last OK packet had `SERVER_STATUS_IN_TRANS` outside a `Tx`. The checkin does no I/O. At the next checkout of a dirty connection, before the statement and under the deadline of that caller, the client runs:
 
-1. `COM_RESET_CONNECTION`. It sets all session variables back to their global values.
-2. Step 2 again (the complete `SET`).
-3. `COM_INIT_DB <database of the configuration>`, because a reset probably keeps the database of a raw `USE` (not verified; the MySQL `THD::cleanup_connection` does not change the database).
+1. `COM_RESET_CONNECTION`. It sets all session variables back to their global values: `time_zone` becomes `SYSTEM`, `sql_mode` the global mode, and the collation the default of the server. It removes the user variables, and it rolls back an open transaction (its OK has `IN_TRANS` clear).
+2. Step 2 again (the complete `SET`), because of these changes.
+3. `COM_INIT_DB <database of the configuration>`, because a reset keeps the database of a raw `USE` (seen on the pinned servers in the probes of the review of phase 1.1; claim C3 tests it).
 
-If any of these fails, the connection closes, and the checkout takes another connection. No statement was sent, so this is safe. Version 1 does not use session state tracking, because the typed API does not change session state.
+`Connection.reset` (phase 1.1) runs the three steps, and it is the only reset that `cistern.mysql` exports. `COM_RESET_CONNECTION` alone is only for the tests. If any of these fails, the connection closes, and the checkout takes another connection. No statement was sent, so this is safe. Version 1 does not use session state tracking, because the typed API does not change session state.
 
 ### Commands and packets
 
 - `COM_QUERY` (with a loop while `SERVER_MORE_RESULTS_EXISTS` is set), `COM_PING`, `COM_RESET_CONNECTION`, `COM_INIT_DB`, `COM_QUIT`.
-- A result header of `0xFB` (a `LOCAL INFILE` request) closes the connection with an error.
+- A result header of `0xFB` (a `LOCAL INFILE` request) closes the connection with `Decode`.
+- The results of a `COM_QUERY` (`Connection.query` and `Connection.exec`):
+  - `query` gives the first result set, and reads the other results to the end. A statement with no result set gives no columns and no rows.
+  - `exec` reads all the results, and gives the counts of the last OK.
+  - An ERR in any part is the result, and the parts before it are dropped.
+  - A value that does not decode gives `Decode` after the client read the whole reply. The connection stays usable.
+- The client checks the payload rule ("Limits and defaults") and the literals of `Raw` before it sends a byte. A failure gives `Invalid_value`, and the connection stays usable.
+- `Connection.status` gives the status flags of the last OK packet (for example `SERVER_STATUS_IN_TRANS`).
+- The values of a text result set (`Column`). The type code, the `UNSIGNED` flag (0x20) and the character set of the column definition choose the `Value.t`. Only the character set 63 (binary) has a meaning.
+
+  | Type code | `Value.t` |
+  |---|---|
+  | SQL `NULL` in any column, and 6 (`NULL`) | `Null` |
+  | 1, 2, 3, 9, 13 (`YEAR`), and 8 (`BIGINT`) signed | `Int`. `TINYINT(1)` is an `Int`, because `Value.t` has no bool |
+  | 8 `UNSIGNED` | `Int` up to `Int64.max_int`, else `Decimal` |
+  | 4 (`FLOAT`), 5 (`DOUBLE`) | `Float`. The server sends a `FLOAT` with about 6 significant digits (3.4028234e38 comes back as `3.40282e38`), thus use `DOUBLE` for exact values |
+  | 0, 246 (`DECIMAL`) | `Decimal` |
+  | 7 (`TIMESTAMP`), 12 (`DATETIME`) | `Datetime`. A zero date gives `Decode` |
+  | 10 (`DATE`), 11 (`TIME`), 14 | `Text` |
+  | 16 (`BIT`), 255 (`GEOMETRY`) | `Bytes` |
+  | 245 (`JSON`) | `Text`, for each character set (MySQL sends 63) |
+  | Each other code | `Bytes` with the character set 63, else `Text`. An unknown code never gives an error |
+
+  `Text` must be valid UTF-8, else the value gives `Decode`. The message names the column and the expected type, never the value.
 - A result set is the column count (1 to 65535, alone in its packet), the column definitions, the rows (`Resultset` keeps them as `string option array`), and the terminator OK. A row cannot start with `0xFE`, because its first value would need a packet of 16 MiB. An ERR after the columns or after some rows is the reply, and the rows before it are dropped. An error of the reader tells if it came after the column count: the server then ran the statement. The end of a result set is decoded only as a terminator (`0xFE`), and an OK only as `0x00`, so that an `AuthSwitchRequest` (`0xFE`) is never an OK. The reader keeps all the rows of a result in memory, with no limit of the number of rows: the deadline of phase 1.2 bounds the time of a read.
 - At checkout, the client calls `read_now` on the flow (not `readable`, because a TLS record with no data makes `readable` true). If the stream ended, or a packet came that the client did not ask for (for example error 4031, or 1053, or 1927), the client closes the connection and takes another one. No command was sent, so this is safe. This applies only at checkout. In a `Tx`, or between the operations of one statement, the same condition gives `Connection_lost`.
 - If the stream ends after a write, the write was sent: a write gives `Outcome_unknown`, and a read is tried one more time on another connection (only outside a `Tx`).
@@ -893,6 +920,7 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: close the connection
   - Phase 1.1 runs Cistern's own client: the connect on the socket and on TCP (`ssl-mode=DISABLED`), the session values, the admin route (root on the socket with no password), a wrong password and an unknown database (1044 for the test user, which has no rights on other databases), and a socket path that does not exist (a network error, not a DNS error). After `KILL CONNECTION` from root, three pings give `Connection_lost`. The idle timeout is a timing test, thus it comes with the timing claims (phase 1.1e).
   - On MySQL, a TCP connection with `DISABLED` uses only the fast path of `caching_sha2_password`. Thus each TCP test first warms the cache with a connect on the socket with `allow-cleartext=socket`, and the tests do not depend on their order. A wrong password over TCP then gives the message of the gate, not 1045.
   - The MySQL sequence: `FLUSH PRIVILEGES` as root; TCP gives the message of the gate; the socket without the opt-in gives it too; the socket with the opt-in passes (the full path); then TCP passes (the fast path).
+  - The queries: each column type of the table of "Commands and packets" (the same table as the sim fixture), a round trip of `Float`, `Datetime`, `Decimal` and `Int` literals through the server (an `INSERT` then a `SELECT`, and a `SELECT` of the literals), `last_insert_id`, the found rows of an `UPDATE` with no change, `status`, `init_db` and `reset`, and an unknown table. The size check: root (with Cistern's client on the socket) sets `max_allowed_packet` to 1 MiB, then a payload of 1 MiB is refused before it goes, and one byte less runs. At the end, root sets the default of the server again (64 MiB on MySQL, 16 MiB on MariaDB).
 - Verification of claims (phase 1.1), on the real servers: the MariaDB default plugins; the implicit commit of `START TRANSACTION` in a transaction; `COM_RESET_CONNECTION` and the database; `SERVER_STATUS_IN_TRANS` in the OK of `COM_PING` on MariaDB; the exact start time from one identity `SELECT` on the two servers; 1053 and 1927 after an autocommit write; the greeting bit `CLIENT_MYSQL` (0 on MariaDB) as a cross-check of `Dialect.of_version`; the text forms of `DOUBLE` that the decoders read (the `my_gcvt` model of `test/prop/server_text.ml`); the literals `-0e0` (the sign stays), `5e-324` and `-9223372036854775808` on a `DOUBLE` and a `BIGINT` column; if a `utf8mb4` column can store an encoded surrogate (`ED A0 80`), which `Decoder.string` refuses; the errors 1874 (`--innodb-read-only`), 1836 (`ER_READ_ONLY_MODE`), 1265 and 1365 (in strict mode) on the two servers, 3101 on MySQL, and 1205 for `NOWAIT` on MariaDB; the errors 1052, 1169, 1859, 1761 and 1762 on the two servers, and 3673 on MySQL. 1557 (`ER_FOREIGN_DUPLICATE_KEY_OLD_UNUSED` on MySQL, `ER_UNUSED_4` on MariaDB) has no row: the servers do not send it. The grammar of MariaDB 11.4.13 and 11.8.8 (`sql/sql_yacc.yy`) has no `FOR SHARE`, thus Cistern uses `LOCK IN SHARE MODE` on MariaDB. A review ran the pinned servers for the rules of names (phase 0b-3): a name of 65 characters gives 1059 on MySQL and 1103 on MariaDB (a table); a 4-byte character gives 1300 on MariaDB, and MySQL stores `a?` (a second `a😀` then gives 1060); 64 × `€` is a valid column name but not a valid table name (the InnoDB file name); MySQL `CHECK` constraint names are unique in the schema (version 1 has no `CHECK`). Phase 1.1 tests these errors again. It also tests that the collations do not pad: `SELECT 'a ' = 'a' COLLATE utf8mb4_0900_bin` (MySQL) and `COLLATE utf8mb4_nopad_bin` (MariaDB) give 0. MariaDB has no `PAD_ATTRIBUTE` column in `information_schema.COLLATIONS` (1054). Round 5 verified in the source code: error numbers 4025 and 1969, the read rights for `performance_schema.global_status`, and `COM_PING` on MySQL. The tests check these too.
 
 ## Prerequisite PRs

@@ -63,17 +63,73 @@ val connect : Config.t -> (t, Cistern_core.Error.t) result
 
 val info : t -> info
 
-val ping : t -> (unit, Cistern_core.Error.t) result
-(** [ping t] sends [COM_PING]. A server error gives [Error.of_server]. The end
-    of the stream, a reset, a failed write, a bad packet, or an error that
-    [Error.of_server] maps to [Connection_lost] give [Connection_lost], and the
-    connection is then broken. Each later [ping] on a broken connection gives
-    [Connection_lost] before any I/O.
+(** {1 Commands}
 
-    [ping] has no timeout: if the server does not answer, only a cancel of the
-    fiber of [ping] stops it. The cancel breaks the connection. *)
+    The outcome of each command follows DESIGN.md, "Order of the error rules"
+    ({!Outcome.decide}). [query] and [exec] are writes. [ping], [init_db] and
+    [reset] are not.
+
+    - A command on a broken or closed connection gives [Connection_lost] before
+      any I/O.
+    - If the flush of the command packet raises, the result is
+      [Connection_lost]: the server did not get the command.
+    - The end of the stream after the flush gives [Outcome_unknown `Statement]
+      for a write, else [Connection_lost].
+    - A server error gives [Error.of_server], and the connection stays usable,
+      except for 1153 and for an error that ends the session.
+    - A cancel of the fiber breaks the connection, and [Weft.Fiber.Cancelled]
+      goes up.
+
+    No command has a timeout: if the server does not answer, only a cancel of
+    the fiber stops it. *)
+
+val query :
+     t
+  -> Cistern_core.Raw.t
+  -> (Cistern_core.Raw.result, Cistern_core.Error.t) result
+(** [query t r] runs the raw statement [r] with [COM_QUERY], and gives its first
+    result set. A statement with no result set gives no columns and no rows. The
+    client reads the other results (a [CALL] has more than one) to the end, and
+    an error in any of them is the result.
+
+    - A value with no literal, or SQL text whose packet does not fit in
+      [@@max_allowed_packet] (see {!Packet.query_fits}), gives [Invalid_value]
+      before any byte goes. The connection stays usable.
+    - A value of the result that does not decode ({!Column.row}) gives [Decode],
+      after the client read the whole reply. The connection stays usable. *)
+
+val exec :
+     t
+  -> Cistern_core.Raw.t
+  -> (Cistern_core.Exec_result.t, Cistern_core.Error.t) result
+(** [exec t r] runs [r] as {!query} does, ignores the rows, and gives the counts
+    of the last OK packet. *)
+
+val ping : t -> (unit, Cistern_core.Error.t) result
+(** [ping t] sends [COM_PING]. *)
+
+val init_db : t -> string -> (unit, Cistern_core.Error.t) result
+(** [init_db t db] sends [COM_INIT_DB]: [db] becomes the database of the
+    session. *)
+
+val reset : t -> (unit, Cistern_core.Error.t) result
+(** [reset t] is the session reset of DESIGN.md, "Session":
+    [COM_RESET_CONNECTION] (the session variables get their global values, and
+    an open transaction rolls back), the [SET] of round trip 2, and
+    [COM_INIT_DB] with the database of the configuration. If a step fails, the
+    connection breaks. *)
+
+val status : t -> int
+(** [status t] is the status flags of the last OK packet
+    ({!Message.has_status}), for example [In_trans]. *)
 
 val close : t -> unit
 (** [close t] sends [COM_QUIT], with a write timeout of 1 s and no wait for a
     reply, then closes the flow. A broken connection sends nothing. A second
     [close] does nothing. *)
+
+(** For the tests only. It can change in each version. *)
+module Private : sig
+  val reset_connection : t -> (unit, Cistern_core.Error.t) result
+  (** [COM_RESET_CONNECTION] alone, with no [SET] and no [COM_INIT_DB]. *)
+end

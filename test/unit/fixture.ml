@@ -33,3 +33,6 @@ let pp_value ppf (v : Value.t) =
       Format.fprintf ppf "Decimal %s" (Decimal.to_string d)
 
 let value = Windtrap.Testable.make ~pp:pp_value ~equal:Value.equal
+
+(* Errors, compared with ( = ) and printed with Error.pp. *)
+let error = Windtrap.Testable.make ~pp:Error.pp ~equal:( = )

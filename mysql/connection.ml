@@ -8,6 +8,8 @@ module Writer = Weft_flow.Writer
 module Error = Cistern_core.Error
 module Dialect = Cistern_core.Dialect
 module Decoder = Cistern_core.Decoder
+module Raw = Cistern_core.Raw
+module Exec_result = Cistern_core.Exec_result
 
 type info =
   { thread_id: int
@@ -25,10 +27,12 @@ type info =
 type transport = Tcp_transport | Unix_transport
 
 type t =
-  { flow: Flow.t
+  { config: Config.t
+  ; flow: Flow.t
   ; reader: Reader.t
   ; writer: Writer.t
   ; info: info
+  ; mutable status: int
   ; mutable closed: bool
   ; mutable broken: bool
   ; busy: bool Atomic.t }
@@ -46,14 +50,17 @@ let sha2_name = "caching_sha2_password"
 
 let first payload = if payload = "" then -1 else Char.code payload.[0]
 
-let packet_error what = function
+let packet_text what = function
   | Packet.Sequence {expected; got} ->
-      fail "%s: a packet with the sequence id %d, not %d (sequence error)" what
-        got expected
+      Printf.sprintf
+        "%s: a packet with the sequence id %d, not %d (sequence error)" what got
+        expected
   | Unsolicited _ ->
-      fail "%s: an error packet before the command" what
+      what ^ ": an error packet before the command"
   | Too_long ->
-      fail "%s: a packet of 16 MiB or more" what
+      what ^ ": a packet of 16 MiB or more"
+
+let packet_error what e = raise (Fail (packet_text what e))
 
 let read r ~seq what =
   match Packet.read r ~seq with Ok p -> p | Error e -> packet_error what e
@@ -321,14 +328,13 @@ let session r w ~thread_id =
     | _ ->
         fail "round trip 1: the reply is not one row"
   in
-  ( match round_trip r w "round trip 2" (set_query info.dialect) with
-  | Resultset.Ok_packet _ ->
-      ()
+  match round_trip r w "round trip 2" (set_query info.dialect) with
+  | Resultset.Ok_packet ok ->
+      (info, ok.status)
   | Err_packet e ->
       fail "round trip 2: server error %d" e.code
   | _ ->
-      fail "round trip 2: the reply is not an OK" ) ;
-  info
+      fail "round trip 2: the reply is not an OK"
 
 let establish config opened =
   let flow, transport = open_flow config in
@@ -336,11 +342,13 @@ let establish config opened =
   let reader = Packet.reader flow and writer = Packet.writer flow in
   let g = greeting reader in
   authenticate config ~transport reader writer g ;
-  let info = session reader writer ~thread_id:g.thread_id in
-  { flow
+  let info, status = session reader writer ~thread_id:g.thread_id in
+  { config
+  ; flow
   ; reader
   ; writer
   ; info
+  ; status
   ; closed= false
   ; broken= false
   ; busy= Atomic.make false }
@@ -389,46 +397,194 @@ let break t =
   t.broken <- true ;
   Flow.close t.flow
 
-(* An exception of the flow, the reader or the writer breaks the connection. A
-   cancel goes up. Weft.Net.Error comes from an error of the socket that does
-   not end the stream, for example ETIMEDOUT after the keep-alive. The tests
-   cannot make it, because they do not have the socket of the client. In phase
-   1.1, Flow.Timeout cannot come from ping, because only close sets a write
-   timeout. *)
-let transport_failure t e =
-  break t ;
-  match e with
-  | End_of_file | Flow.Closed | Flow.Timeout | Weft.Net.Error _ ->
-      Error Error.Connection_lost
-  | e ->
-      raise e
+let status t = t.status
 
-let ping t =
+(* An event of the outcome table, in a command. *)
+exception Event of Outcome.event
+
+(* Send one command packet. If the flush raises, the server did not get the
+   whole packet. A cancel goes up. *)
+let send t command =
+  match
+    Packet.write t.writer ~seq:0 (fun w -> Message.write_command w command) ;
+    Writer.flush t.writer
+  with
+  | () ->
+      ()
+  | exception (Flow.Closed | Flow.Timeout | Weft.Net.Error _) ->
+      raise (Event Outcome.Write_failed)
+
+(* A read of the reply. A failure of the transport is the end of the stream.
+   Weft.Net.Error comes from an error of the socket that does not end the
+   stream, for example ETIMEDOUT after the keep-alive: the tests cannot make it,
+   because they do not have the socket of the client. Flow.Timeout cannot come
+   in phase 1.1 (no read timeout), and Reader.Too_large cannot come, because a
+   packet has at most 0xFFFFFE bytes. *)
+let reading f =
+  match f () with
+  | v ->
+      v
+  | exception
+      ( End_of_file
+      | Flow.Closed
+      | Flow.Timeout
+      | Weft.Net.Error _
+      | Reader.Too_large ) ->
+      raise (Event Outcome.Stream_ended)
+
+let bad_packet message = raise (Event (Outcome.Bad_packet message))
+
+(* The reply of a command that gives an OK: COM_PING, COM_INIT_DB,
+   COM_RESET_CONNECTION, and the SET of the session. *)
+let ok_reply t =
+  let p =
+    match reading (fun () -> Packet.read t.reader ~seq:1) with
+    | Ok p ->
+        p
+    | Error (Unsolicited _) ->
+        raise (Event Outcome.Before_command)
+    | Error e ->
+        bad_packet (packet_text "reply" e)
+  in
+  match (first p, Message.ok p, Message.err p) with
+  | 0x00, Ok ok, _ ->
+      t.status <- ok.status
+  | 0xFF, _, Ok e ->
+      raise (Event (Outcome.Server_error e))
+  | _ ->
+      bad_packet "reply: the packet is not an OK or an ERR"
+
+(* The replies of a COM_QUERY, while SERVER_MORE_RESULTS_EXISTS is set. An ERR
+   in any part is the result, and the parts before it are dropped. *)
+let replies t =
+  let rec loop seq acc =
+    let reply, next =
+      match reading (fun () -> Resultset.read t.reader ~seq) with
+      | Ok r ->
+          r
+      | Error {in_result= false; cause= Packet (Unsolicited _)} ->
+          raise (Event Outcome.Before_command)
+      | Error {cause= Packet e; _} ->
+          bad_packet (packet_text "reply" e)
+      | Error {cause= Malformed m; _} ->
+          bad_packet ("reply: " ^ m)
+    in
+    let ok =
+      match reply with
+      | Resultset.Ok_packet ok ->
+          ok
+      | Rows r ->
+          r.ok
+      | Err_packet e ->
+          raise (Event (Outcome.Server_error e))
+      | Local_infile _ ->
+          raise (Event Outcome.Local_infile)
+    in
+    t.status <- ok.status ;
+    let acc = (reply, ok) :: acc in
+    if Message.has_status ok.status More_results_exists then loop next acc
+    else List.rev acc
+  in
+  loop 1 []
+
+(* One command on a usable connection. [f] gives the result, or raises Event.
+   With [always_break], each error breaks the connection. Another exception (a
+   cancel) breaks the connection and goes up. *)
+let command ?(always_break = false) t kind f =
   with_busy t (fun () ->
       if t.closed || t.broken then Error Error.Connection_lost
       else
-        match
-          Packet.write t.writer ~seq:0 (fun w -> Message.write_command w Ping) ;
-          Writer.flush t.writer ;
-          Packet.read t.reader ~seq:1
-        with
+        match f () with
+        | v ->
+            v
+        | exception Event e ->
+            let error, state = Outcome.decide t.info.dialect kind e in
+            if always_break || state = Outcome.Broken then break t ;
+            Error error
         | exception e ->
-            transport_failure t e
-        | Error _ ->
-            break t ; Error Error.Connection_lost
-        | Ok p -> (
-          match (first p, Message.ok p, Message.err p) with
-          | 0x00, Ok _, _ ->
-              Ok ()
-          | 0xFF, _, Ok e ->
-              let error =
-                Error.of_server t.info.dialect ~code:e.code ~sqlstate:e.sqlstate
-                  ~message:e.message
-              in
-              if error = Error.Connection_lost then break t ;
-              Error error
-          | _ ->
-              break t ; Error Error.Connection_lost ) )
+            break t ; raise e )
+
+(* The SQL text of a raw statement, if it has literals and fits in one
+   packet. *)
+let statement t raw =
+  match Raw.to_string raw with
+  | Error message ->
+      Error (Error.Invalid_value {code= None; message})
+  | Ok sql ->
+      if
+        Packet.query_fits ~max_allowed_packet:t.info.max_allowed_packet
+          ~sql_length:(String.length sql)
+      then Ok sql
+      else
+        (* The message names the bound that applies. *)
+        let message =
+          if t.info.max_allowed_packet < 0xFFFFFF then
+            "the statement is too large for @@max_allowed_packet"
+          else "the statement is too large for one packet (less than 16 MiB)"
+        in
+        Error (Error.Invalid_value {code= None; message})
+
+let run_query t raw f =
+  command t Outcome.Write (fun () ->
+      match statement t raw with
+      | Error e ->
+          Error e
+      | Ok sql ->
+          send t (Query sql) ;
+          f (replies t) )
+
+let query t raw =
+  run_query t raw (fun replies ->
+      (* The first result set. *)
+      match
+        List.find_map
+          (function Resultset.Rows r, _ -> Some r | _ -> None)
+          replies
+      with
+      | Some r -> (
+          let rows =
+            List.fold_left
+              (fun acc row ->
+                Result.bind acc (fun rows ->
+                    Result.map (fun v -> v :: rows) (Column.row r.columns row) ) )
+              (Ok []) r.rows
+          in
+          match rows with
+          | Ok rows ->
+              Ok
+                { Raw.columns=
+                    Array.map (fun (c : Message.column) -> c.name) r.columns
+                ; rows= List.rev rows }
+          | Error m ->
+              raise (Event (Outcome.Bad_value m)) )
+      | _ ->
+          Ok {Raw.columns= [||]; rows= []} )
+
+let exec t raw =
+  run_query t raw (fun replies ->
+      let _, (ok : Message.ok) = List.nth replies (List.length replies - 1) in
+      Ok
+        { Exec_result.affected_rows= ok.affected_rows
+        ; last_insert_id= ok.last_insert_id } )
+
+let ok_command ?always_break t commands =
+  command ?always_break t Outcome.Not_write (fun () ->
+      List.iter (fun c -> send t c ; ok_reply t) commands ;
+      Ok () )
+
+let ping t = ok_command t [Ping]
+
+let init_db t database = ok_command t [Init_db database]
+
+let reset t =
+  ok_command ~always_break:true t
+    [ Reset_connection
+    ; Query (set_query t.info.dialect)
+    ; Init_db (Config.database t.config) ]
+
+module Private = struct
+  let reset_connection t = ok_command t [Reset_connection]
+end
 
 let close t =
   with_busy t (fun () ->
