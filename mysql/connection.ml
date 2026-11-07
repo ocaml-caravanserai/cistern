@@ -621,6 +621,8 @@ end
 
 let sent t = t.sent
 
+let usable t = not (Atomic.get t.closed || t.broken)
+
 let set_deadline t d =
   Flow.set_read_deadline t.flow d ;
   Flow.set_write_deadline t.flow d

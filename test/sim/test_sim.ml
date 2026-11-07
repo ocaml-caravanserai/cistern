@@ -2,7 +2,7 @@
    v. 2.0. If a copy of the MPL was not distributed with this file, You can
    obtain one at https://mozilla.org/MPL/2.0/. *)
 
-(* The simulator suite of cistern.mysql. *)
+(* The simulator suite of cistern.mysql and of the pool. *)
 
 let () =
   exit
@@ -10,4 +10,5 @@ let () =
        [ Test_connect.tests
        ; Test_connect.ping_tests
        ; Test_query.tests
-       ; Test_query.pool_tests ] )
+       ; Test_query.pool_tests
+       ; Test_pool.tests ] )

@@ -437,6 +437,8 @@ Note: the field names of `Q` hide user values with the same names under `Todo.Q.
 
 ### Core user types
 
+The module `Cistern` gives the types of the user: `Db`, `Stmt`, `Raw`, `Error`, `Event`, `Value`, `Decimal`, `Dialect`, `Exec_result`, `Config` and the exception `Cistern_error`. The pool modules (`Pool`, `Pool_state`, `Exec`) are internal: only the tests use them, through `Cistern.Private`.
+
 ```ocaml
 module Db : sig
   type t      (* the pool. Safe across fibers and domains. Any use after with_db raises Invalid_argument *)
@@ -492,8 +494,8 @@ module Update : sig
 end
 
 module Stmt : sig
-  type 'a t
-  val map : ('a -> 'b) -> 'a t -> 'b t
+  type 'a t   (* the commands of one statement, on one connection *)
+  val map : ('a -> 'b) -> 'a t -> 'b t   (* f runs after the checkin and the event *)
   val to_sql : Dialect.t -> 'a t -> string list
   (* for snapshot tests. A value that comes from an earlier step of the
      statement shows as a placeholder: <last_insert_id>, <keys> *)
@@ -528,7 +530,7 @@ exception Cistern_error of Error.t   (* its printer (Printexc.register_printer) 
 Rules:
 
 - `Query.update` and `Query.delete` with `offset`, `include_`, `for_update` or `for_share` raise `Invalid_argument` (MySQL has no `UPDATE ... OFFSET`). `count` and `exists` ignore `include_`, `for_update` and `for_share`.
-- A raw statement marks its connection, which then gets a session reset at checkin (see "Session").
+- A raw statement marks its connection dirty, which then gets a session reset at its next checkout (see "Session").
 - `Value.t` has `Null`, `Int of int64`, `Float of float`, `Text of string`, `Bytes of string`, `Datetime of Ptime.t`, and `Decimal of Decimal.t` (for raw results such as `SUM`). `Decimal.t` is abstract. `Decimal.of_string` accepts only `-?[0-9]+(\.[0-9]+)?`, with at most 65 digits in total and at most 38 after the point (the `DECIMAL` limits of the servers: 65 digits, and a scale of at most 38 on MariaDB and 30 on MySQL), so that `Raw.v (Decimal d)` cannot carry SQL text.
 - The fragments of `Raw` (`sql`, `v`, `++` and `to_string`), `Raw.result` and `Exec_result.t` are in `cistern.core` (phase 1.1). `Connection.query` and `Connection.exec` of `cistern.mysql` run a `Raw.t` on one connection. `Raw.query` and `Raw.exec` with `Stmt.t` come with the pool (phase 1.2). `Raw.to_string` gives `Error msg` for a value with no literal, and the client makes `Invalid_value` from it.
 - The exception is `Cistern_error`, not `Error`, so that `open Cistern` does not hide the `Error` constructor of `result`.
@@ -634,7 +636,7 @@ No value from a user is ever between quotes:
 
 ### Execution of one statement
 
-1. Serialize the SQL for the dialect of the connection. If the statement is too large (see "Limits and defaults"), give `Invalid_value` and send nothing.
+1. Serialize the SQL for the dialect of the connection. A raw statement makes its text one time, when the program makes the statement. A value with no literal gives `Invalid_value` before the checkout. The size check (see "Limits and defaults") needs the `@@max_allowed_packet` of the connection, thus it runs after the checkout. A statement that is too large gives `Invalid_value` and sends nothing.
 2. Take one connection from the pool. Run all operations of the statement in order on this connection.
 3. Read all rows before the connection goes back to the pool. Typed row decoders that the ppx generates put the text values straight into records.
 4. If a decoder fails, the client drops the rows and reads up to the end of the result set, and gives `Decode`. If that fails, the connection closes.
@@ -771,13 +773,15 @@ The rules of the connect:
 
 The identity of a connection is (`@@server_uuid` on MySQL, or (`@@hostname`, `@@port`, `@@server_id`) on MariaDB; the start time). `@@server_uuid` stays the same after a MySQL restart, so the start time is always part of the identity. With the exact start time, (identity, `CONNECTION_ID()`) names one session. Thread ids are not used again in one server lifetime before they wrap (believed, not verified). Thus version 1 has no `PROCESSLIST` check before `KILL`.
 
-Session reset. At checkin, the client marks the connection "dirty" if it ran a raw statement, or if the last OK packet had `SERVER_STATUS_IN_TRANS` outside a `Tx`. The checkin does no I/O. At the next checkout of a dirty connection, before the statement and under the deadline of that caller, the client runs:
+Session reset. At checkin, the client marks the connection "dirty" if it ran a raw statement. If the last OK packet had `SERVER_STATUS_IN_TRANS` outside a `Tx`, the connection has an open transaction with its locks: the pool aborts it at the checkin. After an ERR packet, the flag can be old (an ERR has no status), thus this rule is conservative. The checkin does no I/O. At the next checkout of a dirty connection, before the statement and under the deadline of that caller, the client runs:
 
 1. `COM_RESET_CONNECTION`. It sets all session variables back to their global values: `time_zone` becomes `SYSTEM`, `sql_mode` the global mode, and the collation the default of the server. It removes the user variables, and it rolls back an open transaction (its OK has `IN_TRANS` clear).
 2. Step 2 again (the complete `SET`), because of these changes.
 3. `COM_INIT_DB <database of the configuration>`, because a reset keeps the database of a raw `USE` (seen on the pinned servers in the probes of the review of phase 1.1; claim C3 tests it).
 
-`Connection.reset` (phase 1.1) runs the three steps, and it is the only reset that `cistern.mysql` exports. `COM_RESET_CONNECTION` alone is only for the tests. If any of these fails, the connection closes, and the checkout takes another connection. No statement was sent, so this is safe. Version 1 does not use session state tracking, because the typed API does not change session state.
+`Connection.reset` (phase 1.1) runs the three steps, and it is the only reset that `cistern.mysql` exports. `COM_RESET_CONNECTION` alone is only for the tests. If the reset fails, the pool aborts the connection, and the checkout takes another connection. No statement was sent, so this is safe. After a second failed reset in one `exec`, the `exec` gives the error of the second reset. A reset that passes the deadline gives `Timeout`. A cancel in the reset aborts the connection, and its event tells `sent=false`.
+
+The reset is at the next checkout, not at the checkin. Thus an idle dirty connection keeps the session state of its raw statement until then. A raw `LOCK TABLES` or `GET_LOCK` sets no status flag, thus the pool does not abort its connection. Its lock stays on the idle connection until the next checkout (the reset releases it) or the idle limit. Documented: release these locks in the same raw statements. A raw `BEGIN` through `Db.exec` has no effect: its OK has `SERVER_STATUS_IN_TRANS`, thus the checkin aborts the connection at once. A transaction of more than one statement needs `Db.transaction` (phase 1.3). Each raw statement costs a reset (three round trips) at the next checkout of its connection. A successful reset makes the entry clean, thus a statement that is not raw (phase 2) after it needs no reset. Version 1 does not use session state tracking, because the typed API does not change session state.
 
 ### Commands and packets
 
@@ -833,23 +837,27 @@ Session reset. At checkin, the client marks the connection "dirty" if it ran a r
 - The default run of the stateful suite (`dune runtest`, the mutation gate) uses one fixed root seed, thus a fixed list of 1000 cases that meet every cover demand. With `CISTERN_SLOW` set, the run uses a random root seed, and a test with the tag `slow` runs 10000 more cases.
 - Each `Killing` slot has a unique token. `killing` gives the token, and `killed tok` does nothing for a slot that already passed its age limit. Thus a slot is never freed two times, and the pool never has more than `pool_size` sessions from slots.
 - A stdlib `Mutex` protects `Pool_state`. No effect happens while the mutex is held (weft `docs/design.md` §2.5, locks).
-- Order in the weft shell, for each operation: (1) read the clock and set the flow deadlines, outside the mutex; (2) take the mutex, run the `Pool_state` operation, release the mutex; (3) fill Ivars and ring doorbells. At checkin, the deadlines are set to `None` in step 1, before the connection becomes visible to another fiber.
+- Order in the weft shell (`cistern/pool.ml`), for each operation: (1) Read the clock, outside the mutex. (2) Take the mutex, run the `Pool_state` operation (and draw the jitter for `opened`), and release the mutex. (3) The seam of the tests (`Pool.Private.after_op`, which does nothing by default). (4) The effects in this order: the fills of the waiters (a checkin on a closed pool aborts its entry at this step), the doorbell of the opener, the abort of a connection that `opened` gives on a closed pool (`Opened_close`), and the events. An abort of the holder rule comes before the operation. The holder sets the flow deadlines at the checkout, before its first wait. The deadline stays on the connection at the checkin: the next holder sets its own, and the `COM_QUIT` of a polite close waits only with a full send buffer.
+- The holder rule: an entry that its holder cannot give back as good (stale, a failed reset, a cancel or another exception, a connection that is not usable, `SERVER_STATUS_IN_TRANS` outside a `Tx`) is aborted before the operation that frees its slot. Thus the client never has more sockets than `pool_size`. The shell counts its sockets. A test counter (`over_bound`) counts the opens that find `pool_size` sockets, and the tests require 0.
 - A waiter is an `Ivar` that holds `Got of conn | Failed of Error.t | Abandoned`. `Ivar.try_fill` decides who wins:
   - Checkin pops waiters until `Ivar.try_fill w (Got c)` succeeds. If none succeeds, it pushes `c` on the idle stack (LIFO).
   - After a timeout or a cancel, the waiter calls `Ivar.try_fill w Abandoned`. If that fails, it takes `c` from `Ivar.peek w` and checks it in again. Only then does it give its error or raise `Cancelled`.
 - Doorbells: `Fiber.Semaphore.create ~max:1 0` with `try_release`. `try_release` is not a cancellation point, so a cancelled fiber can ring it.
-- Opener: a daemon in the `with_db` scope. It syncs on `choose [ acquire doorbell; Time.at next_timer ]`, calls `tick`, and starts the pending connects (at most 2 at a time) as plain `Fiber.fork` fibers in a nested scope, each with the connect timeout (`Fiber.with_timeout`). A connect fiber catches all exceptions except a `Cancelled` of its own chain, always calls `opened` or `open_failed`, and rings the doorbell of the opener when it ends. Because it catches the other exceptions, it needs no `fork_isolated`.
+- Opener: a daemon in the `with_db` scope. It calls `tick`, starts the pending connects (at most 2 at a time) as plain `Fiber.fork` fibers in a nested scope, does the polite closes, and then syncs on `choose [ acquire doorbell; Time.at next_timer ]`. `wake` is also true when `next_timer` gives a time, because the opener reads its timer again only after a wake. A connect fiber uses the connect timeout of `Connection.connect`. It catches all exceptions except `Cancelled`, and calls `opened`, `open_failed`, or `open_aborted` (after a cancel, which only the end of the opener gives). It rings the doorbell when the operation gives `wake`. Because it catches the other exceptions, it needs no `fork_isolated`.
+- No pre-open: `with_db` opens no connection before the first `exec`. Thus a connect error shows at the first `exec`, at its limit.
+- A waiter waits until the earlier of its deadline and `checkout_timeout`. At this limit, it gets the stored connect error, else `Timeout` if its deadline passed, else `Pool_exhausted`, with one reading of the clock.
 - Rule for every daemon of Cistern (the opener, the killer) and each connect fiber: a loop catches all exceptions except `Cancelled`. A `Cancelled` ends the loop. A catch-all that loops back to a `sync` after a cancel spins without end, because the cancel is sticky, and then the join of the scope never ends.
 - Connect errors: the waiters keep waiting, and the opener tries again after the backoff. A waiter whose deadline passes while a connect error is stored gets `Connect msg`, not `Timeout` or `Pool_exhausted`. A successful connect clears the error.
 - `max_lifetime` and the idle limit: see "Limits and defaults". An idle connection older than the idle limit is closed at checkout, not pinged.
+- At each checkout (also of an entry that a checkin or an open gives to a waiter), `Connection.stale` examines the connection. The pool aborts a stale connection, and the checkout takes another, with no error.
 - At checkout, a dirty connection gets the session reset (see "Session") before the statement, under the deadline of the caller.
-- The end of `with_db`: `close_all` fails all waiters with `Failed Connection_lost`, closes the idle connections, and sets the closed flag. A connection that comes back later is closed. Any later use of `Db.t` raises `Invalid_argument "Db.t used after with_db"`.
+- The end of `with_db`: after the scope (the opener and its connects end first), the shell sets the closed flag, and `close_all` fails all waiters with `Failed Connection_lost`. The idle connections and the connections to close get a polite close, in `Fiber.shield` with one limit of 2 s for all of them. After the limit, each close runs in a cancelled fiber: a `COM_QUIT` that must wait raises at once, and the close closes the flow. A polite close never raises, and it closes the flow in each case. A connection that comes back later is aborted at its checkin. Any later `Db.exec` raises `Invalid_argument "Db.t used after with_db"` before each other check, and emits no event.
 
 ### Deadlines
 
 - `Db.exec` has one absolute `Mono` deadline from `?timeout` (default 30 s). `Tx.exec` uses the earlier of its `?timeout` and the transaction deadline.
-- If the remaining time is less than the margin, `exec` gives `Timeout` and sends nothing.
-- `Connection.set_deadline` sets the read and the write deadline of the flow (the pool sets them before a statement and removes them at the checkin). A read deadline that passes raises `Flow.Timeout` inside the wait, before bytes are read. A write deadline that passes can leave half a packet, and it fails a TLS flow. In the two cases the connection breaks, and the cancel steps follow.
+- If the remaining time is less than the margin, `exec` gives `Timeout` and sends nothing. The pool examines it at the checkout of a dirty connection, before the reset, and again before the statement. The connection goes back as good. weft examines a deadline only in a wait, thus a deadline that passed does not stop a write: a writable socket takes the packet at once. Thus the pool runs the margin check immediately before the statement, with no wait between them.
+- `Connection.set_deadline` sets the read and the write deadline of the flow (the pool sets them at the checkout, before the session reset). The pool does not clear them at the checkin, and this is safe: each holder sets its own deadline before its first wait, the stale check never waits, and the `COM_QUIT` of a polite close waits only with a full send buffer (then an old deadline makes the close abrupt). A read deadline that passes raises `Flow.Timeout` inside the wait, before bytes are read. A write deadline that passes can leave half a packet, and it fails a TLS flow. In the two cases the connection breaks, and the cancel steps follow.
 - A write deadline gives `Timeout`. The writer raises `Flow.Timeout` only while it waits to write the rest of the packet, thus the server did not get the whole command. A server runs a command only when it has the whole packet (also the last frame of a payload of many frames), and the client closes the connection, so the server drops the part. The same holds for a TLS flow (phase 1.4).
 - A read deadline gives `Outcome_unknown` for a write (the statement was sent), and `Timeout` for a read or a command that is not a write. The steps of the session reset are not writes, thus a read deadline there gives `Timeout`.
 - PR 1a adds a keep-alive option to `Weft_flow.Tcp.connect` (weft has `Net.Keep_alive`). Cistern sets it, so that a half-open connection ends.
@@ -873,7 +881,7 @@ After a deadline, a fiber cancel or a lost reply in the middle of a statement, t
 10. The end of `with_db`: `with_db` is `match Fiber.scope body with v -> drain (); v | exception e -> drain (); raise e`. When the body ends, weft cancels the daemons, and the join of the scope waits for them. The join ignores cancels (weft `docs/design.md`, "Lifetime"), and a shielded `KILL` has a time limit, so the join ends. Then `drain` runs after the scope, in `Fiber.shield` with `Fiber.with_timeout` of the drain limit. It opens a control connection if necessary and sends the remaining entries. It catches all exceptions, so `with_db` gives the result or the exception of the body. This needs no stop step and no `Ivar`.
 11. `Statement_timeout` (3024, 1969): the server stopped the statement. The connection is good. No close and no `KILL`.
 
-Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: close the connection, and the slot is free at once. Phase 1.5 adds steps 2 to 10.
+Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: abort the connection (step 1), and the slot is free at once. Phase 1.5 adds steps 2 to 10. The `Cancelled` event tells if the statement was sent: the pool reads `Exec.sent`, which keeps the flag of each command of the statement. A cancel before the statement (in the wait or in the session reset) gives `sent=false`. Documented: with `kill=false`, a cancelled query runs on the server until it ends, and its session stays until then. Thus the server can have more sessions of the pool than `pool_size`.
 
 ### Transactions
 
@@ -910,9 +918,10 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: close the connection
 
 ### Shared state and the query hook
 
-- No `Hashtbl` is shared between domains. The transaction set is an `Atomic` value. The jitter uses the `Random.State.t` in `Pool_state`, under its mutex.
+- No `Hashtbl` is shared between domains. The transaction set is an `Atomic` value. The jitter uses a `Random.State.t` of the shell (a split of `?random`), under the mutex of the pool.
 - `on_query` gets events with a kind (`Query`, `Connect`, `Kill`, `Kill_dropped`, `Kill_off`), the redacted SQL, the duration, the number of rows and the error. Cistern catches its exceptions.
   - `Query` events outside a `Tx` run after the checkin, in the fiber of the statement. In a `Tx`, they run after each statement. An event never changes the result of the statement.
+  - `Db.exec` emits exactly one `Query` event on each path: also for an error before the checkout, a waiter at its limit, and a cancel. Only two paths emit no event: a misuse (`Invalid_argument`) and the exception of a bug. The function of `Stmt.map` runs after the event, thus its exception gives no second event.
   - `Connect` events run in the connect fiber. `Kill` events run in the killer, outside its shields.
 - `Error.t` keeps the full server message for the program. A server message can hold a value of a row, for example 1062 "Duplicate entry 'x' for key 'email'". `Error.pp_summary` prints only the constructor, the kind of a constraint and the error number. The printer of the exception `Cistern_error`, which logging libraries call through `Printexc.to_string`, uses `Error.pp_summary`. Only an explicit `Error.pp` or `Error.to_string` gives the full message.
 - `Event.pp`, and any default log output of events, prints only the kind of the event, the duration, the number of rows, the address, the redacted SQL and `Error.pp_summary`. Thus no server message and no value goes to the logs (decision Q9 of phase 0). The producer of a `Query` event puts only redacted SQL in it: each literal is `?`. A query has the outcome `Done` (with the rows), `Failed` (with the error) or `Cancelled` (with a flag: was the statement sent).
@@ -1009,7 +1018,7 @@ The phase steps have the names 1.1 to 1.5, so that they are not confused with th
 0. Foundations: weft PRs 1a and 1b (merged); the flake on weft main, with the server packages, `test/certgen` and the `Makefile` targets; `cistern.core` (Value, Decimal, Dialect, literals, Schema, Decoder, Error, Event); a check that `ppx_windtrap.mutate` works on 5.5 syntax. No reference to `lib.tlsPackage`. `MODEL` moves to phase 2, because its first users are there.
 1. A usable raw client, in five steps. Each step ends with tests that pass.
    - 1.1: One connection, no pool. TCP and Unix socket without TLS; `mysql_native_password`; the `caching_sha2_password` fast path, and the full path on a Unix socket with `allow-cleartext=socket`; the session setup; `Raw` on one connection; the error mapping. The tests of the "not verified" claims on MySQL 8.4 and MariaDB 11.8. Result: the claims are checked early.
-   - 1.2: `Pool_state`, the weft shell, the opener, the deadlines, the session reset at checkout, `Db.with_db`, `Db.exec`, the events. Cancel with the `kill=false` behavior. Simulator tests.
+   - 1.2: `Pool_state`, the weft shell, the opener, the deadlines, the session reset at checkout, `Db.with_db`, `Db.exec`, the events. Cancel with the `kill=false` behavior. Simulator tests, with a fake server of many connections (`test/sim/fake_db.ml`).
    - 1.3: `Db.transaction`, `Tx.exec` with the error rules, savepoints. Result: a raw SQL client with a pool and transactions. MySQL 8.4 only on a Unix socket (with `DISABLED` over TCP, the full path fails after each restart); MariaDB also on plain TCP.
    - 1.4: TLS with `ssl-mode`, `ssl-ca`, `ssl-fingerprint` and the authenticator; the full path over verified TLS; MariaDB 11.4. Needs PR 1c. The flake adds `weft-tls`.
    - 1.5: Cancel with `KILL`: `Killing` slots with tokens, `next_timer`, the killer, its control connection, the identity step of the session, the drain.
