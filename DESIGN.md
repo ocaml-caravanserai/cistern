@@ -226,7 +226,7 @@ inputs = {
 
 CI jobs:
 
-- `test`, on Linux and macOS: the build, the suites that need no server, and `nix flake check`. On Linux also: the format checks, the `.opam` files, the OCaml 5.5 check of the mutation backend, and on a pull request the mutation gate.
+- `test`, on Linux and macOS: the build, the suites that need no server, the slow tests (`make sim-slow`), and `nix flake check`. On Linux also: the format checks, the `.opam` files, the OCaml 5.5 check of the mutation backend, and on a pull request the mutation gate.
 - The job `integration` of `ci.yml` runs `make db-up`, `make integration` and `make db-down` on Linux: MySQL 8.4 and MariaDB 11.8 on each PR and each push to `main`, and MariaDB 11.4 on each push to `main`. It keeps the logs of the server if a step fails or the job is cancelled. The timing claims of phase 1.1 run only in `db.yml`.
 - The workflow `db.yml` of the test servers runs every night, on `workflow_dispatch`, and on a PR that changes its files. These files are `db.yml`, `test/db/`, `test/certgen/`, `test/integration/`, `Makefile`, `flake.nix`, `flake.lock` and `core/error.ml`.
   - The job `server` runs `make db-up`, `make db-check`, `make integration`, `make integration-timing`, `make integration-shutdown` (last, because it stops the server) and `make db-down` for each server on Linux (`ubuntu-24.04`) and macOS (`macos-15`). Thus MariaDB 11.4 and macOS run the integration suite each night, and the timing claims run only there.
@@ -234,6 +234,7 @@ CI jobs:
   - If a step fails or the job is cancelled, the job keeps the logs of the server.
   - If a server package does not build on aarch64-darwin, the macOS leg of that server fails at `make db-up`.
   - The job `errors` runs `make db-errors` on Linux.
+  - The job `slow` runs `make sim-slow` on Linux (no server).
 
 ### Libraries (dependencies go one way)
 
@@ -952,6 +953,15 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: abort the connection
   - Protocol faults: a peer fiber plays a transcript that a test packet encoder makes, so a change of the protocol code needs no new recording. Version 1 has no recorder of real server traffic; the integration tests cover the real servers. The test injects resets, short reads, latency, and an error 4031 on an idle connection.
   - TLS: `Weft_tls.server` with test certificates from `test/certgen`.
 - Integration tests (`Weft_os`): `suite : (module S : SERVER) -> Windtrap.test` runs the tests through the typed API on each server. The `Tx.exec` runner runs on MySQL 8.4 and MariaDB 11.8.
+  - Phase 1.2 runs `Db` (`test/integration/db_tests.ml`), first in the deterministic group, on the three servers, on the socket:
+    - A pool of 4 and 64 fibers on 4 domains: each fiber gets its row, each `exec` gives one `Query` event, and root sees at most 4 sessions of the test user (V3).
+    - A raw `SET sql_mode`, `SET time_zone`, `SET NAMES`, a user variable and `USE`: the next `exec` has the same connection id and the session of Cistern again (V5).
+    - A raw `START TRANSACTION WITH CONSISTENT SNAPSHOT` (a transaction that root sees at once): the checkin aborts the connection, root sees no session and no transaction of it, the next `exec` has a new connection id, and an `INSERT` after it commits at once. A raw `BEGIN` through `Db.exec` thus has no effect on the next `exec`. A transaction of more than one statement needs `Db.transaction` (phase 1.3).
+    - An idle connection that root kills: the stale check finds it at the checkout (V1), and the `exec` takes a new connection with no error.
+    - `SELECT SLEEP(2)` with a deadline of 200 ms gives `Outcome_unknown` at the deadline, and the pool stays usable.
+    - A wrong password gives `Connect` with 1045 at the deadline, and `Connect` events with the error.
+    - The end of `with_db` with execs in flight: the statements end, the waiter gets `Connection_lost`, a later `exec` raises `Invalid_argument`, and the sessions of the test user end.
+    - The timing group (nightly): a global `wait_timeout` of 6 s gives an idle limit of 1 s, and after 2 s the next `exec` takes a new connection with no error (V2). A `max_lifetime` of 1 s gives a new connection after 1.5 s.
   - Phase 1.1 runs Cistern's own client: the connect on the socket and on TCP (`ssl-mode=DISABLED`), the session values, the admin route (root on the socket with no password), a wrong password and an unknown database (1044 for the test user, which has no rights on other databases), and a socket path that does not exist (a network error, not a DNS error). After `KILL CONNECTION` from root, three pings give `Connection_lost`. The idle timeout is a timing test, thus it comes with the timing claims (phase 1.1e).
   - On MySQL, a TCP connection with `DISABLED` uses only the fast path of `caching_sha2_password`. Thus each TCP test first warms the cache with a connect on the socket with `allow-cleartext=socket`, and the tests do not depend on their order. A wrong password over TCP then gives the message of the gate, not 1045.
   - The MySQL sequence: `FLUSH PRIVILEGES` as root; TCP gives the message of the gate; the socket without the opt-in gives it too; the socket with the opt-in passes (the full path); then TCP passes (the fast path).

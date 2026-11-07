@@ -7,6 +7,7 @@
 (executable
  (name integration)
  (libraries
+  cistern
   cistern.core
   cistern.mysql
   ptime
