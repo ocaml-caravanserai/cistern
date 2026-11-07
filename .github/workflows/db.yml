@@ -18,6 +18,7 @@ on:
       - .github/workflows/db.yml
       - test/db/**
       - test/certgen/**
+      - test/integration/**
       - Makefile
       - flake.nix
       - flake.lock
@@ -48,6 +49,8 @@ jobs:
         run: make db-up SERVER=${{ matrix.server }}
       - name: Smoke check
         run: make db-check SERVER=${{ matrix.server }}
+      - name: Integration tests
+        run: make integration SERVER=${{ matrix.server }}
       - name: Stop the server
         if: ${{ steps.nix.outcome == 'success' && !cancelled() }}
         run: make db-down SERVER=${{ matrix.server }}

@@ -1,0 +1,9 @@
+; The integration suite (DESIGN.md, "Tests"): Cistern's own client against a
+; real server of make db-up. It is an executable, not a test stanza: dune
+; runtest and the checks of the flake never need a server, and the mutation
+; gate does not run it (it is not in SUITES). make integration SERVER=<name>
+; runs it with CISTERN_DB_ENV, the absolute path of .db/<name>/env.
+
+(executable
+ (name integration)
+ (libraries cistern.core cistern.mysql unix weft weft.os windtrap))
