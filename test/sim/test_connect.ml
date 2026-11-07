@@ -69,7 +69,8 @@ let connect_close config sim =
   let r =
     match Conn.connect config with
     | Ok c ->
-        Conn.close c ; "connected"
+        ignore (Conn.close c) ;
+        "connected"
     | Error e ->
         error_text e
   in
@@ -152,8 +153,9 @@ let tests =
                 | Ok c ->
                     let i = info_text (Conn.info c) in
                     let p = Conn.ping c in
-                    Conn.close c ;
-                    Conn.close c ;
+                    (* The first close closes. The second does nothing. *)
+                    equal bool true (Conn.close c) ;
+                    equal bool false (Conn.close c) ;
                     i ^ " ping "
                     ^ Result.fold ~ok:(fun () -> "ok") ~error:error_text p )
           in
@@ -181,7 +183,8 @@ let tests =
                 match Conn.connect (tcp ()) with
                 | Ok c ->
                     let i = info_text (Conn.info c) in
-                    Conn.close c ; i
+                    ignore (Conn.close c) ;
+                    i
                 | Error e ->
                     error_text e )
           in
@@ -712,7 +715,7 @@ let tests =
                     error_text e
                 | Ok c ->
                     let p = if listen = "unix:/s" then Ok () else Conn.ping c in
-                    Conn.close c ;
+                    ignore (Conn.close c) ;
                     no_client_fd sim ;
                     Result.fold ~ok:(fun () -> "ok") ~error:error_text p )
           in
@@ -812,7 +815,7 @@ let ping_tests =
               (fun _ c ->
                 let a = ping_text c in
                 let b = ping_text c in
-                Conn.close c ;
+                ignore (Conn.close c) ;
                 a ^ " then " ^ b )
           in
           equal string "Driver 1317 28000 then ok" result ;
@@ -834,7 +837,7 @@ let ping_tests =
                 let a = ping_text c in
                 let b = ping_text c in
                 let c3 = ping_text c in
-                Conn.close c ;
+                ignore (Conn.close c) ;
                 String.concat " then " [a; b; c3] )
           in
           equal string
@@ -850,7 +853,7 @@ let ping_tests =
                 let a = ping_text c in
                 let b = ping_text c in
                 let c3 = ping_text c in
-                Conn.close c ;
+                ignore (Conn.close c) ;
                 String.concat " then " [a; b; c3] )
           in
           equal string
@@ -858,7 +861,9 @@ let ping_tests =
           equal int 0 (pings received) )
     ; test "ping after close" (fun () ->
           let result, received =
-            with_connection [] (fun _ c -> Conn.close c ; ping_text c)
+            with_connection [] (fun _ c ->
+                ignore (Conn.close c) ;
+                ping_text c )
           in
           equal string "Connection_lost" result ;
           equal int 0 (pings received) ;
@@ -879,7 +884,7 @@ let ping_tests =
                           m
                     in
                     let first = Promise.await first in
-                    Conn.close c ;
+                    ignore (Conn.close c) ;
                     first ^ " / " ^ second ) )
           in
           equal string "ok / Connection: a second call at the same time" result )
@@ -896,7 +901,7 @@ let ping_tests =
                       "timeout"
                 in
                 let b = ping_text c in
-                Conn.close c ;
+                ignore (Conn.close c) ;
                 a ^ " then " ^ b )
           in
           equal string "timeout then Connection_lost" result ;
@@ -937,7 +942,7 @@ let ping_tests =
                     let r =
                       match
                         Fiber.with_timeout Mono (Span.s 5) (fun () ->
-                            Conn.close c )
+                            ignore (Conn.close c) )
                       with
                       | () ->
                           Printf.sprintf "%b closed after 1 s: %b" pings
@@ -955,7 +960,7 @@ let ping_tests =
           let result, _ =
             with_connection [F.Reset] (fun _ c ->
                 Time.sleep Mono (Span.ms 1) ;
-                Conn.close c ;
+                ignore (Conn.close c) ;
                 "closed" )
           in
           equal string "closed" result )
@@ -965,7 +970,9 @@ let ping_tests =
                 match
                   Fiber.with_timeout Mono (Span.ms 1) (fun () ->
                       try Time.sleep Mono (Span.s 5)
-                      with Fiber.Cancelled _ as e -> Conn.close c ; raise e )
+                      with Fiber.Cancelled _ as e ->
+                        ignore (Conn.close c) ;
+                        raise e )
                 with
                 | () ->
                     "no timeout"

@@ -34,7 +34,9 @@ type t =
   ; info: info
   ; mutable status: int
   ; mutable last_error: Message.err option
-  ; mutable closed: bool
+  ; mutable sent: bool
+  ; closed: bool Atomic.t
+        (** Set by the first abort or close, on any domain. *)
   ; mutable broken: bool
   ; busy: bool Atomic.t }
 
@@ -351,7 +353,8 @@ let establish config opened =
   ; info
   ; status
   ; last_error= None
-  ; closed= false
+  ; sent= false
+  ; closed= Atomic.make false
   ; broken= false
   ; busy= Atomic.make false }
 
@@ -413,26 +416,26 @@ let send t command =
   with
   | () ->
       ()
-  | exception (Flow.Closed | Flow.Timeout | Weft.Net.Error _) ->
+  | exception (Flow.Closed | Weft.Net.Error _) ->
       raise (Event Outcome.Write_failed)
+  | exception Flow.Timeout ->
+      raise (Event Outcome.Write_deadline)
 
 (* A read of the reply. A failure of the transport is the end of the stream.
    Weft.Net.Error comes from an error of the socket that does not end the
    stream, for example ETIMEDOUT after the keep-alive: the tests cannot make it,
-   because they do not have the socket of the client. Flow.Timeout cannot come
-   in phase 1.1 (no read timeout), and Reader.Too_large cannot come, because a
-   packet has at most 0xFFFFFE bytes. *)
+   because they do not have the socket of the client. Reader.Too_large cannot
+   come, because a packet has at most 0xFFFFFE bytes. Flow.Timeout is the read
+   deadline of the pool. *)
 let reading f =
   match f () with
   | v ->
       v
-  | exception
-      ( End_of_file
-      | Flow.Closed
-      | Flow.Timeout
-      | Weft.Net.Error _
-      | Reader.Too_large ) ->
+  | exception (End_of_file | Flow.Closed | Weft.Net.Error _ | Reader.Too_large)
+    ->
       raise (Event Outcome.Stream_ended)
+  | exception Flow.Timeout ->
+      raise (Event Outcome.Read_deadline)
 
 let bad_packet message = raise (Event (Outcome.Bad_packet message))
 
@@ -492,10 +495,11 @@ let replies t =
 (* One command on a usable connection. [f] gives the result, or raises Event.
    With [always_break], each error breaks the connection. Another exception (a
    cancel) breaks the connection and goes up. *)
-let command ?(always_break = false) t kind f =
+let command ?(always_break = false) ?(statement = false) t kind f =
   with_busy t (fun () ->
       t.last_error <- None ;
-      if t.closed || t.broken then Error Error.Connection_lost
+      if statement then t.sent <- false ;
+      if Atomic.get t.closed || t.broken then Error Error.Connection_lost
       else
         match f () with
         | v ->
@@ -532,17 +536,18 @@ let statement t raw =
         in
         Error (Error.Invalid_value {code= None; message})
 
-let run_query t raw f =
-  command t Outcome.Write (fun () ->
+let run_query ?(kind = Outcome.Write) t raw f =
+  command ~statement:true t kind (fun () ->
       match statement t raw with
       | Error e ->
           Error e
       | Ok sql ->
           send t (Query sql) ;
+          t.sent <- true ;
           f (replies t) )
 
-let query t raw =
-  run_query t raw (fun replies ->
+let query ?kind t raw =
+  run_query ?kind t raw (fun replies ->
       (* The first result set. *)
       match
         List.find_map
@@ -568,8 +573,8 @@ let query t raw =
       | _ ->
           Ok {Raw.columns= [||]; rows= []} )
 
-let exec t raw =
-  run_query t raw (fun replies ->
+let exec ?kind t raw =
+  run_query ?kind t raw (fun replies ->
       let _, (ok : Message.ok) = List.nth replies (List.length replies - 1) in
       Ok
         { Exec_result.affected_rows= ok.affected_rows
@@ -590,7 +595,13 @@ let reset t =
     ; Query (set_query t.info.dialect)
     ; Init_db (Config.database t.config) ]
 
+(* The first claim of a closed flag gives true, each later claim false, also
+   when two domains claim at the same time. *)
+let claim closed = not (Atomic.exchange closed true)
+
 module Private = struct
+  let claim = claim
+
   let reset_connection t = ok_command t [Reset_connection]
 
   let last_error t = t.last_error
@@ -608,10 +619,40 @@ module Private = struct
             Ok [] )
 end
 
+let sent t = t.sent
+
+let set_deadline t d =
+  Flow.set_read_deadline t.flow d ;
+  Flow.set_write_deadline t.flow d
+
+(* No busy flag: abort can run while a command waits in another fiber, which
+   then raises Flow.Closed. It sends nothing, never waits and never raises. *)
+let abort t =
+  let first = claim t.closed in
+  Flow.close t.flow ; first
+
+let stale t =
+  with_busy t (fun () ->
+      let buf = Bytes.create 1 in
+      let stale =
+        Atomic.get t.closed || t.broken
+        || Reader.buffered t.reader > 0
+        ||
+        match Flow.read_now t.flow buf 0 1 with
+        | None ->
+            false
+        | Some _ ->
+            true
+        | exception _ ->
+            true
+      in
+      if stale then break t ;
+      stale )
+
 let close t =
   with_busy t (fun () ->
-      if not t.closed then (
-        t.closed <- true ;
+      if not (claim t.closed) then false
+      else (
         (* A broken connection sends nothing: its flow is closed. *)
         if not t.broken then (
           Flow.set_write_timeout t.flow (Some (Weft.Span.s 1)) ;
@@ -628,4 +669,5 @@ let close t =
               (* A cancel, or another exception: the flow closes, so that its fd
                  never stays open. *)
               Flow.close t.flow ; raise e ) ;
-        Flow.close t.flow ) )
+        Flow.close t.flow ;
+        true ) )

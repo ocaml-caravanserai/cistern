@@ -87,7 +87,7 @@ let connect_ping config =
       error_text e
   | Ok c ->
       let p = Conn.ping c in
-      Conn.close c ;
+      ignore (Conn.close c) ;
       Result.fold ~ok:(fun () -> "connected") ~error:error_text p
 
 (* The connect of the cache warm-up of MySQL (and a plain connect on
@@ -176,7 +176,7 @@ let session config =
       error_text e
   | Ok c ->
       let i = Conn.info c in
-      Conn.close c ;
+      ignore (Conn.close c) ;
       Printf.sprintf "%s %s %b" (dialect_text i) i.version
         (Int64.logand i.connection_id 0xFFFF_FFFFL = Int64.of_int i.thread_id)
 
@@ -233,7 +233,7 @@ let with_conn config f =
   | Error e ->
       failwith (error_text e)
   | Ok c ->
-      Fun.protect ~finally:(fun () -> Conn.close c) (fun () -> f c)
+      Fun.protect ~finally:(fun () -> ignore (Conn.close c)) (fun () -> f c)
 
 let exec_ok c sql =
   match Conn.exec c (Raw.sql sql) with

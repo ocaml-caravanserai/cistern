@@ -26,4 +26,5 @@ let () =
        ; Test_column.tests
        ; Test_outcome.tests
        ; Test_pool_state.tests
+       ; Test_close_flag.tests
        ; Test_scramble.tests ] )

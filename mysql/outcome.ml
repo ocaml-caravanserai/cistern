@@ -8,6 +8,8 @@ type command = Write | Not_write
 
 type event =
   | Write_failed
+  | Write_deadline
+  | Read_deadline
   | Before_command
   | Stream_ended
   | Bad_packet of string
@@ -29,6 +31,15 @@ let packet_too_large = 1153
 let decide dialect command = function
   | Write_failed | Before_command ->
       (Error.Connection_lost, Broken)
+  | Write_deadline ->
+      (Error.Timeout, Broken)
+  | Read_deadline ->
+      ( ( match command with
+        | Write ->
+            Error.Outcome_unknown `Statement
+        | Not_write ->
+            Error.Timeout )
+      , Broken )
   | Stream_ended | Bad_packet _ ->
       (no_reply command, Broken)
   | Local_infile ->

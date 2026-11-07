@@ -33,6 +33,16 @@ let tests =
           , O.Write_failed
           , (lost, O.Broken)
           , (lost, O.Broken) )
+        ; ( "a write deadline"
+          , Dialect.Mysql
+          , O.Write_deadline
+          , (Error.Timeout, O.Broken)
+          , (Error.Timeout, O.Broken) )
+        ; ( "a read deadline"
+          , Dialect.Mariadb
+          , O.Read_deadline
+          , (unknown, O.Broken)
+          , (Error.Timeout, O.Broken) )
         ; ( "R-SEQ0"
           , Dialect.Mysql
           , O.Before_command
