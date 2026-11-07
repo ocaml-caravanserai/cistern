@@ -45,4 +45,30 @@ let redacted r =
   in
   add r ; Buffer.contents b
 
+(* The text before the first value: the first word starts after leading white
+   space, and ends at the first character that is not a letter, or at a value. A
+   value before the first letter gives None. *)
+let first_word r =
+  let b = Buffer.create 16 in
+  let exception Stop in
+  let rec walk = function
+    | Sql s ->
+        String.iter
+          (fun c ->
+            match c with
+            | (' ' | '\t' | '\r' | '\n') when Buffer.length b = 0 ->
+                ()
+            | 'A' .. 'Z' | 'a' .. 'z' ->
+                Buffer.add_char b c
+            | _ ->
+                raise Stop )
+          s
+    | V _ ->
+        raise Stop
+    | Cat (x, y) ->
+        walk x ; walk y
+  in
+  (try walk r with Stop -> ()) ;
+  if Buffer.length b = 0 then None else Some (Buffer.contents b)
+
 type result = {columns: string array; rows: Value.t array list}

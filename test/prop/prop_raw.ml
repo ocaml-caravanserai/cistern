@@ -41,7 +41,9 @@ let contains s sub =
 let leaf =
   Gen.one_of
     [ Gen.map (fun x -> `V x) Prop_literal.value
-    ; Gen.map (fun s -> `Sql s) (Gen.of_list ["a"; " b "; "SELECT"]) ]
+    ; Gen.map
+        (fun s -> `Sql s)
+        (Gen.of_list ["a"; " b "; "SELECT"; " "; "\t"; "("; "SE"; "T 1"]) ]
 
 let tree_gen =
   Gen.pair
@@ -113,6 +115,36 @@ let tests =
               | `Sql _ ->
                   () )
             leaves )
+    ; prop "first_word is the first word of the redacted text" ~count:300
+        tree_gen (fun (leaves, shape) ->
+          let r = build leaves shape in
+          (* The reference: in the redacted text, a value is " ? ", thus a value
+             stops the word, as in first_word. *)
+          let text = Raw.redacted r in
+          let n = String.length text in
+          let rec skip i =
+            if i < n && String.contains " \t\r\n" text.[i] then skip (i + 1)
+            else i
+          in
+          let start = skip 0 in
+          let rec letters i =
+            if
+              i < n
+              &&
+              match text.[i] with
+              | 'A' .. 'Z' | 'a' .. 'z' ->
+                  true
+              | _ ->
+                  false
+            then letters (i + 1)
+            else i
+          in
+          let stop = letters start in
+          let expected =
+            if stop = start then None
+            else Some (String.sub text start (stop - start))
+          in
+          equal (option string) expected (Raw.first_word r) )
     ; prop "the grouping does not change the text" ~count:200
         Gen.(triple Prop_literal.value Prop_literal.value Prop_literal.value)
         (fun (a, b, c) ->

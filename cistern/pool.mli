@@ -35,6 +35,72 @@ val opener : t -> unit
     2 at a time, in a scope of its own), does the polite closes, and waits for
     its doorbell or its timer. Only a cancel ends it. *)
 
+(** {1 One held connection}
+
+    [with_conn] is the checkout and the checkin of {!exec}, for a function that
+    runs on the held connection: one statement ({!exec}), or a transaction
+    (phase 1.3). The plan of phase 1.3, section 3.11. *)
+
+(** The held connection. [dirty] is the dirty mark after the session reset: a
+    successful reset makes the entry clean. *)
+type held = {c: Cistern_mysql.Connection.t; dirty: bool}
+
+(** The end of the entry, that the function gives. *)
+type held_end =
+  | Give_back of {dirty: bool}
+      (** The checkin as good if the connection is usable and [IN_TRANS] is
+          clear, else the abort first. *)
+  | Discard  (** The abort, then the checkin as not reusable. *)
+
+(** The outcome of the function, as data: the function never raises for an
+    outcome of the user. *)
+type 'a fn_outcome =
+  | Value of 'a
+  | Err of Cistern_core.Error.t
+  | Reraise of exn * Printexc.raw_backtrace  (** A user exception. *)
+  | Cancel of exn  (** A [Cancelled]. *)
+
+(** The outcome of [with_conn]: the steps before the function, or the outcome of
+    the function with its pending event. The caller emits the event, then gives
+    the result or raises. *)
+type 'a before =
+  | Checkout_failed of Cistern_core.Error.t
+      (** The error of a waiter at its limit, or the [Failed] of the shutdown.
+      *)
+  | Margin of Cistern_mysql.Connection.t
+      (** Less than the margin was left. The entry went back as good. *)
+  | Reset_failed of Cistern_mysql.Connection.t * Cistern_core.Error.t
+      (** A reset that passed the deadline, or the second failed reset. *)
+  | Cancelled_before of exn
+      (** A cancel in the wait (no connection) or in the reset. A late entry
+          went back as good, and the entry of a reset was discarded. *)
+  | Ran of 'a fn_outcome * (unit -> unit)
+      (** The function ran: its outcome and its pending event, after the
+          checkin. *)
+
+val with_conn :
+     t
+  -> start:Weft.Span.t
+  -> deadline:Weft.Span.t
+  -> (held -> 'a fn_outcome * (unit -> unit) * held_end)
+  -> 'a before
+(** [with_conn t ~start ~deadline f] does the checkout (the waiter limit is the
+    earlier of [deadline] and [start] plus [checkout_timeout], with the rules of
+    1.2), the stale check, the flow deadline, the session reset of a dirty entry
+    with the margin before and after it, then [f] on the held connection, then
+    the checkin of the end that [f] gives. [start] and [deadline] are times of
+    the pool ({!now}). Only a bug of Cistern raises out of [f]: then the entry
+    is discarded, and the exception goes up.
+
+    @raise Invalid_argument
+      "Db.t used after with_db" at a checkout on a closed pool. *)
+
+val now : t -> Weft.Span.t
+(** The time of the pool: the span since its origin. *)
+
+val add_span : Weft.Span.t -> Weft.Span.t -> Weft.Span.t
+(** A saturated sum: a very large span gives the largest time. *)
+
 val exec :
   t -> timeout:Weft.Span.t -> 'a Stmt.t -> ('a, Cistern_core.Error.t) result
 (** [exec t ~timeout s] runs [s] on one connection (DESIGN.md, "Execution of one

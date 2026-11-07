@@ -269,7 +269,7 @@ let set_query dialect =
   "SET NAMES utf8mb4 COLLATE " ^ Dialect.collation dialect
   ^ ", time_zone = '+00:00', sql_mode = \
      'STRICT_ALL_TABLES,NO_BACKSLASH_ESCAPES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION', \
-     autocommit = 1"
+     autocommit = 1, completion_type = 'NO_CHAIN'"
 
 let session r w ~thread_id =
   let info =

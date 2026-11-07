@@ -19,4 +19,5 @@ module Private = struct
   module Pool = Pool
   module Pool_state = Pool_state
   module Exec = Exec
+  module Tx_rules = Tx_rules
 end

@@ -285,10 +285,11 @@ let opener t =
 
 let in_trans c = Connection.status c land Message.status_bit In_trans <> 0
 
-let dialect t (conn : conn option) =
-  match conn with
+(* The dialect of an event: of its connection, else of the last connect. *)
+let dialect t (c : Connection.t option) =
+  match c with
   | Some c ->
-      (Connection.info c.c).dialect
+      (Connection.info c).dialect
   | None -> (
     match Mutex.protect t.mutex (fun () -> P.last_dialect t.st) with
     | Some d ->
@@ -296,64 +297,57 @@ let dialect t (conn : conn option) =
     | None ->
         Dialect.Mysql )
 
-(* What a holder did with its entry. *)
-type 'a held =
-  | Stale
-  | Margin
-  | Reset_failed of Error.t
-  | Ran of ('a Stmt.Private.ran, Error.t) result
+(* The saturated sum of two spans: a very large timeout gives the largest time,
+   not a negative one. *)
+let add_span a b =
+  let x = Span.to_ns a and y = Span.to_ns b in
+  Span.of_ns
+    ( if
+        ( Int64.compare y (Int64.sub Int64.max_int x)
+        > 0 )
+        [@mutate off "at the bound, the sum and the largest time are equal"]
+      then Int64.max_int
+      else Int64.add x y )
 
-let exec t ~timeout stmt =
-  (* Before each other check: a misuse emits no event. *)
-  if Atomic.get t.closed then invalid_arg "Db.t used after with_db" ;
-  let meta = Stmt.Private.meta stmt in
-  let t0 = Time.now Clock.Mono in
-  let event ?conn outcome =
-    emit t
-      (Event.Query
-         { sql= String.concat "; " (meta.redacted (dialect t conn))
-         ; duration= Time.diff Clock.Mono (Time.now Clock.Mono) t0
-         ; outcome } )
-  in
-  let failed ?conn e =
-    event ?conn (Event.Failed e) ;
-    Error e
-  in
-  let cancelled ?conn ~sent ex =
-    event ?conn (Event.Cancelled {sent}) ;
-    raise ex
-  in
-  ( match Fiber.check_cancel () with
-  | () ->
-      ()
-  | exception (Fiber.Cancelled _ as ex) ->
-      cancelled ~sent:false ex ) ;
-  let start = now t in
-  (* A saturated sum: a very large timeout gives the largest time, not a
-     negative one. *)
-  let add a b =
-    let x = Span.to_ns a and y = Span.to_ns b in
-    Span.of_ns
-      ( if
-          ( Int64.compare y (Int64.sub Int64.max_int x)
-          > 0 )
-          [@mutate off "at the bound, the sum and the largest time are equal"]
-        then Int64.max_int
-        else Int64.add x y )
-  in
-  let deadline = add start timeout in
+let time_left t ~deadline =
+  Span.compare
+    (Span.of_ns (Int64.sub (Span.to_ns deadline) (Span.to_ns (now t))))
+    (margin ())
+  >= 0
+
+type held = {c: Connection.t; dirty: bool}
+
+type held_end = Give_back of {dirty: bool} | Discard
+
+type 'a fn_outcome =
+  | Value of 'a
+  | Err of Error.t
+  | Reraise of exn * Printexc.raw_backtrace
+  | Cancel of exn
+
+type 'a before =
+  | Checkout_failed of Error.t
+  | Margin of Connection.t
+  | Reset_failed of Connection.t * Error.t
+  | Cancelled_before of exn
+  | Ran of 'a fn_outcome * (unit -> unit)
+
+(* What the steps before the function gave. *)
+type 'a step =
+  | Stale
+  | Margin_step
+  | Reset_step of Error.t
+  | Cancel_step of exn
+  | Ran_step of 'a fn_outcome * (unit -> unit) * held_end
+
+let with_conn t ~start ~deadline f =
   let limit =
     Span.of_ns
       (Int64.min (Span.to_ns deadline)
-         (Span.to_ns (add start t.checkout_timeout)) )
+         (Span.to_ns (add_span start t.checkout_timeout)) )
   in
   let flow_deadline = mono t deadline in
-  let time_left now =
-    Span.compare
-      (Span.of_ns (Int64.sub (Span.to_ns deadline) (Span.to_ns now)))
-      (margin ())
-    >= 0
-  in
+  let time_left () = time_left t ~deadline in
   (* The error of a waiter at its limit (P3): one [now]. *)
   let wait_error now stored =
     match stored with
@@ -395,7 +389,7 @@ let exec t ~timeout stmt =
     | `Out (Got e) ->
         hold e resets
     | `Out (Failed err) ->
-        failed err
+        Checkout_failed err
     | `Out Abandoned | `Limit ->
         abandon id w ~cancel:None resets
     | exception (Fiber.Cancelled _ as ex) ->
@@ -410,9 +404,9 @@ let exec t ~timeout stmt =
     let give_up () =
       match cancel with
       | Some ex ->
-          cancelled ~sent:false ex
+          Cancelled_before ex
       | None ->
-          failed (wait_error at stored)
+          Checkout_failed (wait_error at stored)
     in
     if Ivar.try_fill w Abandoned then give_up ()
     else
@@ -422,7 +416,7 @@ let exec t ~timeout stmt =
              uses it if its deadline leaves the margin. Else, and after a
              cancel, it goes back. *)
           Atomic.incr Private.waiter_lost ;
-          if cancel = None && time_left (now t) then hold e resets
+          if cancel = None && time_left () then hold e resets
           else (
             checkin t e ~reusable:true ~dirty:e.dirty ;
             give_up () )
@@ -430,9 +424,9 @@ let exec t ~timeout stmt =
         (* A cancel always goes up. *)
         match cancel with
         | Some ex ->
-            cancelled ~sent:false ex
+            Cancelled_before ex
         | None ->
-            failed err )
+            Checkout_failed err )
       | Some Abandoned | None ->
           give_up ()
   and hold e resets =
@@ -448,17 +442,15 @@ let exec t ~timeout stmt =
       checkin t e ~reusable ~dirty
     in
     let c = e.conn.c in
-    let ctx = Exec.make c in
-    let statement = ref false in
     (* A successful reset makes the entry clean. *)
     let was_reset = ref false in
     match
       if Connection.stale c then Stale
       else (
         Connection.set_deadline c flow_deadline ;
-        if e.dirty && not (time_left (now t)) then Margin
+        if e.dirty && not (time_left ()) then Margin_step
         else
-          let reset =
+          match
             if e.dirty then (
               match Connection.reset c with
               | r ->
@@ -467,55 +459,115 @@ let exec t ~timeout stmt =
                   Atomic.incr Private.cancel_in_reset ;
                   raise ex )
             else Ok ()
-          in
-          match reset with
+          with
+          | exception (Fiber.Cancelled _ as ex) ->
+              Cancel_step ex
           | Error err ->
-              Reset_failed err
+              Reset_step err
           | Ok () ->
               was_reset := e.dirty ;
-              if not (time_left (now t)) then Margin
-              else (
-                statement := true ;
-                Ran (Stmt.Private.run stmt ctx) ) )
+              if not (time_left ()) then Margin_step
+              else
+                (* No wait between the margin check and the function. *)
+                let outcome, event, held_end =
+                  f {c; dirty= e.dirty && not !was_reset}
+                in
+                Ran_step (outcome, event, held_end) )
     with
-    | exception ex -> (
-        let sent = !statement && Exec.sent ctx in
-        discard t e ;
-        match ex with
-        | Fiber.Cancelled _ ->
-            cancelled ~conn:e.conn ~sent ex
-        | _ ->
-            raise ex )
+    | exception ex ->
+        (* A bug of Cistern. *)
+        discard t e ; raise ex
     | Stale ->
         Atomic.incr Private.stale_at_checkout ;
         discard t e ;
         get resets
-    | Margin ->
+    | Margin_step ->
         give_back ~reusable:true ~dirty:(e.dirty && not !was_reset) ;
-        failed ~conn:e.conn Error.Timeout
-    | Reset_failed Error.Timeout ->
+        Margin c
+    | Cancel_step ex ->
+        discard t e ; Cancelled_before ex
+    | Reset_step Error.Timeout ->
         discard t e ;
-        failed ~conn:e.conn Error.Timeout
-    | Reset_failed err ->
+        Reset_failed (c, Error.Timeout)
+    | Reset_step err ->
         discard t e ;
-        if resets >= 1 then failed ~conn:e.conn err else get (resets + 1)
-    | Ran r -> (
-        let reusable = Connection.usable c && not (in_trans c) in
-        if not reusable then abort t e.conn ;
-        give_back ~reusable
-          ~dirty:((e.dirty && not !was_reset) || meta.raw <> None) ;
-        match r with
-        | Ok ran ->
-            event ~conn:e.conn (Event.Done {rows= ran.rows}) ;
-            Ok (ran.finish ())
-        | Error err ->
-            failed ~conn:e.conn err )
+        if resets >= 1 then Reset_failed (c, err) else get (resets + 1)
+    | Ran_step (outcome, event, held_end) ->
+        ( match held_end with
+        | Give_back {dirty} ->
+            let reusable = Connection.usable c && not (in_trans c) in
+            if not reusable then abort t e.conn ;
+            give_back ~reusable ~dirty
+        | Discard ->
+            discard t e ) ;
+        Ran (outcome, event)
+  in
+  get 0
+
+let exec t ~timeout stmt =
+  (* Before each other check: a misuse emits no event. *)
+  if Atomic.get t.closed then invalid_arg "Db.t used after with_db" ;
+  let meta = Stmt.Private.meta stmt in
+  let t0 = Time.now Clock.Mono in
+  let event ?c outcome =
+    emit t
+      (Event.Query
+         { sql= String.concat "; " (meta.redacted (dialect t c))
+         ; duration= Time.diff Clock.Mono (Time.now Clock.Mono) t0
+         ; outcome } )
+  in
+  let failed ?c e = event ?c (Event.Failed e) ; Error e in
+  let cancelled ?c ~sent ex =
+    event ?c (Event.Cancelled {sent}) ;
+    raise ex
+  in
+  ( match Fiber.check_cancel () with
+  | () ->
+      ()
+  | exception (Fiber.Cancelled _ as ex) ->
+      cancelled ~sent:false ex ) ;
+  let start = now t in
+  let deadline = add_span start timeout in
+  (* One statement on the held connection, as data for [with_conn]. *)
+  let run (h : held) =
+    let c = h.c in
+    let ctx = Exec.make c in
+    let give_back = Give_back {dirty= h.dirty || meta.raw <> None} in
+    match Stmt.Private.run stmt ctx with
+    | Ok ran ->
+        ( Value ran
+        , (fun () -> event ~c (Event.Done {rows= ran.rows}))
+        , give_back )
+    | Error err ->
+        (Err err, (fun () -> event ~c (Event.Failed err)), give_back)
+    | exception (Fiber.Cancelled _ as ex) ->
+        let sent = Exec.sent ctx in
+        (Cancel ex, (fun () -> event ~c (Event.Cancelled {sent})), Discard)
   in
   match meta.text with
   | Some (Error message) ->
       failed (Error.Invalid_value {code= None; message})
-  | _ ->
-      get 0
+  | _ -> (
+    match with_conn t ~start ~deadline run with
+    | Checkout_failed err ->
+        failed err
+    | Margin c ->
+        failed ~c Error.Timeout
+    | Reset_failed (c, err) ->
+        failed ~c err
+    | Cancelled_before ex ->
+        cancelled ~sent:false ex
+    | Ran (Value ran, event) ->
+        event () ;
+        Ok (ran.finish ())
+    | Ran (Err err, event) ->
+        event () ; Error err
+    | Ran (Cancel ex, event) ->
+        event () ; raise ex
+    | Ran (Reraise (ex, bt), event) ->
+        (event () ;
+         Printexc.raise_with_backtrace ex bt )
+        [@mutate off "the function of exec gives no Reraise"] )
 
 let shutdown t =
   Atomic.set t.closed true ;
