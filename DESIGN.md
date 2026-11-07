@@ -106,7 +106,7 @@ All numbers of version 1 are in this table. The other sections refer to it.
 | Margin: a statement with less remaining time is not sent | 50 ms (not for `COMMIT` and `ROLLBACK`) |
 | `COMMIT` and `ROLLBACK` deadline | The remaining time, at least 5 s and at most 30 s |
 | `max_lifetime` | 30 min, with ±15% jitter |
-| Idle limit: an idle connection older than this is closed at checkout | The smaller of 30 s and `@@wait_timeout` − 5 s |
+| Idle limit: an idle connection older than this is closed at checkout | The smaller of 30 s and `@@wait_timeout` − 5 s, at least 1 s. With `wait_timeout = 1`, the limit equals the server timeout, and the `read_now` check catches a close |
 | Connect timeout (pool and control connection) | 10 s |
 | Concurrent connects | 2 |
 | Connect backoff | 100 ms to 5 s |
@@ -817,8 +817,20 @@ Session reset. At checkin, the client marks the connection "dirty" if it ran a r
 
 ### Pool
 
-- `Pool_state` is pure: no effects, no I/O. Its operations take the time as an argument and give the hand-offs as data: `checkout : now -> [ `Conn of conn | `Wait of id | `Wait_and_open of id ]`, `checkin`, `cancel_wait`, `open_started`, `opened`, `open_failed`, `killing`, `killed`, `tick`, `next_timer`, `close_all`. It holds the counts of pending and running connects, the stored connect error, and the `Random.State.t` for the jitter.
-- A pure state sees the time only when an operation runs. Thus `next_timer` gives the earliest time at which the state changes without an operation: the age limit of a `Killing` slot, or the end of the connect backoff. Without it, a waiter can wait for a slot that is already free. `tick now` applies these changes and gives the connects to start.
+- `Pool_state` (`cistern/pool_state.ml`) is pure: a persistent value, no effects, no I/O, and no operation raises. A time is a span from the origin of the pool, and no operation assumes that the time grows from one operation to the next (two fibers can read the clock in one order and run their operations in the other order). The `Random.State.t` of the jitter is not in the state: the shell draws the jitter under its mutex and gives it to `opened`.
+- The slots: the idle entries (a stack, the last checkin first), the entries in use (by a fiber, or given to a waiter), the running connects, and the entries that wait for a polite close by the opener (`closing`, in two parts: to close and in close). Each keeps its slot, thus `idle + in_use + opening + closing <= pool_size` always. Phase 1.5 adds the `Killing` slots in the same way.
+- The operations give the hand-offs as data, and a flag `wake`. `wake` is true if the opener has work (a connect to start, or an entry to close), or a timer to arm (`next_timer` gives a time), because the opener reads its timer only in a tick. The operations:
+  - `checkout`: `Conn`, `Wait id` or `Closed`. All idle entries past their life or their idle limit move to `closing`, also those under a fresh entry of the stack. Then the fresh entry at the top goes out.
+  - `cancel_wait`: it tells if the waiter was in the queue, and gives the stored connect error.
+  - `checkin`: `Give` to the oldest waiter, `Idle`, `Closing` past its life, `Freed` for a connection that the shell aborted first, or `Abort` on a closed pool.
+  - `tick`: the connects to start (at most 2 running, none before the end of the backoff), the entries to close, and the timer.
+  - `opened`: `Give`, `Idle`, or `Close` on a closed pool. It clears the error and the backoff. It cuts the jitter `u` to −0.15 to 0.15, and NaN gives 0.
+  - `open_failed`: it stores the error. The backoff is 100 ms, doubled, at most 5 s, and its end is a maximum.
+  - `open_aborted`, `closed_done` and `close_all`.
+  - The demand of connects is the number of waiters minus the running connects.
+- A pure state sees the time only when an operation runs. Thus `next_timer now` gives `Some t` only if `t` is later than `now` and `tick` at `t`, with no other operation, starts a connect: the end of the connect backoff, when a waiter needs a connect and a slot is free (in 1.5 also the age limit of a `Killing` slot). Without it, a waiter can wait for a slot that is already free; with a time in the past, the opener would spin.
+- The stateful suite (`test/stateful`) compares `Pool_state` with a model (`test/stateful/model.ml`) after each operation, and checks the invariants: each entry that `opened` made in exactly one place (idle, one holder, to close, in close, or out of the state), the slot bound, no idle entry while a fiber waits, progress (a connect starts now or at the timer), the timer, no hand-out of an entry past its life or its idle limit, and the range of the jitter. The model derives the connects, the timer, `wake` and the checkout by another method than the code (an enumeration, a search, a tick of the model, a filter of the stack). The test also models what the opener knows (its doorbell, and the timer of its last tick), and requires that the opener knows each connect to start, each entry to close and each timer.
+- The default run of the stateful suite (`dune runtest`, the mutation gate) uses one fixed root seed, thus a fixed list of 1000 cases that meet every cover demand. With `CISTERN_SLOW` set, the run uses a random root seed, and a test with the tag `slow` runs 10000 more cases.
 - Each `Killing` slot has a unique token. `killing` gives the token, and `killed tok` does nothing for a slot that already passed its age limit. Thus a slot is never freed two times, and the pool never has more than `pool_size` sessions from slots.
 - A stdlib `Mutex` protects `Pool_state`. No effect happens while the mutex is held (weft `docs/design.md` §2.5, locks).
 - Order in the weft shell, for each operation: (1) read the clock and set the flow deadlines, outside the mutex; (2) take the mutex, run the `Pool_state` operation, release the mutex; (3) fill Ivars and ring doorbells. At checkin, the deadlines are set to `None` in step 1, before the connection becomes visible to another fiber.

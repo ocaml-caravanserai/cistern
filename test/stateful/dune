@@ -1,0 +1,12 @@
+; The stateful suite (DESIGN.md, "Tests"): Pool_state against a model. -linkall
+; puts each module of the libraries in the catalogue of the mutation gate (make
+; check-scope).
+
+; CISTERN_SLOW selects a random seed and the slow test (test_stateful.ml).
+
+(test
+ (name test_stateful)
+ (libraries cistern cistern.core weft windtrap)
+ (deps
+  (env_var CISTERN_SLOW))
+ (link_flags (-linkall)))
