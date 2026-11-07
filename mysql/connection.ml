@@ -151,27 +151,8 @@ let scramble plugin ~password ~nonce =
   if plugin = sha2_name then Scramble.sha2 ~password ~nonce
   else Scramble.native ~password ~nonce
 
-(* A plugin name of the server, for a message: as it is if it has 1 to 64
-   printable ASCII bytes. Else the first 64 bytes between double quotes, with
-   [\xNN] for each other byte, a double quote and a backslash, and "..." if the
-   name is longer. Thus a hostile server cannot put control bytes or a long text
-   into a log. (Cistern_names.quote keeps the UTF-8 characters and has no
-   limit.) *)
-let plugin_text name =
-  let printable c = c >= ' ' && c <= '~' && c <> '"' && c <> '\\' in
-  let n = String.length name in
-  if n >= 1 && n <= 64 && String.for_all printable name then name
-  else
-    let b = Buffer.create 80 in
-    Buffer.add_char b '"' ;
-    String.iter
-      (fun c ->
-        if printable c then Buffer.add_char b c
-        else Printf.bprintf b "\\x%02x" (Char.code c) )
-      (String.sub name 0 (Int.min n 64)) ;
-    Buffer.add_char b '"' ;
-    if n > 64 then Buffer.add_string b "..." ;
-    Buffer.contents b
+(* A plugin name of the server, for a message (Wire.peer_text). *)
+let plugin_text name = Wire.peer_text ~limit:64 name
 
 let gate_message () =
   "the server asks for full authentication; use VERIFY_IDENTITY, \

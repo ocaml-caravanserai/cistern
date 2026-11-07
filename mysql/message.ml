@@ -120,6 +120,21 @@ let greeting payload =
         ; auth_plugin } )
       payload
 
+(* The first 32 bytes of the SSL request and of the handshake response: the
+   capabilities, a maximum packet of 16 MiB, the character set, and 23 bytes of
+   0. The last 4 of them are the MariaDB extended capabilities. One function
+   writes them for the two packets, thus the two always have the same bytes. *)
+let write_prefix w ~capabilities ~charset =
+  Writer.write_int32_le w (Int32.of_int capabilities) ;
+  Writer.write_int32_le w 0x100_0000l ;
+  Writer.write_uint8 w charset ;
+  Writer.write_string w (String.make 23 '\000')
+
+let write_ssl_request w ~capabilities ~charset =
+  if not (has capabilities Ssl) then
+    invalid_arg "Message.write_ssl_request: no CLIENT_SSL" ;
+  write_prefix w ~capabilities ~charset
+
 let write_handshake_response w ~capabilities ~charset ~user ~auth ~database
     ~plugin =
   if String.length auth > 255 then
@@ -130,10 +145,7 @@ let write_handshake_response w ~capabilities ~charset ~user ~auth ~database
     invalid_arg
       "Message.write_handshake_response: PLUGIN_AUTH_LENENC_CLIENT_DATA or \
        CONNECT_ATTRS" ;
-  Writer.write_int32_le w (Int32.of_int capabilities) ;
-  Writer.write_int32_le w 0x100_0000l ;
-  Writer.write_uint8 w charset ;
-  Writer.write_string w (String.make 23 '\000') ;
+  write_prefix w ~capabilities ~charset ;
   Wire.write_string_nul w user ;
   Writer.write_uint8 w (String.length auth) ;
   Writer.write_string w auth ;

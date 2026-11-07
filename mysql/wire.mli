@@ -18,6 +18,15 @@ exception Truncated
     integer that starts with [0xFF]. *)
 exception Malformed of string
 
+val peer_text : limit:int -> string -> string
+(** [peer_text ~limit s] is a text of the peer for a message (DESIGN.md,
+    "Authentication"): [s] as it is if it has 1 to [limit] printable ASCII
+    bytes, and no double quote and no backslash. Else the first [limit] bytes of
+    [s] between double quotes, with [\xNN] for each other byte, a double quote
+    and a backslash, and ["..."] if [s] is longer. Thus a hostile peer cannot
+    put control bytes or a long text into a log. The plugin name uses a limit of
+    64, and the text of a TLS failure a limit of 200 (phase 1.4). *)
+
 (** A payload and a position in it. *)
 type cursor
 

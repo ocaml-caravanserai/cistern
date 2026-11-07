@@ -76,4 +76,23 @@ let tests =
           equal string auth (W.bytes c (W.uint8 c)) ;
           equal string database (W.string_nul c) ;
           equal string "mysql_native_password" (W.string_nul c) ;
-          equal int 0 (W.remaining c) ) ]
+          equal int 0 (W.remaining c) )
+    ; prop "the SSL request is the first 32 bytes of the handshake response"
+        ~count:1000
+        (Gen.quad no_nul
+           (Gen.string_of ~size:(Gen.int_range 0 255) Gen.char)
+           no_nul
+           (Gen.pair
+              (Gen.map
+                 (fun c -> c land lnot 0x30_0000 lor 0x800)
+                 (Gen.int_range 0 0xFFFF_FFFF) )
+              (Gen.int_range 0 255) ) )
+        (fun (user, auth, database, (capabilities, charset)) ->
+          let response =
+            written (fun w ->
+                M.write_handshake_response w ~capabilities ~charset ~user ~auth
+                  ~database ~plugin:"mysql_native_password" )
+          in
+          equal string (String.sub response 0 32)
+            (written (fun w -> M.write_ssl_request w ~capabilities ~charset)) )
+    ]

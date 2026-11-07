@@ -121,4 +121,24 @@ let tests =
           equal string "ab\000"
             (Wire_io.written (fun w -> W.write_string_nul w "ab")) ;
           raises (Invalid_argument "Wire.write_string_nul: a NUL") (fun () ->
-              Wire_io.written (fun w -> W.write_string_nul w "a\000b") ) ) ]
+              Wire_io.written (fun w -> W.write_string_nul w "a\000b") ) )
+    ; cases "peer_text"
+        ~id:(fun (n, _, _, _) -> n)
+        [ ("a plain text", 64, "caching_sha2_password", "caching_sha2_password")
+        ; ("at the limit", 3, "abc", "abc")
+        ; ("one byte more", 3, "abcd", "\"abc\"...")
+        ; ("empty", 64, "", "\"\"")
+        ; ("a space stays", 64, "a b", "a b")
+        ; ("a quote and a backslash", 64, "a\"b\\c", "\"a\\x22b\\x5cc\"")
+        ; ( "a newline, an ESC and a byte above 127"
+          , 64
+          , "x\n\x1b[31m\xc3\xa9"
+          , "\"x\\x0a\\x1b[31m\\xc3\\xa9\"" )
+        ; ( "5 KB with control bytes, at the limit of 200"
+          , 200
+          , String.concat "" (List.init 300 (fun _ -> "evil\n\x1b XY "))
+          , "\""
+            ^ String.concat "" (List.init 20 (fun _ -> "evil\\x0a\\x1b XY "))
+            ^ "\"..." ) ]
+        (fun (_, limit, s, expected) ->
+          equal string expected (W.peer_text ~limit s) ) ]
