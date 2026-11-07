@@ -23,4 +23,5 @@ let () =
        ; Test_packet.tests
        ; Test_message.tests
        ; Test_resultset.tests
+       ; Test_column.tests
        ; Test_scramble.tests ] )

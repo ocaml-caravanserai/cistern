@@ -43,6 +43,9 @@ val decimal : Decimal.t t
 val option : 'a t -> 'a option t
 (** [option d] gives [None] for SQL [NULL]. *)
 
+val map : ('a -> 'b) -> 'a t -> 'b t
+(** [map f d] decodes with [d], then applies [f] to the value. *)
+
 type cursor
 
 val next : cursor -> 'a t -> 'a

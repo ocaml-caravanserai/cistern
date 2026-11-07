@@ -141,6 +141,8 @@ let option d = function
   | Some _ as c ->
       Result.map Option.some (d c)
 
+let map f d s = Result.map f (d s)
+
 type cursor = {row: string option array; mutable read: int; mutable live: bool}
 
 exception Failed of string

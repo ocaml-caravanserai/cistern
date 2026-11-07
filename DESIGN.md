@@ -768,6 +768,22 @@ If any of these fails, the connection closes, and the checkout takes another con
 
 - `COM_QUERY` (with a loop while `SERVER_MORE_RESULTS_EXISTS` is set), `COM_PING`, `COM_RESET_CONNECTION`, `COM_INIT_DB`, `COM_QUIT`.
 - A result header of `0xFB` (a `LOCAL INFILE` request) closes the connection with an error.
+- The values of a text result set (`Column`). The type code, the `UNSIGNED` flag (0x20) and the character set of the column definition choose the `Value.t`. Only the character set 63 (binary) has a meaning.
+
+  | Type code | `Value.t` |
+  |---|---|
+  | SQL `NULL` in any column, and 6 (`NULL`) | `Null` |
+  | 1, 2, 3, 9, 13 (`YEAR`), and 8 (`BIGINT`) signed | `Int`. `TINYINT(1)` is an `Int`, because `Value.t` has no bool |
+  | 8 `UNSIGNED` | `Int` up to `Int64.max_int`, else `Decimal` |
+  | 4 (`FLOAT`), 5 (`DOUBLE`) | `Float`. The server sends a `FLOAT` with about 6 significant digits (3.4028234e38 comes back as `3.40282e38`), thus use `DOUBLE` for exact values |
+  | 0, 246 (`DECIMAL`) | `Decimal` |
+  | 7 (`TIMESTAMP`), 12 (`DATETIME`) | `Datetime`. A zero date gives `Decode` |
+  | 10 (`DATE`), 11 (`TIME`), 14 | `Text` |
+  | 16 (`BIT`), 255 (`GEOMETRY`) | `Bytes` |
+  | 245 (`JSON`) | `Text`, for each character set (MySQL sends 63) |
+  | Each other code | `Bytes` with the character set 63, else `Text`. An unknown code never gives an error |
+
+  `Text` must be valid UTF-8, else the value gives `Decode`. The message names the column and the expected type, never the value.
 - A result set is the column count (1 to 65535, alone in its packet), the column definitions, the rows (`Resultset` keeps them as `string option array`), and the terminator OK. A row cannot start with `0xFE`, because its first value would need a packet of 16 MiB. An ERR after the columns or after some rows is the reply, and the rows before it are dropped. An error of the reader tells if it came after the column count: the server then ran the statement. The end of a result set is decoded only as a terminator (`0xFE`), and an OK only as `0x00`, so that an `AuthSwitchRequest` (`0xFE`) is never an OK. The reader keeps all the rows of a result in memory, with no limit of the number of rows: the deadline of phase 1.2 bounds the time of a read.
 - At checkout, the client calls `read_now` on the flow (not `readable`, because a TLS record with no data makes `readable` true). If the stream ended, or a packet came that the client did not ask for (for example error 4031, or 1053, or 1927), the client closes the connection and takes another one. No command was sent, so this is safe. This applies only at checkout. In a `Tx`, or between the operations of one statement, the same condition gives `Connection_lost`.
 - If the stream ends after a write, the write was sent: a write gives `Outcome_unknown`, and a read is tried one more time on another connection (only outside a `Tx`).
