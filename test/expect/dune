@@ -1,0 +1,9 @@
+; The expect suite of cistern.sql (DESIGN.md, "Tests"): the SQL of each
+; statement for each dialect, and a property of the redacted copy. -linkall
+; puts each module of the libraries in the catalogue of the mutation gate
+; (make check-scope).
+
+(test
+ (name test_expect)
+ (libraries cistern.sql cistern.core ptime windtrap)
+ (link_flags (-linkall)))
