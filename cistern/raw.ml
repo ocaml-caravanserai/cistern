@@ -21,7 +21,8 @@ let statement r ~run ~rows =
                 "<Invalid_value: " ^ m ^ ">" ) ] )
     ; text= Some text
     ; for_update= false
-    ; atomic= false }
+    ; atomic= false
+    ; multi= false }
   in
   Stmt.Private.make meta
     ~run:(fun ctx ->

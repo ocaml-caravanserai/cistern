@@ -579,3 +579,141 @@ let scopes =
           is_true (set (Some 2L) = Deferred.Loaded None) ;
           is_true (set (Some 3L) = Deferred.Unloaded) ;
           is_true (set None = Deferred.Unloaded) ) ]
+
+(* The SQL of include_ (phase 4d, the plan of phase 4, E8). *)
+let includes =
+  let module User = User_todo.User in
+  let module Todo = User_todo.Todo in
+  let module Node = Tree.Node in
+  let module Query = Cistern.Query in
+  let sql ?(d = Cistern_core.Dialect.Mysql) s = Cistern.Stmt.to_sql d s in
+  let ucols =
+    "SELECT `user`.`id`, `user`.`name`, `user`.`email`, `user`.`nick`, \
+     `user`.`age`, `user`.`active` FROM `user`"
+  in
+  let tcols =
+    "SELECT `todo`.`id`, `todo`.`user_id`, `todo`.`title`, `todo`.`done`, \
+     `todo`.`note` FROM `todo`"
+  in
+  let ncols =
+    "SELECT `node`.`id`, `node`.`name`, `node`.`parent_id` FROM `node`"
+  in
+  let refused f =
+    match f () with _ -> "no error" | exception Invalid_argument m -> m
+  in
+  group "include_"
+    [ test "a has_many: the children of the keys, in the order of their key"
+        (fun () ->
+          let s = User.all |> Query.include_ User.Rel.todos |> Query.to_list in
+          equal (list string)
+            [ ucols
+            ; tcols
+              ^ " WHERE `todo`.`user_id` IN (<keys>) ORDER BY `todo`.`id` ASC"
+            ]
+            (sql s) ;
+          equal (list string)
+            [ ucols
+            ; tcols ^ " WHERE `todo`.`user_id` IN (?) ORDER BY `todo`.`id` ASC"
+            ]
+            ((Cistern.Stmt.Private.meta s).redacted Cistern_core.Dialect.Mysql) ;
+          is_true (Cistern.Stmt.Private.meta s).multi ;
+          is_false (Cistern.Stmt.Private.meta s).atomic )
+    ; test "a belongs_to: the parents of the keys" (fun () ->
+          equal (list string)
+            [ tcols ^ " ORDER BY `todo`.`id` ASC LIMIT 1"
+            ; ucols ^ " WHERE `user`.`id` IN (<keys>)" ]
+            (sql (Todo.all |> Query.include_ Todo.Rel.user |> Query.first)) )
+    ; test "two include_: two more queries, in order" (fun () ->
+          equal (list string)
+            [ ncols
+            ; ncols ^ " WHERE `node`.`id` IN (<keys>)"
+            ; ncols
+              ^ " WHERE `node`.`parent_id` IN (<keys>) ORDER BY `node`.`id` ASC"
+            ]
+            (sql
+               ( Node.all
+               |> Query.include_ Node.Rel.parent
+               |> Query.include_ Node.Rel.children
+               |> Query.to_list ) ) )
+    ; test "the lock of the main query in each query of include_" (fun () ->
+          let q = User.all |> Query.include_ User.Rel.todos in
+          let child =
+            tcols
+            ^ " WHERE `todo`.`user_id` IN (<keys>) ORDER BY `todo`.`id` ASC"
+          in
+          equal (list string)
+            [ucols ^ " FOR UPDATE"; child ^ " FOR UPDATE"]
+            (sql (Query.to_list (Query.for_update q))) ;
+          is_true
+            (Cistern.Stmt.Private.meta (Query.to_list (Query.for_update q)))
+              .for_update ;
+          equal (list string)
+            [ucols ^ " FOR SHARE"; child ^ " FOR SHARE"]
+            (sql (Query.to_list (Query.for_share q))) ;
+          equal (list string)
+            [ucols ^ " LOCK IN SHARE MODE"; child ^ " LOCK IN SHARE MODE"]
+            (sql ~d:Cistern_core.Dialect.Mariadb
+               (Query.to_list (Query.for_share q)) ) )
+    ; test "a value with no literal in the main query: Invalid_value" (fun () ->
+          let x =
+            Cistern.Private.Field.make ~model:Coded.P.schema
+              ~field:(List.nth Coded.P.schema.fields 1)
+              ~encode:Cistern.Private.Encode.float
+              ~decode:Cistern.Private.Decoder.float
+              ~get:(fun (r : Coded.p) -> r.x)
+              ~set:(fun (r : Coded.p) v -> {r with x= v})
+          in
+          let kids =
+            Relation.has_many ~name:"kids"
+              (module Coded.P)
+              (module Coded.C)
+              ~key:(fun (c : Coded.c) -> Some c.pcode)
+              ~set:(fun (r : Coded.p) l -> {r with kids= Deferred.Loaded l})
+          in
+          let s =
+            Cistern.Private.Model.all (module Coded.P)
+            |> Query.where Cistern.Private.Expr.Ops.(x ==. Float.nan)
+            |> Query.include_ kids |> Query.to_list
+          in
+          is_true
+            ( (Cistern.Stmt.Private.meta s).text
+            = Some (Error "a NaN is not a SQL value") ) ;
+          equal string "<Invalid_value: a NaN is not a SQL value>"
+            (List.hd (sql s)) )
+    ; test "the lock of the main query in the belongs_to queries" (fun () ->
+          let q = Todo.all |> Query.include_ Todo.Rel.user in
+          let parent = ucols ^ " WHERE `user`.`id` IN (<keys>)" in
+          equal (list string)
+            [tcols ^ " FOR UPDATE"; parent ^ " FOR UPDATE"]
+            (sql (Query.to_list (Query.for_update q))) ;
+          equal (list string)
+            [tcols ^ " LOCK IN SHARE MODE"; parent ^ " LOCK IN SHARE MODE"]
+            (sql ~d:Cistern_core.Dialect.Mariadb
+               (Query.to_list (Query.for_share q)) ) )
+    ; test "the keys: once each, by Value.equal, in order" (fun () ->
+          let d s =
+            Cistern.Value.Decimal (Option.get (Cistern.Decimal.of_string s))
+          in
+          (* Decimal.equal compares the text: 1.0 and 1.00 are two keys. *)
+          is_true
+            ( Cistern.Private.Query.Private.unique
+                [ d "1.0"
+                ; d "1.00"
+                ; d "1.0"
+                ; Cistern.Value.Int 2L
+                ; Cistern.Value.Int 2L ]
+            = [d "1.0"; d "1.00"; Cistern.Value.Int 2L] ) )
+    ; test "count and exists ignore include_" (fun () ->
+          let q = User.all |> Query.include_ User.Rel.todos in
+          equal (list string) (sql (Query.count User.all)) (sql (Query.count q)) ;
+          equal (list string)
+            (sql (Query.exists User.all))
+            (sql (Query.exists q)) )
+    ; test "Query.update and Query.delete refuse include_" (fun () ->
+          let q = User.all |> Query.include_ User.Rel.todos in
+          equal (list string)
+            [ "Query.update: a query with include_"
+            ; "Query.delete: a query with include_" ]
+            [ refused (fun () ->
+                  Query.update (Cistern.Update.set User.Q.active false) q )
+            ; refused (fun () -> Query.delete q) ] ) ]
