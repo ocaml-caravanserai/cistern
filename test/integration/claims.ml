@@ -940,9 +940,48 @@ let c35 =
             (one_text killer (sql "SELECT COUNT(*) FROM c35")) ;
           exec_ok killer "DROP TABLE c35" ) )
 
+(* C36 (V7 of the plan of phase 2, the probe of 2f): a filter with <=> on a
+   nullable column with an index uses the index (EXPLAIN gives the type ref and
+   the key), as =. Thus ==. on an option field is not a scan. *)
+let c36 =
+  on all "C36: <=> on an indexed nullable column uses the index" (fun () ->
+      warm () ;
+      with_conn (user_conn ()) (fun c ->
+          table c "c36"
+            "(id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, n BIGINT NULL, \
+             KEY c36_n_idx (n)) ENGINE=InnoDB" ;
+          exec_ok c
+            "INSERT INTO c36 (n) VALUES (1), (2), (3), (NULL), (5), (6), (7), \
+             (8), (9), (10), (NULL), (12)" ;
+          ignore (Conn.query c (sql "ANALYZE TABLE c36")) ;
+          let explain where =
+            match
+              Conn.query c (sql ("EXPLAIN SELECT id FROM c36 WHERE " ^ where))
+            with
+            | Ok {columns; rows= row :: _} ->
+                let at name =
+                  let rec find i =
+                    if i >= Array.length columns then "none"
+                    else if String.equal columns.(i) name then
+                      value_text row.(i)
+                    else find (i + 1)
+                  in
+                  find 0
+                in
+                at "type" ^ " " ^ at "key"
+            | Ok _ ->
+                "no row"
+            | Error e ->
+                error_text e
+          in
+          equal string "Text \"ref\" Text \"c36_n_idx\"" (explain "c36.n <=> 5") ;
+          equal string "Text \"ref\" Text \"c36_n_idx\"" (explain "c36.n = 5") ;
+          exec_ok c "DROP TABLE c36" ) )
+
 let deterministic =
   group "claims"
     [ c1
+    ; c36
     ; c2
     ; c3
     ; c4
