@@ -70,6 +70,52 @@ let tests =
             :: query (set 29) "done 1"
             :: List.map (fun s -> query s "done 1") ddl )
             events )
+    ; test "push_schema of derived models: the DDL of the ppx" (fun () ->
+          let derived =
+            Cistern_test_models_ppx.
+              [ Person.Person.model
+              ; Hostile.T.model
+              ; Hostile.S.model
+              ; Hostile.F.model ]
+          in
+          let r, _ =
+            with_pool (fun _ db pool ->
+                Db.push_schema pool derived ;
+                List.tl (List.rev db.D.log) )
+          in
+          equal (list string)
+            [ "CREATE TABLE IF NOT EXISTS `people` (`id` BIGINT NOT NULL \
+               AUTO_INCREMENT, `email` VARCHAR(255) NOT NULL, `nick_name` \
+               VARCHAR(255) NULL, `city` VARCHAR(255) NOT NULL, `age` BIGINT \
+               NULL, `active` TINYINT(1) NOT NULL, PRIMARY KEY (`id`), UNIQUE \
+               KEY `people_email_key` (`email`), UNIQUE KEY \
+               `people_nick_name_key` (`nick_name`), KEY `people_city_idx` \
+               (`city`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 \
+               COLLATE=utf8mb4_0900_bin ROW_FORMAT=DYNAMIC"
+            ; "CREATE TABLE IF NOT EXISTS `order` (`c` BIGINT NOT NULL \
+               AUTO_INCREMENT, `select` VARCHAR(255) NOT NULL, `key` BIGINT \
+               NOT NULL, `desc` VARCHAR(255) NULL, `a b` MEDIUMTEXT NOT NULL, \
+               `it's` TINYINT(1) NOT NULL, PRIMARY KEY (`c`), UNIQUE KEY \
+               `order_select_key` (`select`), KEY `order_desc_idx` (`desc`)) \
+               ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin \
+               ROW_FORMAT=DYNAMIC"
+            ; "CREATE TABLE IF NOT EXISTS `s` (`draft` BIGINT NOT NULL, \
+               `q\"uote\\back` VARCHAR(255) NOT NULL, `name` MEDIUMTEXT NOT \
+               NULL, `s_name` VARCHAR(255) NULL, `caf\xc3\xa9` BIGINT NOT \
+               NULL, PRIMARY KEY (`draft`), UNIQUE KEY `s_q\"uote\\back_key` \
+               (`q\"uote\\back`), UNIQUE KEY `s_s_name_key` (`s_name`), KEY \
+               `s_caf\xc3\xa9_idx_7f4276cb` (`caf\xc3\xa9`)) ENGINE=InnoDB \
+               DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin \
+               ROW_FORMAT=DYNAMIC"
+            ; "CREATE TABLE IF NOT EXISTS `f` (`update` VARCHAR(255) NOT NULL, \
+               `cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc` \
+               BIGINT NOT NULL, `all` BIGINT NULL, PRIMARY KEY (`update`), \
+               UNIQUE KEY \
+               `f_ccccccccccccccccccccccccccccccccccccccccccccccccc_key_2cefbc4e` \
+               (`cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc`)) \
+               ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin \
+               ROW_FORMAT=DYNAMIC" ]
+            r )
     ; test "push_schema with kill=true: no round trip 3 on its connection"
         (fun () ->
           let r, _ =

@@ -2,34 +2,35 @@
    v. 2.0. If a copy of the MPL was not distributed with this file, You can
    obtain one at https://mozilla.org/MPL/2.0/. *)
 
-(* The one-row operations of the typed API (phase 2d1) on Fake_db, with the
-   hand-written models: the exact SQL, the results, the events, and the same in
-   a Tx. The script of Fake_db answers each exact SQL text. *)
+(* The one-row operations of the typed API (phase 2d1) on Fake_db: the exact
+   SQL, the results, the events, and the same in a Tx. The script of Fake_db
+   answers each exact SQL text. Since phase 3d, the rows run on the derived
+   models person, kinds and auto_only (person takes the place of the
+   hand-written user, which has a relation). *)
 
 open Windtrap
-open Cistern_test_models
+open Cistern_test_models_ppx
 module D = Fake_db
 module Db = Cistern.Db
 module Tx = Cistern.Tx
 module E = Cistern_core.Error
-module User = User_todo.User
-module Todo = User_todo.Todo
+module User = Person.Person
 
 let with_pool = Test_pool.with_pool
 
 let user_cols =
-  "SELECT `user`.`id`, `user`.`name`, `user`.`email`, `user`.`nick`, \
-   `user`.`age`, `user`.`active` FROM `user`"
+  "SELECT `people`.`id`, `people`.`email`, `people`.`nick_name`, \
+   `people`.`city`, `people`.`age`, `people`.`active` FROM `people`"
 
-let get7 = user_cols ^ " WHERE `user`.`id` = 7 LIMIT 1"
+let get7 = user_cols ^ " WHERE `people`.`id` = 7 LIMIT 1"
 
-let row7 = [Some "7"; Some "Ann"; Some "a@x"; None; Some "33"; Some "1"]
+let row7 = [Some "7"; Some "a@x"; None; Some "Ann"; Some "33"; Some "1"]
 
 let ann =
-  { User_todo.id= 7L
-  ; name= "Ann"
+  { Person.id= 7L
   ; email= "a@x"
   ; nick= None
+  ; city= "Ann"
   ; age= Some 33
   ; active= true }
 
@@ -39,14 +40,14 @@ let script pairs db = db.D.faults.script <- (fun sql -> List.assoc_opt sql pairs
 let text = function Ok _ -> "ok" | Error e -> E.to_string e
 
 let insert_user =
-  "INSERT INTO `user` (`name`, `email`, `nick`, `age`, `active`) VALUES \
-   (_utf8mb4 X'426F62', _utf8mb4 X'6240', NULL, NULL, 1)"
+  "INSERT INTO `people` (`email`, `nick_name`, `city`, `age`, `active`) VALUES \
+   (_utf8mb4 X'6240', NULL, _utf8mb4 X'426F62', NULL, 1)"
 
 let update_user =
-  "UPDATE `user` SET `name` = _utf8mb4 X'5A', `age` = NULL WHERE `user`.`id` = \
-   7"
+  "UPDATE `people` SET `city` = _utf8mb4 X'5A', `age` = NULL WHERE \
+   `people`.`id` = 7"
 
-let delete_user = "DELETE FROM `user` WHERE `user`.`id` = 7"
+let delete_user = "DELETE FROM `people` WHERE `people`.`id` = 7"
 
 let counts affected insert = D.Counts {affected; insert}
 
@@ -58,7 +59,7 @@ let tests =
               ~setup:
                 (script
                    [ (get7, D.Rows [row7])
-                   ; (user_cols ^ " WHERE `user`.`id` = 8 LIMIT 1", D.Rows [])
+                   ; (user_cols ^ " WHERE `people`.`id` = 8 LIMIT 1", D.Rows [])
                    ] )
               (fun _ _ pool ->
                 let a = Db.exec pool (User.get_by_id 7L) in
@@ -70,9 +71,9 @@ let tests =
           equal (list string)
             [ "connect 10.0.0.9:3306 ok"
             ; Printf.sprintf "query %S done 1"
-                (user_cols ^ " WHERE `user`.`id` = ? LIMIT 1")
+                (user_cols ^ " WHERE `people`.`id` = ? LIMIT 1")
             ; Printf.sprintf "query %S failed Not_found"
-                (user_cols ^ " WHERE `user`.`id` = ? LIMIT 1") ]
+                (user_cols ^ " WHERE `people`.`id` = ? LIMIT 1") ]
             events )
     ; test "find: Some and None" (fun () ->
           let r, _ =
@@ -80,7 +81,7 @@ let tests =
               ~setup:
                 (script
                    [ (get7, D.Rows [row7])
-                   ; (user_cols ^ " WHERE `user`.`id` = 8 LIMIT 1", D.Rows [])
+                   ; (user_cols ^ " WHERE `people`.`id` = 8 LIMIT 1", D.Rows [])
                    ] )
               (fun _ _ pool ->
                 ( Db.exec pool (User.find_by_id 7L)
@@ -89,10 +90,10 @@ let tests =
           equal bool true (r = (Ok (Some ann), Ok None)) )
     ; test "get_by and find_by of a unique field" (fun () ->
           let by_email =
-            user_cols ^ " WHERE `user`.`email` = _utf8mb4 X'6140' LIMIT 1"
+            user_cols ^ " WHERE `people`.`email` = _utf8mb4 X'6140' LIMIT 1"
           in
           let by_nick =
-            user_cols ^ " WHERE `user`.`nick` = _utf8mb4 X'616E' LIMIT 1"
+            user_cols ^ " WHERE `people`.`nick_name` = _utf8mb4 X'616E' LIMIT 1"
           in
           let r, _ =
             with_pool
@@ -111,9 +112,10 @@ let tests =
     ; test "get_by with None raises Invalid_argument" (fun () ->
           raises
             (Invalid_argument
-               "Model.get_by: None for the field \"user\".\"nick\"" ) (fun () ->
+               "Model.get_by: None for the field \"people\".\"nick_name\"" )
+            (fun () ->
               Cistern.Private.Model.get_by
-                (module User_todo.Cistern_model__user)
+                (module Person.Cistern_model__person)
                 User.Q.nick None ) )
     ; test "create: the last insert id, 0, a key in the draft, Auto_only"
         (fun () ->
@@ -144,7 +146,7 @@ let tests =
                     else None ) )
               (fun _ _ pool ->
                 let c () =
-                  Db.exec pool (User.create ~name:"Bob" ~email:"b@" ())
+                  Db.exec pool (User.create ~city:"Bob" ~email:"b@" ())
                 in
                 let a = c () in
                 let b = c () in
@@ -160,10 +162,10 @@ let tests =
           equal bool true
             ( a
             = Ok
-                { User_todo.id= 12L
-                ; name= "Bob"
+                { Person.id= 12L
                 ; email= "b@"
                 ; nick= None
+                ; city= "Bob"
                 ; age= None
                 ; active= true } ) ;
           equal string "Decode: the INSERT of an [@auto] key gave no insert id"
@@ -172,10 +174,10 @@ let tests =
           equal bool true (d = Ok 4L) ;
           equal (list string)
             [ "connect 10.0.0.9:3306 ok"
-            ; "query \"INSERT INTO `user` (`name`, `email`, `nick`, `age`, \
-               `active`) VALUES (?, ?, ?, ?, ?)\" done 1"
-            ; "query \"INSERT INTO `user` (`name`, `email`, `nick`, `age`, \
-               `active`) VALUES (?, ?, ?, ?, ?)\" failed Decode"
+            ; "query \"INSERT INTO `people` (`email`, `nick_name`, `city`, \
+               `age`, `active`) VALUES (?, ?, ?, ?, ?)\" done 1"
+            ; "query \"INSERT INTO `people` (`email`, `nick_name`, `city`, \
+               `age`, `active`) VALUES (?, ?, ?, ?, ?)\" failed Decode"
             ; "query \"INSERT INTO `auto_only` () VALUES ()\" done 1"
             ; "query \"INSERT INTO `kinds` (`id`, `i`, `i_opt`, `s`, `s_opt`, \
                `b`, `b_opt`, `f`, `f_opt`, `y`, `y_opt`, `t`, `t_opt`) VALUES \
@@ -193,7 +195,7 @@ let tests =
                       Some (counts (if !n = 1 then 1L else 0L) 0L) )
                     else None ) )
               (fun _ db pool ->
-                let u () = Db.exec pool (User.update ~name:"Z" ~age:None ann) in
+                let u () = Db.exec pool (User.update ~city:"Z" ~age:None ann) in
                 let a = u () in
                 let b = u () in
                 let before = db.D.commands in
@@ -201,16 +203,16 @@ let tests =
                 (a, text b, c, db.D.commands - before) )
           in
           let a, b, c, commands = r in
-          equal bool true (a = Ok {ann with name= "Z"; age= None}) ;
+          equal bool true (a = Ok {ann with city= "Z"; age= None}) ;
           equal string "Not_found" b ;
           equal bool true (c = Ok ann) ;
           equal int 0 commands ;
           equal (list string)
             [ "connect 10.0.0.9:3306 ok"
-            ; "query \"UPDATE `user` SET `name` = ?, `age` = ? WHERE \
-               `user`.`id` = ?\" done 1"
-            ; "query \"UPDATE `user` SET `name` = ?, `age` = ? WHERE \
-               `user`.`id` = ?\" failed Not_found" ]
+            ; "query \"UPDATE `people` SET `city` = ?, `age` = ? WHERE \
+               `people`.`id` = ?\" done 1"
+            ; "query \"UPDATE `people` SET `city` = ?, `age` = ? WHERE \
+               `people`.`id` = ?\" failed Not_found" ]
             events )
     ; test "update with no field after with_db raises Invalid_argument"
         (fun () ->
@@ -243,12 +245,12 @@ let tests =
                    [ ( get7
                      , D.Rows
                          [ [ Some "x"
-                           ; Some "Ann"
                            ; Some "a@x"
                            ; None
+                           ; Some "Ann"
                            ; None
                            ; Some "1" ] ] )
-                   ; ( user_cols ^ " WHERE `user`.`id` = 8 LIMIT 1"
+                   ; ( user_cols ^ " WHERE `people`.`id` = 8 LIMIT 1"
                      , D.Rows [row7] ) ] )
               (fun _ db pool ->
                 let a = text (Db.exec pool (User.get_by_id 7L)) in
@@ -270,7 +272,15 @@ let tests =
                        () )
                     None
                 in
-                let a = Db.exec pool (Kinds.Kinds.update ~f:Float.nan k) in
+                (* The list form of Model.update keeps this row (the plan of
+                   phase 3, 4.5). *)
+                let a =
+                  Db.exec pool
+                    (Cistern.Private.Model.update
+                       (module Kinds.Cistern_model__kinds)
+                       [Cistern.Update.set Kinds.Kinds.Q.f Float.nan]
+                       k )
+                in
                 (text a, db.D.commands, db.D.connects) )
           in
           let a, commands, connects = r in
@@ -288,7 +298,7 @@ let tests =
               ~setup:(script [(get7, D.No_reply); (insert_user, D.No_reply)])
               (fun _ _ pool ->
                 ( text (Db.exec pool (User.get_by_id 7L))
-                , text (Db.exec pool (User.create ~name:"Bob" ~email:"b@" ()))
+                , text (Db.exec pool (User.create ~city:"Bob" ~email:"b@" ()))
                 ) )
           in
           equal string "Connection_lost" (fst r) ;
@@ -313,7 +323,7 @@ let tests =
                 db.D.faults.script <-
                   (fun sql ->
                     if sql = get7 then Some (D.Rows [row7])
-                    else if sql = user_cols ^ " WHERE `user`.`id` = 8 LIMIT 1"
+                    else if sql = user_cols ^ " WHERE `people`.`id` = 8 LIMIT 1"
                     then Some (D.Rows [])
                     else if sql = insert_user then Some (counts 1L 12L)
                     else if sql = update_user then Some (counts 1L 0L)
@@ -327,18 +337,18 @@ let tests =
                       let a = Tx.exec tx (User.get_by_id 7L) in
                       let b = text (Tx.exec tx (User.get_by_id 8L)) in
                       let c =
-                        Tx.exec tx (User.create ~name:"Bob" ~email:"b@" ())
+                        Tx.exec tx (User.create ~city:"Bob" ~email:"b@" ())
                       in
                       let d =
-                        Tx.exec tx (User.update ~name:"Z" ~age:None ann)
+                        Tx.exec tx (User.update ~city:"Z" ~age:None ann)
                       in
                       let e = Tx.exec tx (User.update ann) in
                       let f = Tx.exec tx (User.delete ann) in
                       let g = text (Tx.exec tx (User.delete ann)) in
                       ( a = Ok ann
                       , b
-                      , Result.map (fun (u : User_todo.user) -> u.id) c
-                      , d = Ok {ann with name= "Z"; age= None}
+                      , Result.map (fun (u : Person.person) -> u.id) c
+                      , d = Ok {ann with city= "Z"; age= None}
                       , e = Ok ann
                       , f = Ok ()
                       , g ) )
@@ -378,7 +388,7 @@ let tests =
             with_pool (fun _ _ pool ->
                 let s =
                   Cistern.Stmt.map
-                    (fun (u : User_todo.user) -> incr calls ; u.name)
+                    (fun (u : Person.person) -> incr calls ; u.city)
                     (User.update ann)
                 in
                 let before = !calls in

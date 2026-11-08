@@ -1,11 +1,11 @@
-File "model_where.ml", line 10, characters 27-39:
-10 | let _ = Todo.where User.Q.(name ==. "x")
-                                ^^^^^^^^^^^^
+File "model_where.ml", line 10, characters 43-55:
+10 | let _ = Kinds.Kinds.where Person.Person.Q.(city ==. "x")
+                                                ^^^^^^^^^^^^
 Error: This expression has type
-         (Cistern_test_models.User_todo.user, bool) Cistern_core.Expr.t
+         (Cistern_test_models_ppx.Person.person, bool) Cistern_core.Expr.t
        but an expression was expected of type
-         (Cistern_test_models.User_todo.Cistern_model__todo.t, bool)
+         (Cistern_test_models_ppx.Kinds.Cistern_model__kinds.t, bool)
          Cistern_core.Expr.t
-       Type Cistern_test_models.User_todo.user is not compatible with type
-         Cistern_test_models.User_todo.Cistern_model__todo.t =
-           Cistern_test_models.User_todo.todo
+       Type Cistern_test_models_ppx.Person.person is not compatible with type
+         Cistern_test_models_ppx.Kinds.Cistern_model__kinds.t =
+           Cistern_test_models_ppx.Kinds.kinds

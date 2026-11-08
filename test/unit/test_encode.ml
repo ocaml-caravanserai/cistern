@@ -37,9 +37,9 @@ let tests =
                (Encode.cut_opt (Some (time 999_999_999_999L))) ) )
     ; test "some" (fun () -> equal (option int) (Some 3) (Encode.some 3))
     ; test "set and updates: the labels of update, in order" (fun () ->
-          let module Q = Cistern_test_models.Person.Person.Q in
+          let module Q = Cistern_test_models_ppx.Person.Person.Q in
           let r =
-            { Cistern_test_models.Person.id= 1L
+            { Cistern_test_models_ppx.Person.id= 1L
             ; email= "e"
             ; nick= None
             ; city= "c"
