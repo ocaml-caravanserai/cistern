@@ -11,9 +11,11 @@
   ppxlib
   cistern.schema
   cistern_test_models
+  cistern_test_models_ppx
   ppx_driver_check
   windtrap)
  (deps
   (glob_files ../model/*.ml)
-  (glob_files driver/*.ml))
+  (glob_files driver/*.ml)
+  (glob_files ../model_ppx/*.ml))
  (link_flags (-linkall)))

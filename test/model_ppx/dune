@@ -1,0 +1,10 @@
+; The derived models of phase 3 (DESIGN.md, "Tests"; the plan of phase 3,
+; 4.5): kinds, auto_only and person with the type declarations of test/model,
+; the hostile groups of D17, and two groups in one file, all through the real
+; ppx. A library of the tests, with no mutation backend.
+
+(library
+ (name cistern_test_models_ppx)
+ (libraries cistern ptime)
+ (preprocess
+  (pps ppx_cistern -check)))

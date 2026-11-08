@@ -9,6 +9,7 @@
 
 open Windtrap
 open Cistern_test_models
+open Cistern_test_models_ppx
 module Field = Cistern_core.Field
 module Schema = Cistern_core.Schema
 module Decoder = Cistern_core.Decoder
@@ -298,6 +299,40 @@ let tests =
             ; sql
                 (Cistern.Query.to_list
                    (Person.Person.where Person.Person.Q.(age ==. None)) ) ] )
+    ; test "two groups in one file: each group has its own modules" (fun () ->
+          let sql s = Cistern.Stmt.to_sql Cistern_core.Dialect.Mysql s in
+          let open Two_groups in
+          equal
+            (list (list string))
+            [ [ "SELECT `note`.`id`, `note`.`text` FROM `note` WHERE \
+                 `note`.`id` = 1 LIMIT 1" ]
+            ; [ "SELECT `label`.`name`, `label`.`color` FROM `label` WHERE \
+                 `label`.`name` = _utf8mb4 X'78' LIMIT 1" ] ]
+            [sql (Note.get_by_id 1L); sql (Label.get_by_name "x")] )
+    ; test "the hostile group: the SQL of its values" (fun () ->
+          let sql s = Cistern.Stmt.to_sql Cistern_core.Dialect.Mysql s in
+          let module T = Hostile.T in
+          let r = {Hostile.c= 1L; r= "r"; v= 2; k= None; d= "d"; e= true} in
+          let select =
+            "SELECT `order`.`c`, `order`.`select`, `order`.`key`, \
+             `order`.`desc`, `order`.`a b`, `order`.`it's` FROM `order`"
+          in
+          equal
+            (list (list string))
+            [ [ "INSERT INTO `order` (`select`, `key`, `desc`, `a b`, `it's`) \
+                 VALUES (_utf8mb4 X'61', 7, NULL, _utf8mb4 X'71', 0)" ]
+            ; [select ^ " WHERE `order`.`select` = _utf8mb4 X'61' LIMIT 1"]
+            ; [select ^ " WHERE `order`.`desc` <=> _utf8mb4 X'78'"]
+            ; [ "UPDATE `order` SET `key` = 3, `a b` = _utf8mb4 X'65' WHERE \
+                 `order`.`c` = 1" ]
+            ; [ "SELECT `s`.`draft`, `s`.`q\"uote\\back`, `s`.`name`, \
+                 `s`.`s_name`, `s`.`caf\xc3\xa9` FROM `s` WHERE \
+                 `s`.`q\"uote\\back` = _utf8mb4 X'71' LIMIT 1" ] ]
+            [ sql (T.create ~r:"a" ~e:false ())
+            ; sql (T.find_by_r "a")
+            ; sql (Cistern.Query.to_list (T.filter_by_k (Some "x")))
+            ; sql (T.update ~v:3 ~d:"e" r)
+            ; sql (Hostile.S.get_by_schema "q") ] )
     ; test "person: get_by_nick takes the value with no option" (fun () ->
           equal (list string)
             [ "SELECT `people`.`id`, `people`.`email`, `people`.`nick_name`, \

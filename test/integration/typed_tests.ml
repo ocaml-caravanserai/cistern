@@ -12,6 +12,7 @@
 open Windtrap
 open Support
 open Cistern_test_models
+open Cistern_test_models_ppx
 module Db = Cistern.Db
 module Tx = Cistern.Tx
 module Raw = Cistern.Raw
@@ -22,15 +23,17 @@ module U = Cistern.Update
 module Ev = Cistern_core.Event
 module User = User_todo.User
 module Todo = User_todo.Todo
+module P = Person.Person
 module Kinds = Kinds.Kinds
 module Auto_only = Auto_only.Auto_only
 module Span = Weft.Span
 module Time = Weft.Time
 module Fiber = Weft.Fiber
 
-let models = [User.model; Todo.model; Kinds.model; Auto_only.model]
+let models = [P.model; User.model; Todo.model; Kinds.model; Auto_only.model]
 
-let tables = "DROP TABLE IF EXISTS `todo`, `user`, `kinds`, `auto_only`"
+let tables =
+  "DROP TABLE IF EXISTS `people`, `todo`, `user`, `kinds`, `auto_only`"
 
 (* [with_schema f]: a pool with an event recorder, the tables of the models
    (push_schema), then [f db events]. The tables are dropped at the end. *)
@@ -49,14 +52,14 @@ let get = function Ok v -> v | Error e -> fail (error_text e)
 
 let text = function Ok _ -> "ok" | Error e -> error_text e
 
-let ids (us : User_todo.user list) =
-  List.sort compare (List.map (fun (u : User_todo.user) -> u.id) us)
+let ids (us : Person.person list) =
+  List.sort compare (List.map (fun (u : Person.person) -> u.id) us)
 
 (* The filters of the suite, each with its OCaml rule (DESIGN.md, "Filters"):
    ==. and <>. are the equality of OCaml, also for None; an order and a pattern
    never select None. *)
-let filters (u2 : User_todo.user) =
-  let module Q = User.Q in
+let filters (u2 : Person.person) =
+  let module Q = P.Q in
   let opt_lt v = function Some x -> x < v | None -> false in
   let opt_ge v = function Some x -> x >= v | None -> false in
   let has p s =
@@ -64,12 +67,10 @@ let filters (u2 : User_todo.user) =
     let rec at i = i + k <= n && (String.sub s i k = p || at (i + 1)) in
     at 0
   in
-  let nick_has f (r : User_todo.user) =
-    Option.fold ~none:false ~some:f r.nick
-  in
+  let nick_has f (r : Person.person) = Option.fold ~none:false ~some:f r.nick in
   [ ( "age ==. Some 30"
     , Q.(age ==. Some 30)
-    , fun (r : User_todo.user) -> r.age = Some 30 )
+    , fun (r : Person.person) -> r.age = Some 30 )
   ; ("age ==. None", Q.(age ==. None), fun r -> r.age = None)
   ; ("is_null age", Q.(is_null age), fun r -> r.age = None)
   ; ("age <>. Some 30", Q.(age <>. Some 30), fun r -> r.age <> Some 30)
@@ -90,21 +91,21 @@ let filters (u2 : User_todo.user) =
     , fun r -> List.mem r.age [None; Some 20] )
   ; ("in_ age [None]", Q.(in_ age [None]), fun r -> r.age = None)
   ; ("in_ age []", Q.(in_ age []), fun _ -> false)
-  ; ("name ==. ann", Q.(name ==. "ann"), fun r -> r.name = "ann")
-  ; ("name <>. ann", Q.(name <>. "ann"), fun r -> r.name <> "ann")
-  ; ("name <. b", Q.(name <. "b"), fun r -> String.compare r.name "b" < 0)
+  ; ("city ==. ann", Q.(city ==. "ann"), fun r -> r.city = "ann")
+  ; ("city <>. ann", Q.(city <>. "ann"), fun r -> r.city <> "ann")
+  ; ("city <. b", Q.(city <. "b"), fun r -> String.compare r.city "b" < 0)
   ; ("active ==. true", Q.(active ==. true), fun r -> r.active)
   ; ("id >. u2", Q.(id >. u2.id), fun r -> r.id > u2.id)
-  ; ( "starts_with name c"
-    , Q.(starts_with name "c")
-    , fun r -> String.starts_with ~prefix:"c" r.name )
-  ; ( "starts_with name cy%"
-    , Q.(starts_with name "cy%")
-    , fun r -> String.starts_with ~prefix:"cy%" r.name )
-  ; ("contains name _", Q.(contains name "_"), fun r -> has "_" r.name)
-  ; ("contains name !", Q.(contains name "!"), fun r -> has "!" r.name)
-  ; ("contains name %", Q.(contains name "%"), fun r -> has "%" r.name)
-  ; ("contains name empty", Q.(contains name ""), fun _ -> true)
+  ; ( "starts_with city c"
+    , Q.(starts_with city "c")
+    , fun r -> String.starts_with ~prefix:"c" r.city )
+  ; ( "starts_with city cy%"
+    , Q.(starts_with city "cy%")
+    , fun r -> String.starts_with ~prefix:"cy%" r.city )
+  ; ("contains city _", Q.(contains city "_"), fun r -> has "_" r.city)
+  ; ("contains city !", Q.(contains city "!"), fun r -> has "!" r.city)
+  ; ("contains city %", Q.(contains city "%"), fun r -> has "%" r.city)
+  ; ("contains city empty", Q.(contains city ""), fun _ -> true)
   ; ( "starts_with_opt nick c_"
     , Q.(starts_with_opt nick "c_")
     , nick_has (String.starts_with ~prefix:"c_") )
@@ -122,11 +123,11 @@ let filters (u2 : User_todo.user) =
     , fun r -> r.age <> Some 30 && r.active )
   ; ("and_ []", Expr.and_ [], fun _ -> true)
   ; ("or_ []", Expr.or_ [], fun _ -> false)
-  ; ( "or_ [name ==. bob; nick ==. None]"
-    , Expr.or_ Q.[name ==. "bob"; nick ==. None]
-    , fun r -> r.name = "bob" || r.nick = None ) ]
+  ; ( "or_ [city ==. bob; nick ==. None]"
+    , Expr.or_ Q.[city ==. "bob"; nick ==. None]
+    , fun r -> r.city = "bob" || r.nick = None ) ]
 
-let user_rows =
+let person_rows =
   [ ("ann", "a@x", Some "an", Some 30, true)
   ; ("bob", "b@x", None, Some 20, false)
   ; ("cy%", "c@x", Some "c_y", None, true)
@@ -143,94 +144,103 @@ let suite ~events (run : 'a. 'a Stmt.t -> ('a, Cistern.Error.t) result) =
   (* A clean start: the bulk delete with no filter. *)
   ignore (ok (Query.delete Todo.all)) ;
   ignore (ok (Query.delete User.all)) ;
+  ignore (ok (Query.delete P.all)) ;
   ignore (ok (Query.delete Kinds.all)) ;
   ignore (ok (Raw.exec (Raw.sql "DELETE FROM `auto_only`"))) ;
   (* create, get, find, get_by and find_by. *)
+  (* The rows of a model with no relation run on the derived person (the plan
+     of phase 3, D16). *)
   let users =
     List.map
-      (fun (name, email, nick, age, active) ->
-        ok (User.create ~name ~email ?nick ?age ~active ()) )
-      user_rows
+      (fun (city, email, nick, age, active) ->
+        ok (P.create ~city ~email ?nick ?age ~active ()) )
+      person_rows
   in
   let u1 = List.nth users 0 and u2 = List.nth users 1 in
   List.iter
-    (fun (u : User_todo.user) -> equal bool true (ok (User.get_by_id u.id) = u))
+    (fun (u : Person.person) -> equal bool true (ok (P.get_by_id u.id) = u))
     users ;
-  equal string "Not_found" (text (run (User.get_by_id 999_999L))) ;
-  equal bool true (ok (User.find_by_id 999_999L) = None) ;
-  equal bool true (ok (User.get_by_email "a@x") = u1) ;
-  equal bool true (ok (User.get_by_nick "an") = u1) ;
-  equal bool true (ok (User.find_by_nick "zz") = None) ;
+  equal string "Not_found" (text (run (P.get_by_id 999_999L))) ;
+  equal bool true (ok (P.find_by_id 999_999L) = None) ;
+  equal bool true (ok (P.get_by_email "a@x") = u1) ;
+  equal bool true (ok (P.get_by_nick "an") = u1) ;
+  equal bool true (ok (P.find_by_nick "zz") = None) ;
   (* The filters, and the complement of each one. *)
-  let all = ok (Query.to_list User.all) in
+  let all = ok (Query.to_list P.all) in
   equal (list int64) (ids users) (ids all) ;
   List.iter
     (fun (name, e, rule) ->
-      let got = ok (Query.to_list (User.where e)) in
-      let neg = ok (Query.to_list (User.where (User.Q.not e))) in
+      let got = ok (Query.to_list (P.where e)) in
+      let neg = ok (Query.to_list (P.where (P.Q.not e))) in
       equal ~msg:name (list int64) (ids (List.filter rule all)) (ids got) ;
       equal ~msg:("not " ^ name) (list int64)
         (ids (List.filter (fun r -> not (rule r)) all))
         (ids neg) ;
       equal ~msg:("count " ^ name) int (List.length got)
-        (ok (Query.count (User.where e))) ;
+        (ok (Query.count (P.where e))) ;
       equal ~msg:("exists " ^ name) bool (got <> [])
-        (ok (Query.exists (User.where e))) )
+        (ok (Query.exists (P.where e))) )
     (filters u2) ;
   (* The order with two keys: NULL first in ASC, last in DESC, as None in
      OCaml. *)
   let sorted =
     ok
-      ( User.all
-      |> Query.order_by User.Q.age `Desc
-      |> Query.order_by User.Q.name `Asc
+      ( P.all
+      |> Query.order_by P.Q.age `Desc
+      |> Query.order_by P.Q.city `Asc
       |> Query.to_list )
   in
   let expected =
     List.sort
-      (fun (a : User_todo.user) (b : User_todo.user) ->
+      (fun (a : Person.person) (b : Person.person) ->
         match compare b.age a.age with
         | 0 ->
-            String.compare a.name b.name
+            String.compare a.city b.city
         | c ->
             c )
       all
   in
   equal (list int64)
-    (List.map (fun (u : User_todo.user) -> u.id) expected)
-    (List.map (fun (u : User_todo.user) -> u.id) sorted) ;
+    (List.map (fun (u : Person.person) -> u.id) expected)
+    (List.map (fun (u : Person.person) -> u.id) sorted) ;
   (* Stable pages over equal values: the key goes after active. *)
   let page n =
     ok
-      ( User.all
-      |> Query.order_by User.Q.active `Asc
+      ( P.all
+      |> Query.order_by P.Q.active `Asc
       |> Query.limit 2 |> Query.offset n |> Query.to_list )
   in
   equal (list int64) (ids users) (ids (page 0 @ page 2 @ page 4)) ;
-  equal int 2 (ok (Query.count (Query.limit 2 User.all))) ;
-  equal int 1 (ok (Query.count (Query.offset 4 User.all))) ;
-  equal bool false (ok (Query.exists (Query.offset 5 User.all))) ;
+  equal int 2 (ok (Query.count (Query.limit 2 P.all))) ;
+  equal int 1 (ok (Query.count (Query.offset 4 P.all))) ;
+  equal bool false (ok (Query.exists (Query.offset 5 P.all))) ;
   equal bool true
-    ( ok (Query.first (Query.order_by User.Q.name `Asc User.all))
+    ( ok (Query.first (Query.order_by P.Q.city `Asc P.all))
     = Some (List.nth users 4) ) ;
   (* update, and the bulk forms with the complement. *)
-  let u1' = ok (User.update ~age:(Some 31) ~nick:None u1) in
+  let u1' = ok (P.update ~age:(Some 31) ~nick:None u1) in
   equal bool true (u1' = {u1 with age= Some 31; nick= None}) ;
-  equal bool true (ok (User.get_by_id u1.id) = u1') ;
-  equal bool true (ok (User.update u1') = u1') ;
-  let p = User.Q.(age <. Some 30 || is_null age) in
+  equal bool true (ok (P.get_by_id u1.id) = u1') ;
+  equal bool true (ok (P.update u1') = u1') ;
+  let p = P.Q.(age <. Some 30 || is_null age) in
   let in_p =
     List.filter
-      (fun (r : User_todo.user) ->
+      (fun (r : Person.person) ->
         match r.age with Some a -> a < 30 | None -> true )
-      (ok (Query.to_list User.all))
+      (ok (Query.to_list P.all))
   in
   equal int (List.length in_p)
-    (ok (Query.update (U.set User.Q.active true) (User.where p))) ;
+    (ok (Query.update (U.set P.Q.active true) (P.where p))) ;
   equal bool true
     (List.for_all
-       (fun (r : User_todo.user) -> r.active)
-       (ok (Query.to_list (User.where p))) ) ;
+       (fun (r : Person.person) -> r.active)
+       (ok (Query.to_list (P.where p))) ) ;
+  (* The last field of the derived person, read back. *)
+  let u1'' = ok (P.update ~active:false u1') in
+  equal bool false u1''.active ;
+  equal bool true (ok (P.get_by_id u1.id) = u1'') ;
+  (* The rows of the relation stay on the hand-written user and todo. *)
+  let u2 = ok (User.create ~name:"owner" ~email:"o@x" ()) in
   (* Todo: create, filter_by_*, the bulk delete with an order and a limit. *)
   let todo title done_ = ok (Todo.create ~user_id:u2.id ~title ~done_ ()) in
   (* "milk" true comes first: a delete with no order would take it, the delete
@@ -287,19 +297,19 @@ let suite ~events (run : 'a. 'a Stmt.t -> ('a, Cistern.Error.t) result) =
   ignore (ok (Query.delete (Todo.where Todo.Q.(title ==. "page")))) ;
   (* The errors: each fails only its statement. *)
   equal string "Constraint_violation Unique"
-    (text (run (User.create ~name:"x" ~email:"a@x" ()))) ;
+    (text (run (P.create ~city:"x" ~email:"a@x" ()))) ;
   equal string "Constraint_violation Foreign_key"
     (text (run (Todo.create ~user_id:999_999L ~title:"x" ()))) ;
   equal string "Constraint_violation Not_null"
     (text (run (Todo.create ~title:"x" ()))) ;
   equal string "Invalid_value 1406"
-    (text (run (User.create ~name:"x" ~email:(String.make 300 'e') ()))) ;
+    (text (run (P.create ~city:"x" ~email:(String.make 300 'e') ()))) ;
   equal string "Constraint_violation Foreign_key" (text (run (User.delete u2))) ;
   (* delete. *)
   equal bool true (ok (Todo.delete t1) = ()) ;
   equal string "Not_found" (text (run (Todo.delete t1))) ;
   equal string "Not_found"
-    (text (run (User.update ~name:"z" {u1' with id= 999_999L}))) ;
+    (text (run (P.update ~city:"z" {u1'' with id= 999_999L}))) ;
   (* The round trip of each scalar, and the cut of a Ptime.t. *)
   let k =
     ok
@@ -315,6 +325,16 @@ let suite ~events (run : 'a. 'a Stmt.t -> ('a, Cistern.Error.t) result) =
   equal bool mysql (Float.sign_bit back.f) ;
   let k' = ok (Kinds.update ~t:t_ns ~i_opt:(Some 7) k) in
   equal bool true (ok (Kinds.get_by_id 1L) = k') ;
+  (* The list form of Model.update (the plan of phase 3, 4.5). *)
+  let k'' =
+    ok
+      (Cistern.Private.Model.update
+         (module Cistern_test_models_ppx.Kinds.Cistern_model__kinds)
+         [U.set Kinds.Q.s "list"; U.set Kinds.Q.b_opt None]
+         k' )
+  in
+  equal bool true (ok (Kinds.get_by_id 1L) = k'') ;
+  equal string "list" k''.s ;
   (* Auto_only: INSERT INTO auto_only () VALUES (). *)
   let a = ok (Auto_only.create ()) and b = ok (Auto_only.create ()) in
   equal bool true (b.id > a.id) ;
@@ -333,20 +353,20 @@ let deterministic =
               with
               | Ok () ->
                   equal int 5
-                    (List.length (get (Db.exec db (Query.to_list User.all))))
+                    (List.length (get (Db.exec db (Query.to_list P.all))))
               | Error e ->
                   fail (error_text e) ) )
     ; test "the event of a 1062 holds no value" (fun () ->
           with_schema (fun db events ->
               ignore
-                (get (Db.exec db (User.create ~name:"a" ~email:"secret@x" ()))) ;
+                (get (Db.exec db (P.create ~city:"a" ~email:"secret@x" ()))) ;
               equal string "Constraint_violation Unique"
-                (text (Db.exec db (User.create ~name:"b" ~email:"secret@x" ()))) ;
+                (text (Db.exec db (P.create ~city:"b" ~email:"secret@x" ()))) ;
               let inserts =
                 List.filter_map
                   (function
                     | Ev.Query {sql; outcome; _}
-                      when String.starts_with ~prefix:"INSERT INTO `user`" sql
+                      when String.starts_with ~prefix:"INSERT INTO `people`" sql
                       ->
                         Some (sql, outcome)
                     | _ ->
@@ -369,16 +389,14 @@ let deterministic =
               List.iter
                 (fun (sql, _) ->
                   equal string
-                    "INSERT INTO `user` (`name`, `email`, `nick`, `age`, \
-                     `active`) VALUES (?, ?, ?, ?, ?)"
+                    "INSERT INTO `people` (`email`, `nick_name`, `city`, \
+                     `age`, `active`) VALUES (?, ?, ?, ?, ?)"
                     sql )
                 inserts ) )
     ; test "for_update: a second Tx waits for the first" (fun () ->
           with_schema ~pool_size:3 (fun db _ ->
-              let u =
-                get (Db.exec db (User.create ~name:"a" ~email:"a@x" ()))
-              in
-              let q = User.where User.Q.(id ==. u.id) |> Query.for_update in
+              let u = get (Db.exec db (P.create ~city:"a" ~email:"a@x" ())) in
+              let q = P.where P.Q.(id ==. u.id) |> Query.for_update in
               equal string "Db.exec: a query with for_update runs only in a Tx"
                 ( match Db.exec db (Query.first q) with
                 | _ ->
@@ -395,7 +413,7 @@ let deterministic =
                              Fiber.Semaphore.release locked ;
                              Time.sleep Weft.Clock.Mono (Span.ms 500) ;
                              ignore
-                               (get (Tx.exec tx (User.update ~name:"first" u))) )
+                               (get (Tx.exec tx (P.update ~city:"first" u))) )
                         ) ) ;
                   Fiber.fork s (fun () ->
                       Weft.sync (Fiber.Semaphore.acquire locked) ;
@@ -403,7 +421,7 @@ let deterministic =
                       let r =
                         Db.transaction db (fun tx ->
                             Option.map
-                              (fun (x : User_todo.user) -> x.name)
+                              (fun (x : Person.person) -> x.city)
                               (get (Tx.exec tx (Query.first q))) )
                       in
                       waited := Db_tests.seconds t0 ;
@@ -412,10 +430,8 @@ let deterministic =
               equal bool true (!waited >= 0.3) ) )
     ; test "for_share in Db.exec and in a Tx" (fun () ->
           with_schema (fun db _ ->
-              let u =
-                get (Db.exec db (User.create ~name:"a" ~email:"a@x" ()))
-              in
-              let q = Query.for_share User.all in
+              let u = get (Db.exec db (P.create ~city:"a" ~email:"a@x" ())) in
+              let q = Query.for_share P.all in
               equal bool true (get (Db.exec db (Query.to_list q)) = [u]) ;
               equal bool true
                 ( Db.transaction db (fun tx ->

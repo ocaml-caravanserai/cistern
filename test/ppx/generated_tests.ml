@@ -38,7 +38,9 @@ let texts m =
    [model] of stage 3). Desc.schema reads the attributes of the declaration, and
    the rows of 3a check it, so this test does not depend on the lift. *)
 let equal_schema ?dir m models =
-  test (m ^ ": the schema of the description is the run-time schema") (fun () ->
+  let file = Option.value dir ~default:"../model/" ^ m ^ ".ml" in
+  test (file ^ ": the schema of the description is the run-time schema")
+    (fun () ->
       let (loc, _, tds), _ = after_type (items ?dir m) in
       let desc = Src.Desc.schema (Src.Desc.group ~loc tds) in
       let schemas =
@@ -46,6 +48,29 @@ let equal_schema ?dir m models =
       in
       equal string (Src.models_text schemas) (Src.models_text desc) ;
       is_true (desc = schemas) )
+
+(* The derived models of test/model_ppx have the type declarations of the
+   hand-written models of test/model (the plan of phase 3, 4.5): with no
+   [@@deriving], the two Pprintast texts are equal. *)
+let same_declaration m =
+  test (m ^ ": test/model_ppx has the type declaration of test/model")
+    (fun () ->
+      let text dir =
+        let (_, rf, tds), _ = after_type (items ~dir m) in
+        let tds =
+          List.map
+            (fun (td : type_declaration) ->
+              { td with
+                ptype_attributes=
+                  List.filter
+                    (fun (a : attribute) -> a.attr_name.txt <> "deriving")
+                    td.ptype_attributes } )
+            tds
+        in
+        Pprintast.string_of_structure
+          [Ast_builder.Default.pstr_type ~loc:Location.none rf tds]
+      in
+      equal string (text "../model/") (text "../model_ppx/") )
 
 let equal_output m =
   test m (fun () ->
@@ -177,6 +202,21 @@ let tests =
     [ equal_schema "kinds" [Cistern_test_models.Kinds.Kinds.model]
     ; equal_schema "auto_only" [Cistern_test_models.Auto_only.Auto_only.model]
     ; equal_schema "person" [Cistern_test_models.Person.Person.model]
+    ; same_declaration "kinds"
+    ; same_declaration "auto_only"
+    ; same_declaration "person"
+    ; (let open Cistern_test_models_ppx in
+       equal_schema ~dir:"../model_ppx/" "kinds" [Kinds.Kinds.model] )
+    ; (let open Cistern_test_models_ppx in
+       equal_schema ~dir:"../model_ppx/" "auto_only" [Auto_only.Auto_only.model]
+      )
+    ; (let open Cistern_test_models_ppx in
+       equal_schema ~dir:"../model_ppx/" "person" [Person.Person.model] )
+    ; (let open Cistern_test_models_ppx.Hostile in
+       equal_schema ~dir:"../model_ppx/" "hostile"
+         [T.model; S.model; F.model; D.model; M.model; U.model] )
+    ; (let open Cistern_test_models_ppx.Two_groups in
+       equal_schema ~dir:"../model_ppx/" "two_groups" [Note.model] )
     ; (let open Ppx_driver_check.Hostile in
        equal_schema ~dir:"driver/" "hostile"
          [T.model; S.model; F.model; D.model; M.model; U.model] )

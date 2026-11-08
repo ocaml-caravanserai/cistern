@@ -11,6 +11,7 @@
   cistern.core
   cistern.mysql
   cistern_test_models
+  cistern_test_models_ppx
   weft-tls
   tls
   x509

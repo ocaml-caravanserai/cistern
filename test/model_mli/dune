@@ -1,0 +1,10 @@
+; A derived group behind an interface that hides the generated modules (the
+; plan of phase 3, D13 and 4.5). The library compiles in the dev profile, where
+; each warning of the default set is an error: the warning attribute of the
+; generated items covers the unused values, types and modules.
+
+(library
+ (name cistern_test_model_mli)
+ (libraries cistern)
+ (preprocess
+  (pps ppx_cistern -check)))
