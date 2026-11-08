@@ -8,6 +8,7 @@ module Schema = Cistern_schema.Schema
 type field =
   { name: string
   ; loc: Location.t
+  ; ty: core_type
   ; scalar: Schema.scalar
   ; nullable: bool
   ; key: bool
@@ -413,6 +414,7 @@ let field ~group ~typ ~number (ld : label_declaration) attrs =
       () ) ;
   { name
   ; loc
+  ; ty= ld.pld_type
   ; scalar
   ; nullable
   ; key= has "key"

@@ -1,9 +1,12 @@
 ; The suite of ppx_cistern (DESIGN.md, "Tests"; the plan of phase 3, D15):
-; the tests call the expander as a function, with sources that ppxlib parses.
+; the tests call the expander as a function, with sources that ppxlib parses,
+; also the hand-written groups of test/model (stage 1).
 ; -linkall puts each module of the ppx in the catalogue of the mutation gate
 ; (make check-scope).
 
 (test
  (name test_ppx)
- (libraries ppx_cistern ppxlib cistern.schema windtrap)
+ (libraries ppx_cistern ppxlib cistern.schema cistern_test_models windtrap)
+ (deps
+  (glob_files ../model/*.ml))
  (link_flags (-linkall)))

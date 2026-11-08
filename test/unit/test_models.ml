@@ -18,7 +18,8 @@ let models =
   [ ("user", User_todo.User.model)
   ; ("todo", User_todo.Todo.model)
   ; ("kinds", Kinds.Kinds.model)
-  ; ("auto_only", Auto_only.Auto_only.model) ]
+  ; ("auto_only", Auto_only.Auto_only.model)
+  ; ("person", Person.Person.model) ]
 
 let scalar = function
   | Schema.Int64 ->
@@ -100,8 +101,46 @@ let tests =
             (Schema.check
                [ User_todo.Cistern_fields__user.User.schema
                ; User_todo.Cistern_fields__user.Todo.schema
-               ; Kinds.Cistern_fields__kinds.Kinds.schema
-               ; Auto_only.Cistern_fields__auto_only.schema ] ) )
+               ; Kinds.Cistern_fields__kinds.Kinds.Schema.cistern__model
+               ; Auto_only.Cistern_fields__auto_only.Auto_only.Schema
+                 .cistern__model
+               ; Person.Cistern_fields__person.Person.Schema.cistern__model ] ) )
+    ; test "person: each column goes to its field, and NULL" (fun () ->
+          match
+            Decoder.run Person.Cistern_model__person.decode
+              [|Some "3"; Some "a@b"; None; Some "Oslo"; Some "40"; Some "0"|]
+          with
+          | Ok r ->
+              equal bool true
+                ( r
+                = { Person.id= 3L
+                  ; email= "a@b"
+                  ; nick= None
+                  ; city= "Oslo"
+                  ; age= Some 40
+                  ; active= false } )
+          | Error m ->
+              fail m )
+    ; test "person: the draft, its default and its columns" (fun () ->
+          let d = Person.Person.draft ~email:"e" ~city:"c" () in
+          equal bool true d.active ;
+          equal (option string) None d.nick ;
+          equal bool false
+            (Person.Person.draft ~email:"e" ~city:"c" ~active:false ()).active ;
+          equal (list string)
+            ["email"; "nick_name"; "city"; "age"; "active"]
+            (List.map fst (Person.Cistern_model__person.encode_draft d)) ;
+          let r = Person.Cistern_model__person.of_draft d (Some 8L) in
+          equal int64 8L r.id ;
+          equal string "c" r.city ;
+          equal bool true r.active )
+    ; test "person: get_by_nick takes the value with no option" (fun () ->
+          equal (list string)
+            [ "SELECT `people`.`id`, `people`.`email`, `people`.`nick_name`, \
+               `people`.`city`, `people`.`age`, `people`.`active` FROM \
+               `people` WHERE `people`.`nick_name` = _utf8mb4 X'6E' LIMIT 1" ]
+            (Cistern.Stmt.to_sql Cistern_core.Dialect.Mysql
+               (Person.Person.get_by_nick "n") ) )
     ; test "user: each column goes to its field" (fun () ->
           match
             Decoder.run User_todo.Cistern_model__user.decode
@@ -331,9 +370,71 @@ let tests =
           equal bool true
             (Option.equal Ptime.equal (Field.set Q.t_opt r (Some ns)).t_opt
                (Some us) ) )
+    ; test "person: Field.get and Field.set of each field, one at a time"
+        (fun () ->
+          let module Q = Person.Person.Q in
+          let r =
+            { Person.id= 1L
+            ; email= "e"
+            ; nick= Some "n"
+            ; city= "c"
+            ; age= Some 2
+            ; active= true }
+          in
+          equal int64 1L (Field.get Q.id r) ;
+          equal string "e" (Field.get Q.email r) ;
+          equal (option string) (Some "n") (Field.get Q.nick r) ;
+          equal string "c" (Field.get Q.city r) ;
+          equal (option int) (Some 2) (Field.get Q.age r) ;
+          equal bool true (Field.get Q.active r) ;
+          equal bool true (Field.set Q.id r 9L = {r with id= 9L}) ;
+          equal bool true (Field.set Q.email r "f" = {r with email= "f"}) ;
+          equal bool true (Field.set Q.nick r None = {r with nick= None}) ;
+          equal bool true (Field.set Q.city r "d" = {r with city= "d"}) ;
+          equal bool true (Field.set Q.age r None = {r with age= None}) ;
+          equal bool true (Field.set Q.active r false = {r with active= false}) )
+    ; test "kinds: Field.get of each field" (fun () ->
+          let module Q = Kinds.Kinds.Q in
+          let t0 = Option.get (Ptime.of_float_s 1.) in
+          let t1 = Option.get (Ptime.of_float_s 2.) in
+          let r =
+            { Kinds.id= 1L
+            ; i= 2
+            ; i_opt= Some 3
+            ; s= "s"
+            ; s_opt= Some "so"
+            ; b= true
+            ; b_opt= Some false
+            ; f= 1.5
+            ; f_opt= Some 2.5
+            ; y= Bytes.of_string "y"
+            ; y_opt= Some (Bytes.of_string "yo")
+            ; t= t0
+            ; t_opt= Some t1 }
+          in
+          equal int64 1L (Field.get Q.id r) ;
+          equal int 2 (Field.get Q.i r) ;
+          equal (option int) (Some 3) (Field.get Q.i_opt r) ;
+          equal string "s" (Field.get Q.s r) ;
+          equal (option string) (Some "so") (Field.get Q.s_opt r) ;
+          equal bool true (Field.get Q.b r) ;
+          equal (option bool) (Some false) (Field.get Q.b_opt r) ;
+          equal float_exact 1.5 (Field.get Q.f r) ;
+          equal (option float_exact) (Some 2.5) (Field.get Q.f_opt r) ;
+          equal string "y" (Bytes.to_string (Field.get Q.y r)) ;
+          equal (option string) (Some "yo")
+            (Option.map Bytes.to_string (Field.get Q.y_opt r)) ;
+          equal bool true (Ptime.equal t0 (Field.get Q.t r)) ;
+          equal bool true
+            (Option.equal Ptime.equal (Some t1) (Field.get Q.t_opt r)) )
+    ; test "auto_only: Field.get" (fun () ->
+          equal int64 7L
+            (Field.get Auto_only.Cistern_fields__auto_only.Auto_only.id {id= 7L}) )
     ; test "auto_only: Field.set" (fun () ->
           equal int64 3L
-            (Field.set Auto_only.Cistern_fields__auto_only.id {id= 1L} 3L).id )
+            (Field.set Auto_only.Cistern_fields__auto_only.Auto_only.id {id= 1L}
+               3L )
+              .id )
     ; test "Model.update joins the list before its check" (fun () ->
           let module Q = User_todo.User.Q in
           let up us =

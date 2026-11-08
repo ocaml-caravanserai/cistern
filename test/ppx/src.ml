@@ -56,10 +56,8 @@ let place (loc : Location.t) =
 let error src =
   let loc, rf, tds = group src in
   match Ppx_cistern.Private.expand ~loc (rf, tds) with
-  | [] ->
+  | _ ->
       "no error"
-  | _ :: _ ->
-      "code"
   | exception Location.Error e ->
       Printf.sprintf "%s: %s"
         (place (Location.Error.get_location e))
@@ -121,9 +119,8 @@ let desc src =
   in
   String.concat "\n" (List.map typ (Desc.group ~loc tds))
 
-(* The models of the group in [src]. *)
-let schema src =
-  let loc, _, tds = group src in
+(* A text of [models], one line for each model and for each field. *)
+let models_text models =
   let field (f : Schema.field) =
     Printf.sprintf "  %s column %s: %s%s%s" f.name f.column (scalar f.scalar)
       (if f.nullable then " option" else "")
@@ -138,4 +135,9 @@ let schema src =
       (List.length m.relations)
       (String.concat "\n" (List.map field m.fields))
   in
-  String.concat "\n" (List.map model (Desc.schema (Desc.group ~loc tds)))
+  String.concat "\n" (List.map model models)
+
+(* The models of the group in [src]. *)
+let schema src =
+  let loc, _, tds = group src in
+  models_text (Desc.schema (Desc.group ~loc tds))
