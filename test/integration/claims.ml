@@ -978,16 +978,20 @@ let c36 =
           equal string "Text \"ref\" Text \"c36_n_idx\"" (explain "c36.n = 5") ;
           exec_ok c "DROP TABLE c36" ) )
 
-(* C37 (phase 4a0, H1 of the plan review A of phase 4, and L2 and L3 of its
-   regression review): MariaDB with innodb_snapshot_isolation (the default of
-   11.8) gives 1020 for a locking read of a row that another session changed
-   after the snapshot of the transaction (a plain read made the snapshot), and
-   the server rolls back the whole transaction. Two parts: - On one connection:
-   the ERR packet, then a ping reads IN_TRANS (an ERR leaves the flag of the
-   last OK), and the own row is gone. MariaDB 11.4 sets the variable in its
-   session (SET SESSION), 11.8 has it by default. - Through Db.transaction on
-   11.8 and with the default of the others: the Tx gives Retryable `Rolled_back,
-   with no Implicit_commit. *)
+(* C37 (phase 4a0, H1 of the plan review A of phase 4, and the review of 4a0):
+   MariaDB with innodb_snapshot_isolation (the default of 11.8) gives 1020 for a
+   locking read of a row that another session changed after the snapshot of the
+   transaction (a plain read made the snapshot), and the server rolls back the
+   whole transaction. The claim makes no global change: - On one raw connection
+   of the claims (no pool): the error of the connection through Error.of_server,
+   then a ping reads IN_TRANS (an ERR leaves the flag of the last OK), and the
+   own row is gone. MariaDB 11.4 sets the variable in its session (SET SESSION,
+   ON and OFF), and 11.8 has ON by default. The API of the pool cannot set a
+   session variable: Tx.exec refuses SET, and a raw SET marks the connection
+   dirty, so the reset at the next checkout clears it. - Through Db.transaction
+   with the default of the server, on a pool of one connection: on 11.8 the Tx
+   gives Retryable `Rolled_back (no Implicit_commit), and the same connection
+   then has no transaction. *)
 let c37 =
   on all "C37: 1020 of MariaDB with innodb_snapshot_isolation" (fun () ->
       warm () ;
@@ -1001,15 +1005,14 @@ let c37 =
             table o "c37" "(id INT PRIMARY KEY, v INT) ENGINE=InnoDB" ;
             exec_ok o "INSERT INTO c37 VALUES (1, 0)" )
       in
-      (* The part on one connection. *)
-      fresh () ;
-      let read_text, in_trans =
+      (* The part on one raw connection. [set] is the session value on 11.4. *)
+      let raw_run set =
+        fresh () ;
         with_conn (user_conn ()) (fun c ->
-            if server = "mariadb114" then
-              exec_ok c "SET SESSION innodb_snapshot_isolation = ON" ;
-            if mariadb then
-              equal string "Int 1"
-                (one_text c (sql "SELECT @@SESSION.innodb_snapshot_isolation")) ;
+            Option.iter
+              (fun v ->
+                exec_ok c ("SET SESSION innodb_snapshot_isolation = " ^ v) )
+              set ;
             exec_ok c "START TRANSACTION" ;
             exec_ok c "INSERT INTO c37 VALUES (2, 0)" ;
             ignore (one c (sql "SELECT v FROM c37 WHERE id = 1")) ;
@@ -1017,21 +1020,32 @@ let c37 =
                 exec_ok o "UPDATE c37 SET v = 1 WHERE id = 1" ) ;
             let r = exec c (sql "SELECT v FROM c37 WHERE id = 1 FOR UPDATE") in
             equal string "ok" (unit_text (Conn.ping c)) ;
-            let in_trans = in_trans c in
-            if in_trans then exec_ok c "ROLLBACK" ;
-            (r, in_trans) )
+            let open_tx = in_trans c in
+            (* The own row, read on the same connection: it is there while the
+               transaction is open. *)
+            let own =
+              one_text c (sql "SELECT COUNT(*) FROM c37 WHERE id = 2")
+            in
+            if open_tx then exec_ok c "ROLLBACK" ;
+            (r, open_tx, own) )
       in
-      if mariadb then (
-        equal string "1020 HY000: Retryable rolled back" read_text ;
-        equal bool false in_trans ;
-        equal string "Int 0" (count ()) )
-      else (
-        equal string "ok" read_text ;
-        equal bool true in_trans ) ;
+      let rolled_back = ("1020 HY000: Retryable rolled back", false, "Int 0") in
+      let kept = ("ok", true, "Int 1") in
+      let show (r, open_tx, n) =
+        Printf.sprintf "%s / in_trans %b / %s" r open_tx n
+      in
+      ( match server with
+      | "mariadb118" ->
+          equal string (show rolled_back) (show (raw_run None))
+      | "mariadb114" ->
+          equal string (show rolled_back) (show (raw_run (Some "ON"))) ;
+          equal string (show kept) (show (raw_run (Some "OFF")))
+      | _ ->
+          equal string (show kept) (show (raw_run None)) ) ;
       (* The part through Db.transaction, with the default of the server. *)
       fresh () ;
       let inner, result =
-        Cistern.Db.with_db ~pool_size:2 (Db_tests.config ()) (fun db ->
+        Cistern.Db.with_db ~pool_size:1 (Db_tests.config ()) (fun db ->
             let inner = ref "none" in
             let r =
               Cistern.Db.transaction db (fun tx ->
@@ -1053,6 +1067,20 @@ let c37 =
                             (Cistern.Raw.sql
                                "SELECT v FROM c37 WHERE id = 1 FOR UPDATE" ) ) ) )
             in
+            (* The same connection (a pool of one) has no transaction. *)
+            if mariadb then
+              equal string "ok"
+                ( match
+                    Cistern.Db.exec db
+                      (Cistern.Raw.query
+                         (Cistern.Raw.sql "SELECT @@in_transaction") )
+                  with
+                | Ok {rows= [row]; _} when value_text row.(0) = "Int 0" ->
+                    "ok"
+                | Ok _ ->
+                    "in a transaction"
+                | Error e ->
+                    error_text e ) ;
             (!inner, res r) )
       in
       if server = "mariadb118" then (
