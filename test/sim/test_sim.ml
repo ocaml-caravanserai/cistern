@@ -26,6 +26,7 @@ let () =
          ; Test_redact.tests
          ; Test_model.tests
          ; Test_typed_query.tests
+         ; Test_schema_ops.tests
          ; Test_query.tests
          ; Test_query.pool_tests
          ; Test_pool.tests

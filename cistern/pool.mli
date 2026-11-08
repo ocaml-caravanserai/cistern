@@ -111,6 +111,12 @@ val abort_conn : t -> Cistern_mysql.Connection.t -> unit
 (** [abort_conn t c] aborts the held connection [c], with the count of the
     sockets. Then the end of the holder must be [Discard]. *)
 
+val config : t -> Cistern_mysql.Config.t
+(** The configuration of the pool. *)
+
+val address : Cistern_mysql.Config.t -> string
+(** The address of a [Connect] event: [host:port] or the path of the socket. *)
+
 val check_open : t -> unit
 (** @raise Invalid_argument "Db.t used after with_db" after {!shutdown}. *)
 

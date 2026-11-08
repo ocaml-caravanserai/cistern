@@ -88,4 +88,5 @@ module Private : sig
   module Decoder = Cistern_core.Decoder
   module Model = Model
   module Query = Query
+  module Schema_ops = Schema_ops
 end

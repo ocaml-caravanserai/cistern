@@ -356,4 +356,17 @@ let tests =
                 false ) ;
           equal bool true
             (Stmt.Private.pure_value (up Cistern.Update.[set Q.name "a"]) = None) )
-    ]
+    ; cases "push_schema: lock_wait_timeout"
+        ~id:(fun (ns, _) -> Int64.to_string ns ^ " ns")
+        [ (30_000_000_000L, 29)
+        ; (2_000_000_001L, 2)
+        ; (2_000_000_000L, 1)
+        ; (1_000_000_001L, 1)
+        ; (1_000_000_000L, 1)
+        ; (500_000_000L, 1)
+        ; (0L, 1)
+        ; (-3_000_000_000L, 1) ]
+        (fun (ns, n) ->
+          equal int n
+            (Cistern.Private.Schema_ops.lock_wait_timeout
+               ~remaining:(Weft.Span.of_ns ns) ) ) ]

@@ -51,6 +51,10 @@ val authenticator : t -> X509.Authenticator.t option
 val kill : t -> bool
 (** [false] turns [KILL] off (phase 1.5). The default is [true]. *)
 
+val without_kill : t -> t
+(** [without_kill t] is [t] with [kill=false]: no round trip 3. The connection
+    of [Db.push_schema] uses it (phase 2e). *)
+
 val ip_literal : string -> bool
 (** [ip_literal host] is true for an IP literal: an IPv6 address (a host with a
     [:]) or four dotted groups of digits. [localhost] is not one. The connect

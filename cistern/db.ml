@@ -28,6 +28,11 @@ let with_db ?(pool_size = 10) ?(max_lifetime = Span.s 1800)
 
 let exec ?(timeout = Span.s 30) db s = Pool.exec db ~timeout s
 
+let push_schema ?timeout db models = Schema_ops.push_schema ?timeout db models
+
+let check_schema db models =
+  Schema_ops.check_schema ~exec:(fun s -> exec db s) db models
+
 let transaction ?(timeout = Span.s 30) db f =
   Tx.Private.transaction ~timeout db f
 

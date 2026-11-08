@@ -33,6 +33,8 @@ let tls t = t.tls
 
 let authenticator t = t.authenticator
 
+let without_kill t = {t with kill= false}
+
 let kill t = t.kill
 
 let needs_tls t = t.tls <> No_tls
