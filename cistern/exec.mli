@@ -20,7 +20,13 @@ type scope =
   ; after_ok: unit -> (unit, Cistern_core.Error.t) result
         (** The check after the OK of a command: an error fails the command (for
             example [Implicit_commit] if the server ended the transaction). *)
-  }
+  ; error:
+         emit:(Cistern_core.Event.outcome -> unit)
+      -> Cistern_core.Error.t
+      -> Cistern_core.Error.t
+        (** The error of a command: the rules of the caller (in a [Tx], the
+            rules of [Tx.exec]) emit the event of the command, and give the
+            error of the command. *) }
 
 val make : ?scope:scope -> Cistern_mysql.Connection.t -> ctx
 (** With [scope], each command checks the margin first, then emits its own event

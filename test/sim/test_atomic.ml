@@ -358,20 +358,21 @@ let tests =
                       m
                 in
                 let tx_exec =
-                  match
-                    Db.transaction pool (fun tx ->
-                        Tx.exec tx (T.atomic ["ADD a"]) )
-                  with
-                  | _ ->
-                      "no error"
-                  | exception Invalid_argument m ->
-                      m
+                  (* Tx.exec of an atomic statement after the end of its Tx. *)
+                  match Db.transaction pool Fun.id with
+                  | Ok tx -> (
+                    match Tx.exec tx (T.atomic ["ADD a"]) with
+                    | _ ->
+                        "no error"
+                    | exception Invalid_argument m ->
+                        m )
+                  | Error e ->
+                      T.error_text e
                 in
                 (in_tx, tx_exec) )
           in
           equal string "Db.exec in the fiber of a Tx" (fst r) ;
-          equal string
-            "Tx.exec: an atomic statement runs in a Tx from phase 4b2" (snd r) )
+          equal string "Tx.exec after the end of the transaction" (snd r) )
     ; test "an atomic statement on a closed pool: the misuse of with_db"
         (fun () ->
           let r = ref "" in
