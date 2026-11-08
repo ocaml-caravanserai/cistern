@@ -1,0 +1,6 @@
+File "mix_update.ml", line 14, characters 21-29:
+14 |   Update.(set x 1L & set y 2L)
+                          ^^^^^^^^
+Error: This expression has type b Cistern_core.Update.t
+       but an expression was expected of type a Cistern_core.Update.t
+       Type b is not compatible with type a

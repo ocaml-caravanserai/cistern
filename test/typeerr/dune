@@ -1,0 +1,130 @@
+; The type-error tests of cistern.core (DESIGN.md, "Tests"). Each rule types
+; one file that the compiler must refuse (exit status 2), and keeps the
+; message. test_typeerr.ml compares each message with its .expected file. A
+; file that types makes its rule fail.
+
+(rule
+ (deps
+  mix_expr.ml
+  (glob_files %{project_root}/core/.cistern_core.objs/byte/*.cmi)
+  (glob_files %{project_root}/names/.cistern_names.objs/byte/*.cmi))
+ (action
+  (with-outputs-to
+   mix_expr.out
+   (with-accepted-exit-codes
+    2
+    (run
+     %{ocamlc}
+     -color
+     never
+     -stop-after
+     typing
+     -I
+     %{project_root}/core/.cistern_core.objs/byte
+     -I
+     %{project_root}/names/.cistern_names.objs/byte
+     mix_expr.ml)))))
+
+(rule
+ (deps
+  mix_update.ml
+  (glob_files %{project_root}/core/.cistern_core.objs/byte/*.cmi)
+  (glob_files %{project_root}/names/.cistern_names.objs/byte/*.cmi))
+ (action
+  (with-outputs-to
+   mix_update.out
+   (with-accepted-exit-codes
+    2
+    (run
+     %{ocamlc}
+     -color
+     never
+     -stop-after
+     typing
+     -I
+     %{project_root}/core/.cistern_core.objs/byte
+     -I
+     %{project_root}/names/.cistern_names.objs/byte
+     mix_update.ml)))))
+
+(rule
+ (deps
+  starts_with_int.ml
+  (glob_files %{project_root}/core/.cistern_core.objs/byte/*.cmi)
+  (glob_files %{project_root}/names/.cistern_names.objs/byte/*.cmi))
+ (action
+  (with-outputs-to
+   starts_with_int.out
+   (with-accepted-exit-codes
+    2
+    (run
+     %{ocamlc}
+     -color
+     never
+     -stop-after
+     typing
+     -I
+     %{project_root}/core/.cistern_core.objs/byte
+     -I
+     %{project_root}/names/.cistern_names.objs/byte
+     starts_with_int.ml)))))
+
+(rule
+ (deps
+  starts_with_option.ml
+  (glob_files %{project_root}/core/.cistern_core.objs/byte/*.cmi)
+  (glob_files %{project_root}/names/.cistern_names.objs/byte/*.cmi))
+ (action
+  (with-outputs-to
+   starts_with_option.out
+   (with-accepted-exit-codes
+    2
+    (run
+     %{ocamlc}
+     -color
+     never
+     -stop-after
+     typing
+     -I
+     %{project_root}/core/.cistern_core.objs/byte
+     -I
+     %{project_root}/names/.cistern_names.objs/byte
+     starts_with_option.ml)))))
+
+(rule
+ (deps
+  starts_with_opt_string.ml
+  (glob_files %{project_root}/core/.cistern_core.objs/byte/*.cmi)
+  (glob_files %{project_root}/names/.cistern_names.objs/byte/*.cmi))
+ (action
+  (with-outputs-to
+   starts_with_opt_string.out
+   (with-accepted-exit-codes
+    2
+    (run
+     %{ocamlc}
+     -color
+     never
+     -stop-after
+     typing
+     -I
+     %{project_root}/core/.cistern_core.objs/byte
+     -I
+     %{project_root}/names/.cistern_names.objs/byte
+     starts_with_opt_string.ml)))))
+
+(test
+ (name test_typeerr)
+ (modules test_typeerr)
+ (libraries windtrap)
+ (deps
+  mix_expr.out
+  mix_expr.expected
+  mix_update.out
+  mix_update.expected
+  starts_with_int.out
+  starts_with_int.expected
+  starts_with_option.out
+  starts_with_option.expected
+  starts_with_opt_string.out
+  starts_with_opt_string.expected))

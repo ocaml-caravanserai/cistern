@@ -1,0 +1,7 @@
+File "starts_with_option.ml", line 11, characters 64-65:
+11 | let _f (x : (a, string option) Field.t) = Expr.Ops.(starts_with x "a")
+                                                                     ^
+Error: The value x has type (a, string option) Cistern_core.Field.t
+       but an expression was expected of type
+         (a, string) Cistern_core.Field.t
+       Type string option is not compatible with type string

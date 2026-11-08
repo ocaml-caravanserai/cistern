@@ -10,6 +10,7 @@ let () =
        [ Prop_decimal.tests
        ; Prop_literal.tests
        ; Prop_raw.tests
+       ; Prop_expr.tests
        ; Prop_decoder.tests
        ; Prop_error.tests
        ; Prop_mapping.tests

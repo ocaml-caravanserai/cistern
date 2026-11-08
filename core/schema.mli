@@ -81,7 +81,10 @@ val check : model list -> (unit, string list) result
     + The model names are unique. The table names are unique after the ASCII
       fold.
     + Each table name passes {!Cistern_names.valid_table_name}, and each column
-      name passes {!Cistern_names.valid_identifier}.
+      name passes {!Cistern_names.valid_identifier}. A table name has no
+      uppercase ASCII letter, so that the name is the same on Linux and on macOS
+      ([lower_case_table_names] 2), where [check_schema] finds a table by its
+      name.
     + Each model has exactly one [key] field. The key is not [nullable] and not
       [Float].
     + [auto] is only on the key, and only on an [Int64] field.
