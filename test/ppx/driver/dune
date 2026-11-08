@@ -1,0 +1,9 @@
+; The driver of ppxlib with -check on a group of [@@deriving cistern] (the plan
+; of phase 3, P2): the build fails if the ppx does not mark each of its
+; attributes as handled, or if the deriver is not registered.
+
+(library
+ (name ppx_driver_check)
+ (libraries ptime)
+ (preprocess
+  (pps ppx_cistern -check)))

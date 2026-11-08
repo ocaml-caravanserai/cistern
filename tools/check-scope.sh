@@ -18,9 +18,8 @@
 # The check fails closed: a dune file that it cannot read gives a failure,
 # not a pass. It refuses enabled_if, build_if and include_subdirs in these
 # dune files, and block comments (#| |#) and datum comments (#;), which the
-# reader below does not know. It fails if git cannot list the files. ppx/ is
-# not examined: ppx_cistern has no mutation backend until phase 3 (decision
-# Q12 of the plan of phase 0).
+# reader below does not know. It fails if git cannot list the files. Since
+# phase 3a, ppx/ follows rule 2 too: the suite test/ppx links ppx_cistern.
 
 set -u
 
@@ -102,7 +101,6 @@ for d in $files; do
   case $d in test/*) continue ;; esac
   seen=1
   dir=$(dirname "$d")
-  [ "$dir" = ppx ] && continue
   if unknown_comment "$d"; then fail "cannot read $d: a #| or #; comment"; continue; fi
   all=$(stanzas "$d")
   if unsupported "$all"; then fail "cannot read $d: enabled_if, build_if or include_subdirs"; continue; fi
