@@ -792,20 +792,38 @@ let exec t ~timeout stmt =
       let start = now t in
       let deadline = add_span start timeout in
       (* One statement on the held connection, as data for [with_conn]. *)
+      (* A statement of several commands (multi, phase 4d, E7): each command
+         emits its own event during the hold, through the scope, and the
+         statement gives no joined event. *)
+      let scope =
+        { Exec.emit=
+            (fun ~sql ~t0 outcome ->
+              emit t
+                (Event.Query
+                   { sql
+                   ; duration= Time.diff Clock.Mono (Time.now Clock.Mono) t0
+                   ; outcome } ) )
+        ; time_left= (fun () -> time_left t ~deadline)
+        ; after_ok= (fun () -> Ok ())
+        ; error= (fun ~emit e -> emit (Event.Failed e) ; e) }
+      in
+      let joined f = if meta.multi then ignore else f in
       let run (h : held) =
         let c = h.c in
-        let ctx = Exec.make c in
+        let ctx = if meta.multi then Exec.make ~scope c else Exec.make c in
         let give_back = Give_back {dirty= h.dirty || meta.raw <> None} in
         match Stmt.Private.run stmt ctx with
         | Ok ran ->
             ( Value ran
-            , (fun () -> event ~c (Event.Done {rows= ran.rows}))
+            , joined (fun () -> event ~c (Event.Done {rows= ran.rows}))
             , give_back )
         | Error err ->
-            (Err err, (fun () -> event ~c (Event.Failed err)), give_back)
+            (Err err, joined (fun () -> event ~c (Event.Failed err)), give_back)
         | exception (Fiber.Cancelled _ as ex) ->
             let sent = Exec.sent ctx in
-            (Cancel ex, (fun () -> event ~c (Event.Cancelled {sent})), Discard)
+            ( Cancel ex
+            , joined (fun () -> event ~c (Event.Cancelled {sent}))
+            , Discard )
       in
       match meta.text with
       | Some (Error message) ->

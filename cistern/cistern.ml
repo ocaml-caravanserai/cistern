@@ -38,6 +38,6 @@ module Private = struct
   module Deferred = Cistern_core.Deferred
   module Relation = Relation
   module Model = Model
-  module Query = Query
+  module Query = Cistern__Query
   module Schema_ops = Schema_ops
 end

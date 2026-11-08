@@ -227,7 +227,8 @@ let atomic sqls =
     ; sql= (fun _ -> sqls)
     ; text= None
     ; for_update= false
-    ; atomic= true }
+    ; atomic= true
+    ; multi= false }
     ~run:(fun ctx ->
       List.fold_left
         (fun acc s ->

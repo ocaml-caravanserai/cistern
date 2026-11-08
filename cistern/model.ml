@@ -202,7 +202,10 @@ let nested :
           (function Error m -> Some (Error m) | Ok _ -> None)
           (parent :: first)
     ; for_update= false
-    ; atomic= true }
+    ; atomic= true
+    ; multi=
+        false [@mutate off "the paths of an atomic statement never read multi"]
+    }
   in
   let exec ctx ast =
     match ast with

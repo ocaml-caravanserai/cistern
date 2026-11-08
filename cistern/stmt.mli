@@ -40,7 +40,12 @@ module Private : sig
           (** A statement of several commands that must all commit or all roll
               back (phase 4b1, the plan of phase 4, E4): [Db.exec] runs it
               through the transaction of [Db.transaction], with one event for
-              each command. {!map} keeps it. *) }
+              each command. {!map} keeps it. *)
+    ; multi: bool
+          (** A statement of several commands that need no transaction (a query
+              with [include_], phase 4d, the plan of phase 4, E7 and E8): each
+              command emits its own event, with no joined event, in [Db.exec]
+              and in [Tx.exec]. {!map} keeps it. *) }
 
   val make :
        meta

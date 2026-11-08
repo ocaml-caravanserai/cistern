@@ -21,7 +21,8 @@ let make ?(for_update = false) kind ast ~run ~rows ~finish =
     ; sql= text Print.to_sql
     ; text= (match ast with Ok _ -> None | Error m -> Some (Error m))
     ; for_update
-    ; atomic= false }
+    ; atomic= false
+    ; multi= false }
   in
   Stmt.Private.make meta
     ~run:(fun ctx ->

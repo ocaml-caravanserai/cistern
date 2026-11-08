@@ -756,3 +756,446 @@ let scope_tests =
                 (a, b) )
           in
           equal (pair string string) ("Not_found", "Not_found") r ) ]
+
+(* include_ on Fake_db (phase 4d, E8): the query of each relation after the main
+   query, the grouping, the chunks and the events. *)
+let include_tests =
+  let module Node = Tree.Node in
+  let ucols = "SELECT " ^ cols ^ " FROM `user`" in
+  let tcols =
+    "SELECT `todo`.`id`, `todo`.`user_id`, `todo`.`title`, `todo`.`done`, \
+     `todo`.`note` FROM `todo`"
+  in
+  let ncols =
+    "SELECT `node`.`id`, `node`.`name`, `node`.`parent_id` FROM `node`"
+  in
+  let todo_row id user =
+    [Some id; Some user; Some ("t" ^ id); Some "0"; None]
+  in
+  (* [answer l]: the script of the SQL texts that start with a prefix of [l]. *)
+  let answer l db =
+    db.D.faults.script <-
+      (fun sql ->
+        List.find_map
+          (fun (p, r) ->
+            if String.starts_with ~prefix:p sql then Some r else None )
+          l )
+  in
+  let child_sql = tcols ^ " WHERE `todo`.`user_id` IN (" in
+  (* The SQL commands of the fake server with a prefix. *)
+  let sent (db : D.t) p =
+    List.filter (String.starts_with ~prefix:p) (List.rev db.log)
+  in
+  let ids = function
+    | Cistern.Deferred.Loaded l ->
+        String.concat ","
+          (List.map (fun (t : User_todo.todo) -> Int64.to_string t.id) l)
+    | Unloaded ->
+        "Unloaded"
+  in
+  group "include_"
+    [ test "a has_many: the children of each key, a parent with no child"
+        (fun () ->
+          let (r, child), events =
+            with_pool
+              ~setup:
+                (answer
+                   [ ( child_sql
+                     , D.Rows
+                         [ todo_row "10" "2"
+                         ; todo_row "11" "1"
+                         ; todo_row "12" "2" ] )
+                   ; (ucols, D.Rows [row "1" "a"; row "2" "b"; row "3" "c"]) ] )
+              (fun _ db pool ->
+                let r =
+                  Db.exec pool
+                    (User.all |> Query.include_ User.Rel.todos |> Query.to_list)
+                in
+                (r, sent db child_sql) )
+          in
+          ( match r with
+          | Ok us ->
+              equal (list string) ["1 11"; "2 10,12"; "3 "]
+                (List.map
+                   (fun (u : User_todo.user) ->
+                     Printf.sprintf "%Ld %s" u.id (ids u.todos) )
+                   us ) ;
+              (* No inverse relation: each child stays Unloaded. *)
+              List.iter
+                (fun (u : User_todo.user) ->
+                  match u.todos with
+                  | Loaded l ->
+                      List.iter
+                        (fun (t : User_todo.todo) ->
+                          is_true (t.user = Cistern.Deferred.Unloaded) )
+                        l
+                  | Unloaded ->
+                      fail "Unloaded" )
+                us
+          | Error e ->
+              fail (E.to_string e) ) ;
+          equal (list string)
+            [child_sql ^ "1, 2, 3) ORDER BY `todo`.`id` ASC"]
+            child ;
+          equal (list string)
+            [ "connect 10.0.0.9:3306 ok"
+            ; Printf.sprintf "query %S done 3" ucols
+            ; Printf.sprintf "query %S done 3"
+                (child_sql ^ "?, ?, ?) ORDER BY `todo`.`id` ASC") ]
+            events )
+    ; test "a belongs_to: unique keys, a parent that is gone stays Unloaded"
+        (fun () ->
+          let usql = ucols ^ " WHERE `user`.`id` IN (" in
+          let (r, parent), _ =
+            with_pool
+              ~setup:
+                (answer
+                   [ (usql, D.Rows [row "1" "a"; row "2" "b"])
+                   ; ( tcols
+                     , D.Rows
+                         [ todo_row "10" "2"
+                         ; todo_row "11" "1"
+                         ; todo_row "12" "2"
+                         ; todo_row "13" "9" ] ) ] )
+              (fun _ db pool ->
+                let r =
+                  Db.exec pool
+                    (Todo.all |> Query.include_ Todo.Rel.user |> Query.to_list)
+                in
+                (r, sent db usql) )
+          in
+          equal (list string) [usql ^ "2, 1, 9)"] parent ;
+          match r with
+          | Ok ts ->
+              equal (list string)
+                ["10 b"; "11 a"; "12 b"; "13 Unloaded"]
+                (List.map
+                   (fun (t : User_todo.todo) ->
+                     Printf.sprintf "%Ld %s" t.id
+                       ( match t.user with
+                       | Loaded u ->
+                           u.name
+                       | Unloaded ->
+                           "Unloaded" ) )
+                   ts )
+          | Error e ->
+              fail (E.to_string e) )
+    ; test "first with include_" (fun () ->
+          let r, _ =
+            with_pool
+              ~setup:
+                (answer
+                   [ (child_sql, D.Rows [todo_row "11" "1"])
+                   ; (ucols, D.Rows [row "1" "a"]) ] )
+              (fun _ _ pool ->
+                Db.exec pool
+                  (User.all |> Query.include_ User.Rel.todos |> Query.first) )
+          in
+          match r with
+          | Ok (Some u) ->
+              equal string "11" (ids u.todos)
+          | _ ->
+              fail "first" )
+    ; test "a nullable belongs_to: None gives Loaded None; two include_"
+        (fun () ->
+          let nrow id parent = [Some id; Some "n"; parent] in
+          let node id parent_id : Tree.node =
+            { id
+            ; name= "n"
+            ; parent_id
+            ; parent= Cistern.Deferred.Unloaded
+            ; children= Cistern.Deferred.Unloaded }
+          in
+          let (r, cmds), events =
+            with_pool
+              ~setup:
+                (answer
+                   [ (ncols ^ " WHERE `node`.`id` IN (", D.Rows [nrow "1" None])
+                   ; ( ncols ^ " WHERE `node`.`parent_id` IN ("
+                     , D.Rows [nrow "2" (Some "1"); nrow "3" (Some "1")] )
+                   ; ( ncols
+                     , D.Rows
+                         [ nrow "1" None
+                         ; nrow "2" (Some "1")
+                         ; nrow "3" (Some "1")
+                         ; nrow "4" (Some "9") ] ) ] )
+              (fun _ db pool ->
+                let r =
+                  Db.exec pool
+                    ( Node.all
+                    |> Query.include_ Node.Rel.parent
+                    |> Query.include_ Node.Rel.children
+                    |> Query.to_list )
+                in
+                (r, sent db ncols) )
+          in
+          equal (list string)
+            [ ncols
+            ; ncols ^ " WHERE `node`.`id` IN (1, 9)"
+            ; ncols
+              ^ " WHERE `node`.`parent_id` IN (1, 2, 3, 4) ORDER BY \
+                 `node`.`id` ASC" ]
+            cmds ;
+          equal int 4 (List.length events) ;
+          let n1 = node 1L None in
+          let child id = node id (Some 1L) in
+          is_true
+            ( r
+            = Ok
+                [ { n1 with
+                    parent= Loaded None
+                  ; children= Loaded [child 2L; child 3L] }
+                ; {(child 2L) with parent= Loaded (Some n1); children= Loaded []}
+                ; {(child 3L) with parent= Loaded (Some n1); children= Loaded []}
+                  (* Its parent 9 is gone: the relation stays Unloaded (the
+                     notes of the review of 4a). *)
+                ; {(node 4L (Some 9L)) with children= Loaded []} ] ) )
+    ; cases "the chunks of 1000 keys"
+        ~id:(fun (n, _) -> string_of_int n)
+        [(1000, [1000]); (1001, [1000; 1]); (2500, [1000; 1000; 500])]
+        (fun (n, sizes) ->
+          let rows = List.init n (fun i -> row (string_of_int (i + 1)) "u") in
+          let (r, child), events =
+            with_pool
+              ~setup:(answer [(child_sql, D.Rows []); (ucols, D.Rows rows)])
+              (fun _ db pool ->
+                let r =
+                  Db.exec pool
+                    (User.all |> Query.include_ User.Rel.todos |> Query.to_list)
+                in
+                (r, sent db child_sql) )
+          in
+          ( match r with
+          | Ok us ->
+              equal int n (List.length us) ;
+              is_true
+                (List.for_all
+                   (fun (u : User_todo.user) ->
+                     u.todos = Cistern.Deferred.Loaded [] )
+                   us )
+          | Error e ->
+              fail (E.to_string e) ) ;
+          equal int (List.length sizes) (List.length child) ;
+          (* Each chunk event: one ? for each key. *)
+          let marks e = List.length (String.split_on_char '?' e) - 1 in
+          equal (list int) sizes
+            (List.filter_map
+               (fun e ->
+                 if Test_atomic.contains e "IN (" then Some (marks e) else None )
+               events ) )
+    ; test "no key: no query of include_" (fun () ->
+          let (r, child), events =
+            with_pool
+              ~setup:(answer [(ucols, D.Rows [])])
+              (fun _ db pool ->
+                let r =
+                  Db.exec pool
+                    (User.all |> Query.include_ User.Rel.todos |> Query.to_list)
+                in
+                (r, sent db child_sql) )
+          in
+          is_true (r = Ok []) ;
+          equal (list string) [] child ;
+          equal int 2 (List.length events) )
+    ; test
+        "a lost reply of a chunk: Connection_lost, the events of each command"
+        (fun () ->
+          let r, events =
+            with_pool
+              ~setup:
+                (answer
+                   [(child_sql, D.No_reply); (ucols, D.Rows [row "1" "a"])] )
+              (fun _ _ pool ->
+                text
+                  (Db.exec pool
+                     (User.all |> Query.include_ User.Rel.todos |> Query.to_list) ) )
+          in
+          equal string "Connection_lost" r ;
+          (* No joined event of the statement. *)
+          equal (list string)
+            [ Printf.sprintf "query %S done 1" ucols
+            ; Printf.sprintf "query %S failed Connection_lost"
+                (child_sql ^ "?) ORDER BY `todo`.`id` ASC") ]
+            (Test_pool.queries events) )
+    ; test "a lost reply of the main query: Connection_lost (a read)" (fun () ->
+          let r, events =
+            with_pool
+              ~setup:(answer [(ucols, D.No_reply)])
+              (fun _ _ pool ->
+                text
+                  (Db.exec pool
+                     (User.all |> Query.include_ User.Rel.todos |> Query.to_list) ) )
+          in
+          equal string "Connection_lost" r ;
+          equal (list string)
+            [Printf.sprintf "query %S failed Connection_lost" ucols]
+            (Test_pool.queries events) )
+    ; test "a cancel in a chunk: its Cancelled event, the connection goes"
+        (fun () ->
+          let (r, connects), events =
+            with_pool
+              ~setup:
+                (answer
+                   [ (child_sql, D.Delay (200, D.Rows []))
+                   ; ("SELECT COUNT(*) FROM `user`", D.Rows [[Some "1"]])
+                   ; (ucols, D.Rows [row "1" "a"]) ] )
+              (fun _ db pool ->
+                let r =
+                  match
+                    Weft.Fiber.with_timeout Weft.Clock.Mono (Weft.Span.ms 50)
+                      (fun () ->
+                        Db.exec pool
+                          ( User.all
+                          |> Query.include_ User.Rel.todos
+                          |> Query.to_list ) )
+                  with
+                  | r ->
+                      text r
+                  | exception Weft.Fiber.Timeout ->
+                      "cancelled"
+                in
+                ignore (Db.exec pool (Query.count User.all)) ;
+                (r, db.D.connects) )
+          in
+          equal string "cancelled" r ;
+          equal int 2 connects ;
+          equal (list string)
+            [ Printf.sprintf "query %S done 1" ucols
+            ; Printf.sprintf "query %S cancelled sent=true"
+                (child_sql ^ "?) ORDER BY `todo`.`id` ASC")
+              (* No joined event: the next event is the count. *)
+            ; "query \"SELECT COUNT(*) FROM `user`\" done 1" ]
+            (Test_pool.queries events) )
+    ; test "the margin before a chunk in Db.exec: Timeout, no chunk" (fun () ->
+          let (r, child), events =
+            with_pool
+              ~setup:
+                (answer
+                   [ (child_sql, D.Rows [])
+                   ; (ucols, D.Delay (80, D.Rows [row "1" "a"])) ] )
+              (fun _ db pool ->
+                let r =
+                  text
+                    (Db.exec ~timeout:(Weft.Span.ms 120) pool
+                       ( User.all
+                       |> Query.include_ User.Rel.todos
+                       |> Query.to_list ) )
+                in
+                (r, sent db child_sql) )
+          in
+          equal string "Timeout" r ;
+          equal (list string) [] child ;
+          equal (list string)
+            [ Printf.sprintf "query %S done 1" ucols
+            ; Printf.sprintf "query %S failed Timeout"
+                (child_sql ^ "?) ORDER BY `todo`.`id` ASC") ]
+            (Test_pool.queries events) )
+    ; cases "an error of a chunk in a Tx"
+        ~id:(fun (c, _, _) -> string_of_int c)
+        [ (1213, "Retryable deadlock", "Retryable deadlock")
+        ; (1406, "Invalid_value 1406: scripted", "ok") ]
+        (fun (code, inner, result) ->
+          let steps = ref [] in
+          let r, _ =
+            with_pool
+              ~setup:
+                (answer
+                   [ (child_sql, D.Err code)
+                   ; ("SELECT COUNT(*) FROM `user`", D.Rows [[Some "1"]])
+                   ; (ucols, D.Rows [row "1" "a"]) ] )
+              (fun _ _ pool ->
+                Db.transaction pool (fun tx ->
+                    let a =
+                      text
+                        (Tx.exec tx
+                           ( User.all |> Query.for_update
+                           |> Query.include_ User.Rel.todos
+                           |> Query.to_list ) )
+                    in
+                    let b = text (Tx.exec tx (Query.count User.all)) in
+                    steps := [a; b] ) )
+          in
+          (* 1213 fails the Tx (the next step gives the first error); 1406 is an
+             error of the statement only. *)
+          equal (list string)
+            [inner; (if code = 1213 then inner else "ok")]
+            (List.map (fun s -> s) !steps) ;
+          equal string result (text r) )
+    ; test "the lock of the belongs_to chunks in a Tx" (fun () ->
+          let usql = ucols ^ " WHERE `user`.`id` IN (" in
+          let parent, _ =
+            with_pool
+              ~setup:
+                (answer
+                   [ (usql, D.Rows [row "1" "a"])
+                   ; (tcols, D.Rows [todo_row "10" "1"]) ] )
+              (fun _ db pool ->
+                ignore
+                  (Db.transaction pool (fun tx ->
+                       Tx.exec_exn tx
+                         ( Todo.all |> Query.for_update
+                         |> Query.include_ Todo.Rel.user
+                         |> Query.to_list ) ) ) ;
+                sent db usql )
+          in
+          equal (list string) [usql ^ "1) FOR UPDATE"] parent )
+    ; test "the statement deadline in a Tx: a chunk after its margin" (fun () ->
+          let steps = ref [] in
+          let r, _ =
+            with_pool
+              ~setup:
+                (answer
+                   [ (child_sql, D.Rows [])
+                   ; (ucols, D.Delay (80, D.Rows [row "1" "a"])) ] )
+              (fun _ _ pool ->
+                Db.transaction pool (fun tx ->
+                    steps :=
+                      [ text
+                          (Tx.exec ~timeout:(Weft.Span.ms 120) tx
+                             ( User.all
+                             |> Query.include_ User.Rel.todos
+                             |> Query.to_list ) ) ] ) )
+          in
+          (* The margin of an earlier statement deadline fails only the
+             statement (C-M4): the Tx commits. *)
+          equal (list string) ["Timeout"] !steps ;
+          equal string "ok" (text r) )
+    ; test "count and exists with include_: no extra query" (fun () ->
+          let r, events =
+            with_pool
+              ~setup:
+                (answer
+                   [ ("SELECT COUNT(*) FROM `user`", D.Rows [[Some "3"]])
+                   ; ("SELECT EXISTS", D.Rows [[Some "1"]]) ] )
+              (fun _ _ pool ->
+                let q = User.all |> Query.include_ User.Rel.todos in
+                (Db.exec pool (Query.count q), Db.exec pool (Query.exists q)) )
+          in
+          is_true (r = (Ok 3, Ok true)) ;
+          equal int 3 (List.length events) )
+    ; test "in a Tx: the events of each command" (fun () ->
+          let r, events =
+            with_pool
+              ~setup:
+                (answer
+                   [ (child_sql, D.Rows [todo_row "11" "1"])
+                   ; (ucols, D.Rows [row "1" "a"]) ] )
+              (fun _ _ pool ->
+                Db.transaction pool (fun tx ->
+                    Tx.exec_exn tx
+                      ( User.all
+                      |> Query.include_ User.Rel.todos
+                      |> Query.for_update |> Query.to_list ) ) )
+          in
+          ( match r with
+          | Ok [u] ->
+              equal string "11" (ids u.todos)
+          | _ ->
+              fail "the Tx" ) ;
+          equal (list string)
+            [ "query \"START TRANSACTION\" done 0"
+            ; Printf.sprintf "query %S done 1" (ucols ^ " FOR UPDATE")
+            ; Printf.sprintf "query %S done 1"
+                (child_sql ^ "?) ORDER BY `todo`.`id` ASC FOR UPDATE")
+            ; "query \"COMMIT\" done 0" ]
+            (Test_pool.queries events) ) ]
