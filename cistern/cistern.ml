@@ -16,6 +16,7 @@ module Config = Cistern_mysql.Config
 module Field = Cistern_core.Field
 module Expr = Cistern_core.Expr
 module Update = Cistern_core.Update
+module Query = Query
 
 module type MODEL = Cistern_core.Model_intf.MODEL
 
@@ -32,4 +33,5 @@ module Private = struct
   module Schema = Cistern_core.Schema
   module Decoder = Cistern_core.Decoder
   module Model = Model
+  module Query = Query
 end

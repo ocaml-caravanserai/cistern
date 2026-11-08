@@ -120,7 +120,8 @@ let custom ?(raw = true) run =
     ; kind= Stmt.Private.Write
     ; raw= (if raw then Some r else None)
     ; sql= (fun _ -> ["CUSTOM"])
-    ; text= Some (Ok "CUSTOM") }
+    ; text= Some (Ok "CUSTOM")
+    ; for_update= false }
     ~run
     ~rows:(fun _ -> 0)
     ~finish:Fun.id
@@ -167,7 +168,8 @@ let deaf ~hold =
     ; kind= Stmt.Private.Write
     ; raw= None
     ; sql= (fun _ -> ["DEAF"])
-    ; text= None }
+    ; text= None
+    ; for_update= false }
     ~run:(fun ctx ->
       match Cistern.Private.Exec.exec ctx (Raw.sql "DEAF") with
       | Error e ->

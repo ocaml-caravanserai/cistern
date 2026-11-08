@@ -335,6 +335,10 @@ module Cistern_gen__kinds = struct
 
     let delete r = M.delete (module Cistern_model__kinds) r
 
+    let all = M.all (module Cistern_model__kinds)
+
+    let where e = M.where (module Cistern_model__kinds) e
+
     let draft ~id ~i ?i_opt ~s ?s_opt ~b ?b_opt ~f ?f_opt ~y ?y_opt ~t ?t_opt ()
         : Cistern_drafts__kinds.kinds =
       {id; i; i_opt; s; s_opt; b; b_opt; f; f_opt; y; y_opt; t; t_opt}

@@ -19,7 +19,8 @@ let statement r ~run ~rows =
                 s
             | Error m ->
                 "<Invalid_value: " ^ m ^ ">" ) ] )
-    ; text= Some text }
+    ; text= Some text
+    ; for_update= false }
   in
   Stmt.Private.make meta
     ~run:(fun ctx ->

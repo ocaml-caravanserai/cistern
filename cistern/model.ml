@@ -53,6 +53,12 @@ let find_by : (module M : MODEL) -> (M.t, 'a) Field.t -> 'a -> M.t option Stmt.t
     =
  fun (module M) f v -> select (module M) (by M.schema f v) first
 
+let all : (module M : MODEL) -> M.t Query.t =
+ fun (module M) -> Query.Private.make M.schema M.decode
+
+let where : (module M : MODEL) -> (M.t, bool) Expr.t -> M.t Query.t =
+ fun (module M) e -> Query.where e (all (module M))
+
 (* A write, with [check] of its counts. *)
 let write ast check ~finish =
   Typed.make Write ast

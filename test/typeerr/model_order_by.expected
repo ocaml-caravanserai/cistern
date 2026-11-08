@@ -1,0 +1,15 @@
+File "model_order_by.ml", line 10, characters 49-57:
+10 | let _ = Cistern.Query.order_by Todo.Q.title `Asc User.all
+                                                      ^^^^^^^^
+Error: The value User.all has type
+         Cistern_test_models.User_todo.Cistern_model__user.t
+         Cistern__.Query.t =
+           Cistern_test_models.User_todo.Cistern_model__user.t
+           Cistern__Query.t
+       but an expression was expected of type
+         Cistern_test_models.User_todo.todo Cistern.Query.t =
+           Cistern_test_models.User_todo.todo Cistern__Query.t
+       Type
+         Cistern_test_models.User_todo.Cistern_model__user.t =
+           Cistern_test_models.User_todo.user
+       is not compatible with type Cistern_test_models.User_todo.todo

@@ -59,6 +59,15 @@ module Update : sig
   val ( & ) : 'm t -> 'm t -> 'm t
 end
 
+(** The queries (DESIGN.md, "Core user types"), with no [Private]: only the
+    library makes a query of a model ([Private.Model.all]). *)
+module Query : sig
+  include module type of struct
+      include Query
+    end
+    with module Private := Query.Private
+end
+
 (** The signature of a model module (DESIGN.md, "Generated code"). *)
 module type MODEL = Cistern_core.Model_intf.MODEL
 
@@ -78,4 +87,5 @@ module Private : sig
   module Schema = Cistern_core.Schema
   module Decoder = Cistern_core.Decoder
   module Model = Model
+  module Query = Query
 end
