@@ -121,10 +121,50 @@ let custom ?(raw = true) run =
     ; raw= (if raw then Some r else None)
     ; sql= (fun _ -> ["CUSTOM"])
     ; text= Some (Ok "CUSTOM")
-    ; for_update= false }
+    ; for_update= false
+    ; atomic= false }
     ~run
     ~rows:(fun _ -> 0)
     ~finish:Fun.id
+
+(* An atomic statement of the tests (phase 4b1): its commands in order, each
+   with the redacted text "atomic: <command>", until the first error. Its value
+   is the count of the commands. *)
+let atomic ?(around = fun _ f -> f ()) ?text cmds =
+  let redacted c = "atomic: " ^ c in
+  (* "QUERY sql" runs Exec.query, "ROWS sql" Exec.rows, another text
+     Exec.exec. *)
+  let command ctx c =
+    let redacted = redacted c in
+    let after prefix =
+      String.sub c (String.length prefix)
+        (String.length c - String.length prefix)
+    in
+    if String.starts_with ~prefix:"QUERY " c then
+      Result.map ignore
+        (Cistern.Private.Exec.query ~redacted ctx (Raw.sql (after "QUERY ")))
+    else if String.starts_with ~prefix:"ROWS " c then
+      Result.map ignore
+        (Cistern.Private.Exec.rows ~redacted ctx
+           (Raw.sql (after "ROWS "))
+           (fun _ -> Ok ()) )
+    else Result.map ignore (Cistern.Private.Exec.exec ~redacted ctx (Raw.sql c))
+  in
+  Stmt.Private.make
+    { redacted= (fun _ -> List.map redacted cmds)
+    ; kind= Stmt.Private.Write
+    ; raw= None
+    ; sql= (fun _ -> cmds)
+    ; text
+    ; for_update= false
+    ; atomic= true }
+    ~run:(fun ctx ->
+      List.fold_left
+        (fun acc c ->
+          Result.bind acc (fun n ->
+              Result.map (fun () -> n + 1) (around c (fun () -> command ctx c)) ) )
+        (Ok 0) cmds )
+    ~rows:Fun.id ~finish:Fun.id
 
 (* A statement that is not raw (as the typed statements of phase 2): it does not
    make its entry dirty. *)
@@ -169,7 +209,8 @@ let deaf ~hold =
     ; raw= None
     ; sql= (fun _ -> ["DEAF"])
     ; text= None
-    ; for_update= false }
+    ; for_update= false
+    ; atomic= false }
     ~run:(fun ctx ->
       match Cistern.Private.Exec.exec ctx (Raw.sql "DEAF") with
       | Error e ->
@@ -355,9 +396,14 @@ let storm ?(kill = false) ~fibers ~seed ~seam () =
     if seam then fun () -> Fiber.shield (fun () -> Time.sleep Mono (Span.ms 1))
     else ignore ;
   Fun.protect
-    ~finally:(fun () -> Pool.Private.after_op := ignore)
+    ~finally:(fun () ->
+      Pool.Private.after_op := ignore ;
+      Pool.Private.on_hold := ignore )
     (fun () ->
       let control_max = ref 0 and extra = ref 0 in
+      (* Phase 4b1: the atomic statements of the storm, and the holders that got
+         a session of the fake server with an open transaction. *)
+      let atomics = Atomic.make 0 and in_tx_holders = Atomic.make 0 in
       let (outcomes, quiet, live), events =
         with_pool ~kill ~size:8 ~seed ~domains:4 ~max_lifetime:(Span.ms 80)
           ~checkout_timeout:(Span.ms 5)
@@ -367,6 +413,16 @@ let storm ?(kill = false) ~fibers ~seed ~seam () =
             if kill && not_owner_seed seed then db.faults.kill_err <- Some 1095 )
           (fun _ db pool ->
             let p = Db.Private.pool pool in
+            (Pool.Private.on_hold :=
+               fun c ->
+                 match
+                   Hashtbl.find_opt db.D.in_tx
+                     (Cistern_mysql.Connection.info c).thread_id
+                 with
+                 | Some open_ when open_ () ->
+                     Atomic.incr in_tx_holders
+                 | _ ->
+                     () ) ;
             let outcomes = ref [] and ended = Atomic.make 0 in
             Fiber.scope (fun s ->
                 if kill then extra := kill_fibers s pool ~seed ~fibers ;
@@ -385,23 +441,40 @@ let storm ?(kill = false) ~fibers ~seed ~seam () =
                          life after 68 to 92 ms. *)
                       let wave = [|0; 60; 200|].(Random.State.int rs 3) in
                       Time.sleep Mono (Span.ms (wave + Random.State.int rs 30)) ;
-                      let sql =
-                        match Random.State.int rs 6 with
+                      let sleep () =
+                        (* With KILL, longer statements: more cancels come while
+                           a statement runs. *)
+                        Printf.sprintf "SLEEP %d"
+                          (Random.State.int rs (if kill then 31 else 11))
+                      in
+                      let stmt =
+                        match Random.State.int rs 8 with
                         | 0 ->
-                            "SELECT 1"
+                            Stmt.map ignore (q "SELECT 1")
                         | 1 ->
-                            "BEGIN"
+                            Stmt.map ignore (q "BEGIN")
                         | 2 ->
-                            "FAIL 1062"
+                            Stmt.map ignore (q "FAIL 1062")
+                        | 3 ->
+                            (* Phase 4b1: an atomic statement of two commands,
+                               in the transaction of Db.transaction. *)
+                            Atomic.incr atomics ;
+                            Stmt.map ignore (atomic ["ATOM a"; sleep ()])
+                        | 4 ->
+                            (* A BEGIN that is not raw: the entry stays clean,
+                               and only the IN_TRANS check of the checkin aborts
+                               it (the review of 4b1, M2). *)
+                            Stmt.map ignore
+                              (custom ~raw:false (fun ctx ->
+                                   Result.map ignore
+                                     (Cistern.Private.Exec.exec ctx
+                                        (Raw.sql "BEGIN") ) ) )
                         | _ ->
-                            (* With KILL, longer statements: more cancels come
-                               while a statement runs. *)
-                            Printf.sprintf "SLEEP %d"
-                              (Random.State.int rs (if kill then 31 else 11))
+                            Stmt.map ignore (q (sleep ()))
                       in
                       (* Above the margin of 50 ms. *)
                       let timeout = Span.ms (50 + Random.State.int rs 70) in
-                      let run () = Db.exec ~timeout pool (q sql) in
+                      let run () = Db.exec ~timeout pool stmt in
                       let o =
                         match
                           if Random.State.int rs (if kill then 2 else 4) = 0
@@ -449,7 +522,29 @@ let storm ?(kill = false) ~fibers ~seed ~seam () =
             in
             (List.sort compare !outcomes, quiet, live) )
       in
-      ( (outcomes, List.length (queries events) - !extra, quiet, live)
+      (* The events of the atomic statements: START TRANSACTION, their commands,
+         COMMIT and ROLLBACK. The other events are one for each exec (and for
+         each statement of the kill fibers). *)
+      let atomic_event e =
+        List.exists
+          (fun prefix -> String.starts_with ~prefix e)
+          [ "query \"START TRANSACTION\""
+          ; "query \"COMMIT\""
+          ; "query \"ROLLBACK\""
+          ; "query \"atomic: " ]
+      in
+      let qs = queries events in
+      let starts =
+        List.length
+          (List.filter
+             (String.starts_with ~prefix:"query \"START TRANSACTION\"")
+             qs )
+      in
+      ( ( outcomes
+        , List.length (List.filter (fun e -> not (atomic_event e)) qs) - !extra
+        , quiet
+        , live
+        , (Atomic.get atomics, starts, Atomic.get in_tx_holders) )
       , kill_record ~control_max:!control_max events ) )
 
 (* The checks of a storm with KILL: one Kill or Kill_dropped event for each kill
@@ -472,7 +567,8 @@ let check_kill ~seed ~min_kills k =
       ~msg:(Printf.sprintf "at least %d kills (%d)" min_kills k.kills)
       (k.kills >= min_kills)
 
-let check_storm ?(min_ran = 80) ~fibers (outcomes, queries, quiet, live) =
+let check_storm ?(min_ran = 80) ~fibers
+    (outcomes, queries, quiet, live, (atomics, starts, in_tx_holders)) =
   equal ~msg:"one outcome for each fiber" int fibers (List.length outcomes) ;
   (* The storm must run statements, not only waiters at their limit: at least 80
      execs of each seed run a statement (ok, or the error of FAIL). In the
@@ -489,7 +585,15 @@ let check_storm ?(min_ran = 80) ~fibers (outcomes, queries, quiet, live) =
   List.iter
     (fun o -> is_true ~msg:("a permitted outcome: " ^ o) (List.mem o permitted))
     outcomes ;
-  equal ~msg:"one Query event for each exec" int (fibers + 8) queries ;
+  (* Phase 4b1: an atomic statement gives one event for each command that ran,
+     with one START TRANSACTION event for each exec, and no joined event. *)
+  equal ~msg:"one Query event for each exec that is not atomic" int
+    (fibers - atomics + 8)
+    queries ;
+  equal ~msg:"one START TRANSACTION event for each atomic exec" int atomics
+    starts ;
+  is_true ~msg:"the storm ran atomic statements" (atomics > 0) ;
+  equal ~msg:"no holder got a session in a transaction" int 0 in_tx_holders ;
   equal ~msg:"quiet: idle <= 8, in use, opening, waiting" (list string)
     ["true"; "0"; "0"; "0"]
     (let a, b, c, d = quiet in

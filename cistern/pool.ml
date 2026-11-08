@@ -65,6 +65,8 @@ type t =
 module Private = struct
   let after_op = ref ignore
 
+  let on_hold : (Connection.t -> unit) ref = ref ignore
+
   let before_try = ref ignore
 
   let connect_control = ref Connection.connect
@@ -716,12 +718,13 @@ let with_conn t ~start ~deadline f =
             | Ok () ->
                 was_reset := e.dirty ;
                 if not (time_left ()) then Margin_step
-                else
+                else (
                   (* No wait between the margin check and the function. *)
+                  !Private.on_hold c ;
                   let outcome, event, held_end =
                     f {c; dirty= e.dirty && not !was_reset}
                   in
-                  Ran_step (outcome, event, held_end) )
+                  Ran_step (outcome, event, held_end) ) )
     with
     | exception ex ->
         (* A bug of Cistern. *)

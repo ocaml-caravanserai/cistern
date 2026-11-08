@@ -141,6 +141,9 @@ type t =
   ; mutable killed: int  (** The connections that KILL ended. *)
   ; sessions: (int, Flow.t) Hashtbl.t
         (** The open connections after the handshake, by number. *)
+  ; in_tx: (int, unit -> bool) Hashtbl.t
+        (** For each open connection, by number: its transaction is open (phase
+            4b1, the session invariant of the pool storm). *)
   ; mutable log: string list  (** The commands, the newest first. *) }
 
 let no_faults () =
@@ -523,6 +526,7 @@ let serve db flow =
     ~finally:(fun () ->
       finish_handshake () ;
       Hashtbl.remove db.sessions number ;
+      Hashtbl.remove db.in_tx number ;
       Flow.close !flow ;
       Flow.close tcp ;
       db.open_now <- db.open_now - 1 )
@@ -582,6 +586,7 @@ let serve db flow =
         let first = ref first in
         let n = ref 0 in
         let tx = {open_= false; savepoints= []} in
+        Hashtbl.replace db.in_tx number (fun () -> tx.open_) ;
         while true do
           command ?first:!first db tx flow r ;
           first := None ;
@@ -629,6 +634,7 @@ let run ?(domains = 1) ?(seed = 0) f =
         ; identities= 0
         ; killed= 0
         ; sessions= Hashtbl.create 8
+        ; in_tx= Hashtbl.create 8
         ; log= [] }
       in
       let listener =

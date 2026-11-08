@@ -133,6 +133,8 @@ let command tx ~strict sql =
 
 let exec ?timeout tx stmt =
   check tx "exec" ;
+  if (Stmt.Private.meta stmt).atomic then
+    invalid_arg "Tx.exec: an atomic statement runs in a Tx from phase 4b2" ;
   match (tx.failed, Stmt.Private.pure_value stmt) with
   | Some f, _ ->
       Error f.error
@@ -247,7 +249,7 @@ let reraise = function
   | Got _ | Cistern _ ->
       invalid_arg "Tx.reraise: no exception"
 
-let cancelled () =
+let pending_cancel () =
   match Fiber.check_cancel () with
   | () ->
       None
@@ -267,7 +269,7 @@ let savepoint tx g =
           Error e
       | Ok () -> (
           let outcome = catch (fun () -> g tx) in
-          let cancel = cancelled () in
+          let cancel = pending_cancel () in
           let rollback_to () =
             ignore (command tx ~strict:true ("ROLLBACK TO SAVEPOINT " ^ name))
           in
@@ -370,10 +372,10 @@ let commit pool c ~deadline ~dirty =
   (reply.result, events, held_end)
 
 (* The checkout raises Invalid_argument on a closed pool, before any event. *)
-let transaction ~timeout pool f =
+let transaction ?(caller = "Db.transaction") ~timeout pool f =
   (* Before each other check, as in Db.exec. *)
   Pool.check_open pool ;
-  if Pool.in_tx pool then invalid_arg "Db.transaction in the fiber of a Tx" ;
+  if Pool.in_tx pool then invalid_arg (caller ^ " in the fiber of a Tx") ;
   let me = Fiber.self () in
   let body () =
     Fiber.check_cancel () ;
@@ -424,7 +426,7 @@ let transaction ~timeout pool f =
                 Fiber.with_timeout Clock.Mono left (fun () -> f tx) )
           in
           let deadline_passed = deadline_passed tx deadline in
-          let cancel = cancelled () in
+          let cancel = pending_cancel () in
           tx.active <- false ;
           let dirty = held.dirty || tx.raw_ran in
           let finish = function
@@ -497,6 +499,55 @@ let transaction ~timeout pool f =
       Pool.leave_tx pool me ;
       Printexc.raise_with_backtrace ex bt
 
+(* An atomic statement in Db.exec (phase 4b1, the plan of phase 4, E4, E5 and
+   E7): the transaction of Db.transaction runs its commands, with no second path
+   of transactions. Each command emits its own event through the scope, and
+   checks the margin first, and the IN_TRANS check of Tx.exec after an OK. The
+   callback raises on the first error of a command, so that the transaction
+   rolls back (it commits a callback that returns): a server error or Decode on
+   a usable connection gives the ROLLBACK, then the error; on a broken
+   connection the first error of the Tx gives its final error (a lost reply of
+   DML: Connection_lost, or Timeout after the deadline; a 1153: Invalid_value),
+   and the end aborts the connection. A cancel fails the Tx as in Tx.exec (no
+   ROLLBACK) and goes up: the cancel check of the end aborts the connection (the
+   KILL of a command in flight). The value comes after the connection went back
+   to the pool. *)
+let atomic ~timeout pool stmt =
+  Result.map
+    (fun (ran : _ Stmt.Private.ran) -> ran.finish ())
+    (transaction ~caller:"Db.exec" ~timeout pool (fun tx ->
+         let scope =
+           { Exec.emit= (fun ~sql ~t0 outcome -> emit pool ~sql ~t0 outcome)
+           ; time_left= (fun () -> Pool.time_left pool ~deadline:tx.deadline)
+           ; after_ok=
+               (fun () ->
+                 (* As Tx.exec: an OK with IN_TRANS clear is an implicit commit.
+                    The callback then raises it, as the first error of the
+                    Tx. *)
+                 if in_trans tx.c then Ok () else Error Error.Implicit_commit )
+           }
+         in
+         (* The flow deadline of the connection is the transaction deadline:
+            with_conn set it at the checkout. *)
+         match Stmt.Private.run stmt (Exec.make ~scope tx.c) with
+         | Ok ran ->
+             ran
+         | Error e ->
+             (* A broken connection: a lost reply, a flow deadline, a 1153 or a
+                LOCAL INFILE request. The first error of the Tx gives the final
+                error. *)
+             if not (Connection.usable tx.c) then fail tx ~at:tx.deadline e ;
+             let e = match tx.failed with Some f -> f.final | None -> e in
+             raise (Error.Cistern_error e)
+         | exception (Fiber.Cancelled _ as ex) ->
+             (* As Tx.exec: the cancel broke the connection, and the end sends
+                no ROLLBACK. The commands of an atomic statement are not raw,
+                thus DML (Tx.exec gives Connection_lost for them too). *)
+             cancelled tx Error.Connection_lost ;
+             raise ex ) )
+
 module Private = struct
   let transaction = transaction
+
+  let atomic = atomic
 end

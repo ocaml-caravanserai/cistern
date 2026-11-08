@@ -173,6 +173,12 @@ val shutdown : t -> unit
     the counters are global values: all the pools of a process share them, thus
     a test that reads them runs alone. *)
 module Private : sig
+  val on_hold : (Cistern_mysql.Connection.t -> unit) ref
+  (** Called with the connection of each holder, right before the function of
+      the holder runs. The pool storm checks with it that no session of the fake
+      server is in a transaction when the pool hands it to a holder (phase 4b1).
+      It must not raise, wait or see a cancel. The default does nothing. *)
+
   val after_op : (unit -> unit) ref
   (** Called between the mutex section of an operation and its effects. A test
       sets it to a short shielded sleep, so that the timer of a waiter can fire

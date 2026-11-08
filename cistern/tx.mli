@@ -48,8 +48,20 @@ val savepoint : t -> (t -> 'a) -> ('a, Cistern_core.Error.t) result
 (** For the library ({!Db.transaction}). It can change in each version. *)
 module Private : sig
   val transaction :
-       timeout:Weft.Span.t
+       ?caller:string
+    -> timeout:Weft.Span.t
     -> Pool.t
     -> (t -> 'a)
     -> ('a, Cistern_core.Error.t) result
+
+  val atomic :
+       timeout:Weft.Span.t
+    -> Pool.t
+    -> 'a Stmt.t
+    -> ('a, Cistern_core.Error.t) result
+  (** [atomic ~timeout pool s] runs the atomic statement [s] of [Db.exec] in the
+      transaction of [Db.transaction] (phase 4b1): [START TRANSACTION], its
+      commands with one event each, and [COMMIT], or [ROLLBACK] after the first
+      error of a command. The misuse checks are those of [Db.transaction], with
+      the message "Db.exec in the fiber of a Tx". *)
 end
