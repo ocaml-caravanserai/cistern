@@ -67,7 +67,12 @@ let check_end pool =
   equal ~msg:"the opens over the bound" int 0 (Pool.Private.over_bound p) ;
   let idle, in_use, opening, closing, waiting = Pool.Private.state p in
   equal ~msg:"the slots at the end" (list int) [0; 0; 0; 0; 0]
-    [idle; in_use; opening; closing; waiting]
+    [idle; in_use; opening; closing; waiting] ;
+  (* Phase 1.5c1a: no control connection, no Killing slot and no entry of the
+     kill queue. *)
+  equal ~msg:"the control connections at the end" int 0 (Pool.Private.control p) ;
+  equal ~msg:"the Killing slots at the end" int 0 (Pool.Private.killing p) ;
+  equal ~msg:"the kill queue at the end" (list int64) [] (Pool.Private.queue p)
 
 (* [with_pool ?size ... f]: a pool on the fake server, with the events in a
    list. After with_db, it does the checks of [check_end]. With [tls] (phase
@@ -75,7 +80,7 @@ let check_end pool =
    test CA: the generator is seeded again at the start, and the simulation has
    the time 2025 and the CA files of Tls_fixture. *)
 let with_pool ?(size = 2) ?max_lifetime ?checkout_timeout ?(seed = 0)
-    ?(domains = 1) ?(setup = fun _ -> ()) ?(tls = false) f =
+    ?(domains = 1) ?(setup = fun _ -> ()) ?(tls = false) ?(kill = false) f =
   let events = ref [] in
   if tls then Tls_fixture.seed () ;
   let result =
@@ -85,9 +90,9 @@ let with_pool ?(size = 2) ?max_lifetime ?checkout_timeout ?(seed = 0)
             Tls_fixture.at_2025 sim ;
             Tls_fixture.install () ;
             db.faults.tls <- Some (Tls_fixture.server_config Tls_fixture.pki) ;
-            Tls_fixture.config ~host:"10.0.0.9" ~ca:Tls_fixture.ca_file
+            Tls_fixture.config ~kill ~host:"10.0.0.9" ~ca:Tls_fixture.ca_file
               Verify_identity )
-          else D.config ()
+          else D.config ~kill ()
         in
         setup db ;
         let last = ref None in

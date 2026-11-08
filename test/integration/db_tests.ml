@@ -102,7 +102,7 @@ let int_text id =
 
 let deterministic =
   group ("Db on " ^ server)
-    [ test "a pool of 4, 64 fibers on 4 domains, at most 4 sessions (V3)"
+    [ test "a pool of 4, 64 fibers on 4 domains, at most 5 sessions (V3)"
         (fun () ->
           Weft.run ~domains:4
             (module Weft_os)
@@ -125,16 +125,25 @@ let deterministic =
                           in
                           List.map Weft.Promise.await ps )
                     in
-                    (results, user_sessions ~after ()) )
+                    let control =
+                      Cistern.Private.Pool.Private.control (Db.Private.pool db)
+                    in
+                    (results, (user_sessions ~after (), control)) )
               in
+              let sessions, control = sessions in
               equal (list string)
                 (List.init 64 (fun i -> Printf.sprintf "Int %d" i))
                 results ;
-              is_true ~msg:"at most 4 sessions of the test user"
-                (sessions >= 1 && sessions <= 4) ;
+              (* The 4 slots and the control connection of the killer (kill=true
+                 by default, phase 1.5c1a): pool_size + 1. *)
+              is_true ~msg:"at most 5 sessions of the test user"
+                (sessions >= 1 && sessions <= 5) ;
+              is_true ~msg:"at most one control connection" (control <= 1) ;
               equal ~msg:"one Query event for each exec" int 64
                 (count_queries (events ())) ;
-              is_true ~msg:"at most 4 connects" (count_connects (events ()) <= 4) ) )
+              (* The events of a connect of the pool and of the control
+                 connection have the same form: at most 4 + 1. *)
+              is_true ~msg:"at most 5 connects" (count_connects (events ()) <= 5) ) )
     ; test "the session reset after a raw SET and USE (V5)" (fun () ->
           in_weft (fun () ->
               warm () ;

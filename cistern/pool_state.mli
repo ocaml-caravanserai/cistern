@@ -180,6 +180,10 @@ val killed : ('c, 'w) t -> time -> token -> ('c, 'w) t * bool * bool
     slot was there, and [wake]. A token whose slot passed its age limit, or a
     token that {!killed} already freed, changes nothing. *)
 
+val idle_limit : int -> Weft.Span.t
+(** [idle_limit w] is the idle limit of a connection whose [@@wait_timeout] is
+    [w] seconds: the smaller of 30 s and [w] − 5 s, at least 1 s. *)
+
 (** {1 Reading} *)
 
 val size : ('c, 'w) t -> int

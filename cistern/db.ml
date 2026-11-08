@@ -17,6 +17,8 @@ let with_db ?(pool_size = 10) ?(max_lifetime = Span.s 1800)
   match
     Weft.Fiber.scope (fun s ->
         Weft.Fiber.fork_daemon s (fun () -> Pool.opener pool) ;
+        if Cistern_mysql.Config.kill config then
+          Weft.Fiber.fork_daemon s (fun () -> Pool.killer pool) ;
         f pool )
   with
   | v ->

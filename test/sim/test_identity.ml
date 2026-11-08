@@ -284,8 +284,12 @@ let tests =
     ; test "Fake_db: KILL ends the session of another connection" (fun () ->
           let r =
             D.run (fun _ db ->
-                let c1 = Result.get_ok (Conn.connect (D.config ())) in
-                let c2 = Result.get_ok (Conn.connect (D.config ())) in
+                let c1 =
+                  Result.get_ok (Conn.connect (D.config ~kill:true ()))
+                in
+                let c2 =
+                  Result.get_ok (Conn.connect (D.config ~kill:true ()))
+                in
                 let id1 = (Conn.info c1).connection_id in
                 let slept = Ivar.create () in
                 Fiber.scope (fun s ->
@@ -334,22 +338,27 @@ let tests =
         ; ("a role", D.Identity_role, "kill off role") ]
         (fun (_, fault, expected) ->
           let evs, identities, off = pool_run ~size:1 ~n:1 fault in
-          equal (list string) ["connect"; expected] evs ;
-          equal int 1 identities ;
+          (* The connection of the pool and the control connection of the killer
+             (phase 1.5c1a): one Kill_off. *)
+          equal (list string)
+            ["connect"; "connect"; expected]
+            (List.sort compare evs) ;
+          equal int 2 identities ;
           equal bool true off )
     ; test "the pool: one Kill_off for 4 connections on 4 domains" (fun () ->
           let evs, identities, off =
             pool_run ~domains:4 ~size:4 ~n:8 D.Identity_other_id
           in
-          equal int 4 identities ;
-          equal int 4 (List.length (List.filter (( = ) "connect") evs)) ;
+          (* And the control connection. *)
+          equal int 5 identities ;
+          equal int 5 (List.length (List.filter (( = ) "connect") evs)) ;
           equal (list string) ["kill off proxy"]
             (List.filter (( <> ) "connect") evs) ;
           equal bool true off )
     ; test "the pool: no Kill_off when each check passes" (fun () ->
           let evs, identities, off = pool_run ~size:2 ~n:4 D.Identity_ok in
-          equal (list string) ["connect"; "connect"] evs ;
-          equal int 2 identities ;
+          equal (list string) ["connect"; "connect"; "connect"] evs ;
+          equal int 3 identities ;
           equal bool false off )
     ; test "the pool with kill=false: no round trip 3 and no Kill_off"
         (fun () ->

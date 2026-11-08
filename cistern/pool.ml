@@ -17,6 +17,14 @@ type conn = {c: Connection.t; owner: int Atomic.t}
 
 type outcome = Got of conn P.entry | Failed of Error.t | Abandoned
 
+(* An entry of the kill queue (the plan of phase 1.5, D4): the session to kill
+   on the server of its identity, and the token of its Killing slot. *)
+type kill_entry = {kid: int64; identity: Connection.identity; token: P.token}
+
+(* The control connection of the killer, outside the slots (D5). [used] is the
+   time of its open or of its last KILL. *)
+type control = {cc: Connection.t; mutable used: Span.t; limit: Span.t}
+
 (* The fibers that hold a [Tx] (phase 1.3). *)
 module Fibers = Set.Make (Fiber.Id)
 
@@ -33,12 +41,22 @@ type t =
   ; closed: bool Atomic.t
   ; sockets: int Atomic.t
   ; over_bound: int Atomic.t
-  ; kill_off: bool Atomic.t
-        (** [KILL] is off for the pool (the plan of phase 1.5, D6a). *)
+  ; kill_bell: Fiber.Semaphore.t  (** The doorbell of the killer. *)
+  ; mutable queue: kill_entry list  (** Under [mutex]: the oldest first. *)
+  ; mutable kill_off: bool
+        (** Under [mutex]: [KILL] is off for the pool (D6a). *)
+  ; mutable drained: bool
+        (** Under [mutex]: the shutdown took the last entries of the queue. *)
+  ; mutable control: control option
+        (** Only the killer writes it while it runs. The shutdown uses it after
+            the join of the scope (D5a). *)
+  ; control_sockets: int Atomic.t
   ; txs: Fibers.t Atomic.t }
 
 module Private = struct
   let after_op = ref ignore
+
+  let before_try = ref ignore
 
   let trace = ref ignore
 
@@ -48,7 +66,10 @@ module Private = struct
     ; cancel_in_reset: int
     ; expired_at_checkout: int
     ; stale_at_checkout: int
-    ; cancel_in_stale: int }
+    ; cancel_in_stale: int
+    ; kill_dropped: int
+    ; kill_retry: int
+    ; control_reopened: int }
 
   let waiter_lost = Atomic.make 0
 
@@ -62,13 +83,22 @@ module Private = struct
 
   let cancel_in_stale = Atomic.make 0
 
+  let kill_dropped = Atomic.make 0
+
+  let kill_retry = Atomic.make 0
+
+  let control_reopened = Atomic.make 0
+
   let counters () =
     { waiter_lost= Atomic.get waiter_lost
     ; checkin_lost= Atomic.get checkin_lost
     ; cancel_in_reset= Atomic.get cancel_in_reset
     ; expired_at_checkout= Atomic.get expired_at_checkout
     ; stale_at_checkout= Atomic.get stale_at_checkout
-    ; cancel_in_stale= Atomic.get cancel_in_stale }
+    ; cancel_in_stale= Atomic.get cancel_in_stale
+    ; kill_dropped= Atomic.get kill_dropped
+    ; kill_retry= Atomic.get kill_retry
+    ; control_reopened= Atomic.get control_reopened }
 
   let reset_counters () =
     List.iter
@@ -78,13 +108,24 @@ module Private = struct
       ; cancel_in_reset
       ; expired_at_checkout
       ; stale_at_checkout
-      ; cancel_in_stale ]
+      ; cancel_in_stale
+      ; kill_dropped
+      ; kill_retry
+      ; control_reopened ]
 
   let sockets t = Atomic.get t.sockets
 
   let over_bound t = Atomic.get t.over_bound
 
-  let kill_off t = Atomic.get t.kill_off
+  let kill_off t = Mutex.protect t.mutex (fun () -> t.kill_off)
+
+  let queue t =
+    Mutex.protect t.mutex (fun () -> List.map (fun e -> e.kid) t.queue)
+
+  let control t = Atomic.get t.control_sockets
+
+  let killing t =
+    Mutex.protect t.mutex (fun () -> List.length (P.killing_slots t.st))
 
   let idle_expiry t =
     Mutex.protect t.mutex (fun () ->
@@ -124,7 +165,12 @@ let create ?random ?(on_query = ignore) ~pool_size ~max_lifetime
   ; closed= Atomic.make false
   ; sockets= Atomic.make 0
   ; over_bound= Atomic.make 0
-  ; kill_off= Atomic.make false
+  ; kill_bell= Fiber.Semaphore.create ~max:1 0
+  ; queue= []
+  ; kill_off= false
+  ; drained= false
+  ; control= None
+  ; control_sockets= Atomic.make 0
   ; txs= Atomic.make Fibers.empty }
 
 (* The time of the pool: the span since its origin. *)
@@ -181,6 +227,103 @@ let discard t (e : conn P.entry) =
   checkin t e ~reusable:false ~dirty:e.dirty
 
 let emit t ev = try t.on_query ev with _ -> ()
+
+let dropped t kid reason =
+  Atomic.incr Private.kill_dropped ;
+  emit t (Event.Kill_dropped {connection_id= kid; reason})
+
+(* KILL goes off for the pool (D6a, review C2 of the plan, M-a): the flag, the
+   drop of the queue and the free of its Killing slots in one mutex section.
+   Only the first call gives the event. Then the effects of D4a: the doorbell of
+   the opener if wake, then the events, with Kill_dropped last. *)
+let turn_kill_off t reason =
+  let now = now t in
+  let r =
+    op t (fun s ->
+        if t.kill_off then (s, None)
+        else (
+          t.kill_off <- true ;
+          let gone = t.queue in
+          t.queue <- [] ;
+          let s, wake =
+            List.fold_left
+              (fun (s, _) e ->
+                let s, _, wake = P.killed s now e.token in
+                (s, wake) )
+              ( s
+              , (false
+                [@mutate
+                  off
+                    "with an empty queue the state does not change: an extra \
+                     doorbell only costs one tick of the opener"] ) )
+              gone
+          in
+          (s, Some (gone, wake)) ) )
+  in
+  match r with
+  | None ->
+      ()
+  | Some (gone, wake) ->
+      if wake then ring t ;
+      (* The killer closes its control connection. *)
+      ignore (Fiber.Semaphore.try_release t.kill_bell) ;
+      emit t (Event.Kill_off {reason}) ;
+      List.iter (fun e -> dropped t e.kid `Off) gone
+
+(* An entry whose statement can still run on the server (D1): the holder rule
+   aborts it first. Then one mutex section reads the flags kill_off and drained,
+   takes the token, and checks the duplicates and the bound of the queue (D4,
+   M-a). A full queue or a duplicate frees the slot in the same section. Then
+   the effects of D4a. *)
+let kill t (e : conn P.entry) =
+  abort t e.conn ;
+  let info = Connection.info e.conn.c in
+  let kid = info.connection_id in
+  let now = now t in
+  let r =
+    op t (fun s ->
+        match info.identity with
+        | Connection.Checked identity when not t.kill_off ->
+            if t.drained then
+              let s, _, wake =
+                P.checkin s now e
+                  ~reusable:
+                    (false
+                    [@mutate
+                      off
+                        "the pool is closed: a reusable checkin gives Abort, \
+                         which frees the slot in the same way, and the \
+                         connection is already aborted"] )
+                  ~dirty:e.dirty
+              in
+              (s, `Dropped (`Closed, wake))
+            else
+              let s, token, wake = P.killing s now e in
+              let full = List.length t.queue >= t.size in
+              if
+                full
+                || List.exists
+                     (fun q -> q.kid = kid && q.identity = identity)
+                     t.queue
+              then
+                let s, _, wake = P.killed s now token in
+                (s, `Dropped ((if full then `Queue_full else `Duplicate), wake))
+              else (
+                t.queue <- t.queue @ [{kid; identity; token}] ;
+                (s, `Queued wake) )
+        | Connection.Checked _ | Connection.Unchecked | Connection.Refused _ ->
+            let s, _, wake = P.checkin s now e ~reusable:false ~dirty:e.dirty in
+            (s, `Freed wake) )
+  in
+  match r with
+  | `Queued wake ->
+      if wake then ring t ;
+      ignore (Fiber.Semaphore.try_release t.kill_bell)
+  | `Freed wake ->
+      if wake then ring t
+  | `Dropped (reason, wake) ->
+      if wake then ring t ;
+      dropped t kid reason
 
 (* An abort of a connection that a holder holds (a [Tx]), with the count of the
    sockets. The checkin then discards the entry. *)
@@ -262,12 +405,11 @@ let connect t =
           (abort [@mutate off "connect fibers end before shutdown"]) t c ) ;
       if wake then ring t ;
       event None ;
-      (* The first refused identity turns KILL off for the pool, with one event:
-         a compare_and_set decides it, also across domains. *)
+      (* The first refused identity turns KILL off for the pool, with one event
+         (D6a). *)
       match info.identity with
       | Connection.Refused reason ->
-          if Atomic.compare_and_set t.kill_off false true then
-            emit t (Event.Kill_off {reason})
+          turn_kill_off t reason
       | Connection.Unchecked | Connection.Checked _ ->
           () )
   | Error err ->
@@ -449,9 +591,18 @@ let with_conn t ~start ~deadline f =
           (* The wake of cancel_wait comes with the Killing slots of the shell
              (phase 1.5c1a): before, no shell operation makes a Killing slot,
              thus cancel_wait has no work for the opener. *)
-          let s, _found, err, _wake = P.cancel_wait s at id in
-          (s, err) )
+          let s, _found, err, wake = P.cancel_wait s at id in
+          (s, (err, wake)) )
     in
+    let stored, wake = stored in
+    (* The removal of an expired Killing slot can start a connect (review C of
+       1.5a, L1). *)
+    ( if wake then ring t )
+    [@mutate
+      off
+        "the opener armed its timer at the age limit, and it fires anyway: the \
+         doorbell matters only when two fibers read the clock in one order and \
+         run their operations in the other order"] ;
     let give_up () =
       match cancel with
       | Some ex ->
@@ -553,10 +704,14 @@ let with_conn t ~start ~deadline f =
         if resets >= 1 then Reset_failed (c, err) else get (resets + 1)
     | Ran_step (outcome, event, held_end) ->
         ( match held_end with
+        | Give_back {dirty} when Connection.usable c && not (in_trans c) ->
+            give_back ~reusable:true ~dirty
+        | (Give_back _ | Discard) when Connection.in_flight c ->
+            (* The server can still run the last command (D1): KILL. *)
+            kill t e
         | Give_back {dirty} ->
-            let reusable = Connection.usable c && not (in_trans c) in
-            if not reusable then abort t e.conn ;
-            give_back ~reusable ~dirty
+            abort t e.conn ;
+            give_back ~reusable:false ~dirty
         | Discard ->
             discard t e ) ;
         Ran (outcome, event)
@@ -629,6 +784,228 @@ let exec t ~timeout stmt =
          Printexc.raise_with_backtrace ex bt )
         [@mutate off "the function of exec gives no Reraise"] )
 
+(* The killer (D5 to D9). *)
+
+let kill_limit () = Span.s 2
+
+let first_step () = Span.ms 100
+
+let max_step () = Span.s 5
+
+(* The abort of the control connection: its state is not known. *)
+let drop_control t =
+  match t.control with
+  | None ->
+      ()
+  | Some ctl ->
+      t.control <- None ;
+      if Connection.abort ctl.cc then Atomic.decr t.control_sockets
+
+(* The end of an entry: killed and the removal of the entry with this token, in
+   one mutex section (review C2 of the plan, M-b), then the doorbell of the
+   opener if wake (L-b). *)
+let finish_entry t token =
+  let now = now t in
+  let wake =
+    op t (fun s ->
+        let s, _, wake = P.killed s now token in
+        t.queue <- List.filter (fun q -> q.token <> token) t.queue ;
+        (s, wake) )
+  in
+  if wake then ring t
+
+(* One try of an entry, in its own shield with the limit of 2 s (D8). The
+   identity checks, KILL, and for a final result the end of the entry. *)
+let try_entry t ctl (e : kill_entry) ~last =
+  let info = Connection.info ctl.cc in
+  Fiber.shield (fun () ->
+      let r =
+        match
+          Fiber.with_timeout Clock.Mono (kill_limit ()) (fun () ->
+              (* Another fiber can turn KILL off and drop the entry after the
+                 killer read it (the drop of Kill_off empties the queue in the
+                 same section as the flag): then no KILL. A Kill_off that comes
+                 after this check and before the write of KILL does not stop it:
+                 the entry was valid when the check ran, and its identity checks
+                 follow (review C of 1.5c1a, L1). *)
+              if
+                Mutex.protect t.mutex (fun () ->
+                    not (List.exists (fun q -> q.token = e.token) t.queue) )
+              then `Dropped
+              else if
+                info.identity <> Connection.Checked e.identity
+                || e.kid = info.connection_id
+              then `Other
+              else
+                match Connection.kill ctl.cc e.kid with
+                | Ok Connection.Killed ->
+                    `Done `Killed
+                | Ok Connection.Gone ->
+                    `Done `Gone
+                | Ok Connection.Not_owner ->
+                    `Not_owner
+                | Error _ ->
+                    `Failed )
+        with
+        | r ->
+            r
+        | exception Fiber.Timeout ->
+            `Failed
+      in
+      ( match r with
+      | `Failed when not last ->
+          ()
+      | `Dropped ->
+          ()
+      | `Done _ | `Other | `Not_owner | `Failed ->
+          finish_entry t e.token ) ;
+      r )
+
+let killer t =
+  let address = address t.config in
+  let step = ref (first_step ()) and retry_at = ref None in
+  (* The token of an entry whose first try failed. *)
+  let failed_once = ref None in
+  let locked f = Mutex.protect t.mutex f in
+  let open_control () =
+    match !retry_at with
+    | Some at when Span.compare (now t) at < 0 ->
+        ()
+    | _ -> (
+        let t0 = Time.now Clock.Mono in
+        let event error =
+          emit t
+            (Event.Connect
+               { address
+               ; duration= Time.diff Clock.Mono (Time.now Clock.Mono) t0
+               ; error } )
+        in
+        match Connection.connect t.config with
+        | Ok c -> (
+            Atomic.incr t.control_sockets ;
+            let info = Connection.info c in
+            t.control <-
+              Some {cc= c; used= now t; limit= P.idle_limit info.wait_timeout} ;
+            step := first_step () ;
+            event None ;
+            (* A control connection that cannot verify an entry (D5a). *)
+            match info.identity with
+            | Connection.Refused reason ->
+                turn_kill_off t reason
+            | Connection.Checked _ | Connection.Unchecked ->
+                () )
+        | Error err ->
+            event (Some err) ;
+            retry_at := Some (add_span (now t) !step) ;
+            step :=
+              Span.of_ns
+                (Int64.min
+                   (Span.to_ns (max_step ()))
+                   (Int64.mul 2L (Span.to_ns !step)) ) )
+  in
+  (* D7: before each entry, the idle limit and the stale check. *)
+  let check_control () =
+    match t.control with
+    | Some ctl
+      when ( Span.compare
+               (Span.of_ns
+                  (Int64.sub (Span.to_ns (now t)) (Span.to_ns ctl.used)) )
+               ctl.limit
+           >= 0 )
+           [@mutate
+             off
+               "the boundary of one nanosecond: no test can place the check at \
+                the exact end of the idle limit"]
+           || Connection.stale ctl.cc ->
+        Atomic.incr Private.control_reopened ;
+        drop_control t
+    | _ ->
+        ()
+  in
+  let rec work () =
+    if locked (fun () -> t.kill_off) then drop_control t
+    else
+      match locked (fun () -> t.queue) with
+      | [] ->
+          ()
+      | e :: _ -> (
+          check_control () ;
+          match t.control with
+          | None ->
+              (* A new control connection can turn KILL off (D5a): start
+                 again. *)
+              open_control () ;
+              if t.control <> None then work ()
+          | Some ctl ->
+              let last = !failed_once = Some e.token in
+              !Private.before_try () ;
+              let t0 = Time.now Clock.Mono in
+              let r = try_entry t ctl e ~last in
+              ctl.used <- now t ;
+              let duration = Time.diff Clock.Mono (Time.now Clock.Mono) t0 in
+              ( match r with
+              (* The tokens are unique: a token of an entry that ended never
+                 comes again, thus failed_once needs no reset. *)
+              | `Dropped ->
+                  ()
+              | `Done outcome ->
+                  emit t (Event.Kill {connection_id= e.kid; duration; outcome})
+              | `Other ->
+                  dropped t e.kid `Other_server
+              | `Not_owner ->
+                  dropped t e.kid `Not_owner ; turn_kill_off t `Not_owner
+              | `Failed ->
+                  drop_control t ;
+                  if last then dropped t e.kid `Failed
+                  else (
+                    Atomic.incr Private.kill_retry ;
+                    failed_once := Some e.token ) ) ;
+              work () )
+  in
+  let iteration () =
+    let off = locked (fun () -> t.kill_off) in
+    if (not off) && t.control = None then open_control () ;
+    work () ;
+    let timer =
+      match (t.control, !retry_at) with
+      | None, Some at when not off -> (
+        match mono t at with Some m -> Time.at Clock.Mono m | None -> never )
+      | _ ->
+          never
+    in
+    sync (choose [Fiber.Semaphore.acquire t.kill_bell; timer])
+  in
+  let rec loop () =
+    ( match iteration () with
+    | () ->
+        ()
+    | exception (Fiber.Cancelled _ as e) ->
+        raise e
+    | exception _ ->
+        () ) ;
+    loop ()
+  in
+  loop ()
+
+(* The polite close of the control connection, at the shutdown. *)
+let close_control t =
+  match t.control with
+  | None ->
+      ()
+  | Some ctl ->
+      if
+        match Connection.close ctl.cc with
+        | first ->
+            first
+        | exception _ ->
+            true
+            [@mutate
+              off
+                "reached only when the polite closes of the slots used the \
+                 whole limit of 2 s: then the COM_QUIT of the control \
+                 connection runs in a cancelled fiber"]
+      then Atomic.decr t.control_sockets
+
 let shutdown t =
   Atomic.set t.closed true ;
   let now = now t in
@@ -640,13 +1017,32 @@ let shutdown t =
   List.iter
     (fun w -> ignore (Ivar.try_fill w (Failed Error.Connection_lost)))
     waiters ;
+  (* Phase 1.5c1a has no drain: the entries that remain are dropped, and their
+     slots are free. One mutex section takes them and sets [drained], thus a
+     later Kill frees its slot with Kill_dropped Closed. *)
+  let gone =
+    op t (fun s ->
+        t.drained <- true ;
+        let gone = t.queue in
+        t.queue <- [] ;
+        let s =
+          List.fold_left
+            (fun s e ->
+              let s, _, _ = P.killed s now e.token in
+              s )
+            s gone
+        in
+        (s, gone) )
+  in
+  List.iter (fun e -> dropped t e.kid `Closed) gone ;
   (* A polite close never raises, and it closes the flow in each case. After the
      limit of 2 s, each close runs in a cancelled fiber: a COM_QUIT that must
      wait raises at once, and its close closes the flow. *)
   Fiber.shield (fun () ->
       match
         Fiber.with_timeout Clock.Mono (Span.s 2) (fun () ->
-            List.iter (polite_close t) entries )
+            List.iter (polite_close t) entries ;
+            close_control t )
       with
       | () ->
           ()

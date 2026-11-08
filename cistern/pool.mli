@@ -139,6 +139,17 @@ val exec :
       "Db.t used after with_db" after {!shutdown}, and "Db.exec in the fiber of
       a Tx" in the fiber of a [Tx]. *)
 
+val killer : t -> unit
+(** [killer t] is the body of the killer daemon (DESIGN.md, "Cancel"): it opens
+    its control connection at once (with the backoff of the connects after a
+    failure), and sends [KILL CONNECTION] for each entry of the kill queue.
+    Before each entry, a control connection past its idle limit or stale is
+    closed and opened again. Each try runs in its own shield with a limit of 2
+    s. After a failure, the control connection is aborted and opened again
+    outside the shields, then the second try runs; after the second failure the
+    entry is dropped. A 1095 turns [KILL] off for the pool. The events come
+    after the shields. Only a cancel ends it. Start it only with [kill=true]. *)
+
 val shutdown : t -> unit
 (** [shutdown t] closes the pool, after the end of the opener: the waiters get
     [Connection_lost], and the idle connections and those to close get a polite
@@ -156,6 +167,12 @@ module Private : sig
       and another fiber can run in that window. It must not raise and must not
       see a cancel. The default does nothing. *)
 
+  val before_try : (unit -> unit) ref
+  (** Called by the killer after it read the head of the kill queue, before the
+      shield of the try. A test sets it to a shielded sleep, so that another
+      fiber can drop the entry in that window. It must not raise. The default
+      does nothing. *)
+
   val trace : (string -> unit) ref
   (** Called with ["fill"] before the fill of a waiter, and with ["ring"] before
       the doorbell of the opener. A test reads the order of the effects with it.
@@ -169,7 +186,11 @@ module Private : sig
     ; expired_at_checkout: int  (** Idle entries too old at a checkout. *)
     ; stale_at_checkout: int  (** Idle entries that the stale check found. *)
     ; cancel_in_stale: int
-          (** A cancel in the stale check (at the lock of a TLS session). *) }
+          (** A cancel in the stale check (at the lock of a TLS session). *)
+    ; kill_dropped: int  (** The [Kill_dropped] events. *)
+    ; kill_retry: int  (** A first try of a [KILL] that failed. *)
+    ; control_reopened: int
+          (** A control connection past its idle limit, or stale. *) }
 
   val counters : unit -> counters
 
@@ -179,7 +200,18 @@ module Private : sig
   (** The open sockets of the client. *)
 
   val kill_off : t -> bool
-  (** [KILL] is off for the pool: a connection gave a refused identity. *)
+  (** [KILL] is off for the pool: a connection gave a refused identity, or a
+      [KILL] gave 1095. *)
+
+  val queue : t -> int64 list
+  (** The connection ids of the kill queue, the oldest first. *)
+
+  val control : t -> int
+  (** The open control connections: 0 or 1. *)
+
+  val killing : t -> int
+  (** The [Killing] slots, also those past their age limit that no operation
+      removed. *)
 
   val over_bound : t -> int
   (** The count of the opens that found more than [pool_size] sockets: 0 in a

@@ -25,11 +25,11 @@
    reply to COMMIT.
 
    Phase 1.5: the greeting thread id and CONNECTION_ID() of each connection are
-   its number (the first is 1). The server answers the identity SELECT of round
-   trip 3 (MySQL form) after round trip 2, outside the commands and the log,
-   with the fault [identity]. "KILL CONNECTION n" ends the connection n (its
-   flow closes, as a real KILL), and gives an OK, 1094 for no such connection,
-   or the code of the fault [kill_err].
+   its number (the first is 1), or [id_of] of it. The server answers the
+   identity SELECT of round trip 3 (MySQL form) after round trip 2, outside the
+   commands and the log, with the fault [identity]. "KILL CONNECTION n" ends the
+   connection n (its flow closes, as a real KILL), and gives an OK, 1094 for no
+   such connection, or the code of the fault [kill_err].
 
    COM_PING, COM_INIT_DB and COM_RESET_CONNECTION give an OK, COM_QUIT ends the
    connection. The faults are mutable, so that a test can change them in its
@@ -91,7 +91,15 @@ type faults =
             configuration (phase 1.4). *)
   ; mutable identity: identity_fault
   ; mutable server_uuid: string  (** The [@@server_uuid] of round trip 3. *)
-  ; mutable kill_err: int option  (** KILL CONNECTION gives an ERR. *) }
+  ; mutable kill_err: int option  (** KILL CONNECTION gives an ERR. *)
+  ; mutable kill_ms: int  (** Before the reply of KILL CONNECTION. *)
+  ; mutable kill_close: int
+        (** The next [kill_close] KILLs end their own connection, with no reply.
+        *)
+  ; mutable id_of: int -> int
+        (** The thread id and CONNECTION_ID() of the connection [n]: [n] by
+            default. Two connections with one id make a duplicate, or the id of
+            the control connection. *) }
 
 type t =
   { faults: faults
@@ -129,7 +137,10 @@ let no_faults () =
   ; tls= None
   ; identity= Identity_ok
   ; server_uuid= "5c607771-db0a-11f1-86e8-e86538021fcd"
-  ; kill_err= None }
+  ; kill_err= None
+  ; kill_ms= 0
+  ; kill_close= 0
+  ; id_of= Fun.id }
 
 (* An INT column with the binary set. *)
 let int_column name =
@@ -246,6 +257,10 @@ let commit db tx flow =
 (* KILL CONNECTION n: the flow of the connection n closes, as the server ends a
    killed session with no packet (claim C30). *)
 let kill db flow n =
+  if db.faults.kill_ms > 0 then Time.sleep Mono (Span.ms db.faults.kill_ms) ;
+  if db.faults.kill_close > 0 then (
+    db.faults.kill_close <- db.faults.kill_close - 1 ;
+    raise Stop ) ;
   match db.faults.kill_err with
   | Some code ->
       send flow 1 (F.err code "kill")
@@ -425,7 +440,7 @@ let command ?first db tx flow r =
 
 let serve db flow =
   db.connects <- db.connects + 1 ;
-  let number = db.connects in
+  let number = db.faults.id_of db.connects in
   db.open_now <- db.open_now + 1 ;
   db.open_max <- Int.max db.open_max db.open_now ;
   db.handshaking <- db.handshaking + 1 ;
@@ -519,9 +534,11 @@ let serve db flow =
 
 let address = "10.0.0.9:3306"
 
-let config ?(password = "pw") () =
+(* With [kill=false] by default: the killer and its control connection come only
+   in the tests of KILL (phase 1.5c1a). *)
+let config ?(password = "pw") ?(kill = false) () =
   Result.get_ok
-    (Cistern_mysql.Config.make ~tls:Cistern_mysql.Config.No_tls
+    (Cistern_mysql.Config.make ~kill ~tls:Cistern_mysql.Config.No_tls
        ~address:(Cistern_mysql.Config.Tcp {host= "10.0.0.9"; port= 3306})
        ~user:"u" ~password ~database:"db" () )
 

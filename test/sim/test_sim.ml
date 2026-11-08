@@ -22,6 +22,7 @@ let () =
          ; Test_connect.ping_tests
          ; Test_tls.tests
          ; Test_identity.tests
+         ; Test_kill.tests
          ; Test_query.tests
          ; Test_query.pool_tests
          ; Test_pool.tests
