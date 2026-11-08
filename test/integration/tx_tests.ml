@@ -423,6 +423,36 @@ let deterministic =
                 (events_of events "ROLLBACK TO SAVEPOINT cistern_sp_2") ;
               equal ~msg:"the write of the second savepoint is gone" string
                 "1,2,4" (ids "sp") ) )
+    ; test "a caught cancel in a savepoint: the Tx fails, nothing committed"
+        (fun () ->
+          (* Phase 5a0: the cancel comes in the code of the program in the
+             scope, after its write, and the callback catches it. *)
+          with_table "cc" (fun db _ ->
+              let inner = ref "" and later = ref "" in
+              let r =
+                Db.transaction db (fun tx ->
+                    insert tx "cc" 1 ;
+                    ( match
+                        Fiber.with_timeout mono (Span.ms 20) (fun () ->
+                            Tx.savepoint tx (fun tx ->
+                                insert tx "cc" 2 ;
+                                Fiber.shield (fun () ->
+                                    Time.sleep mono (Span.ms 100) ) ;
+                                Fiber.check_cancel () ;
+                                insert tx "cc" 3 ) )
+                      with
+                    | r ->
+                        inner := ok_text r
+                    | exception Fiber.Timeout ->
+                        inner := "cancelled" ) ;
+                    later :=
+                      ok_text (Tx.exec tx (x "INSERT INTO cc (id) VALUES (4)")) ;
+                    "v" )
+              in
+              equal ~msg:"the savepoint" string "cancelled" !inner ;
+              equal ~msg:"the later statement" string "Connection_lost" !later ;
+              equal ~msg:"the transaction" string "Connection_lost" (tx_text r) ;
+              equal ~msg:"no row" string "" (ids "cc") ) )
     ; test "the first-word check and the fiber check: no I/O" (fun () ->
           with_table "fc" (fun db events ->
               let refused = ref [] in

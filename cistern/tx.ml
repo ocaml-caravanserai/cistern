@@ -204,6 +204,13 @@ let in_savepoint tx g =
               (kind outcome)
           with
           | R.Sp_cancel ->
+              (* A cancel in the body or after it, with no command in run (a
+                 cancel in a command fails the Tx there): the connection stays
+                 usable, and the part of the body that ran is in the
+                 transaction. The Tx fails, so that no later statement and no
+                 COMMIT run: if the callback catches the cancel, the end sends
+                 ROLLBACK, and Connection_lost tells only "not committed". *)
+              cancelled tx Error.Connection_lost ;
               raise (Option.get cancel)
           | R.Sp_reraise rollback ->
               if rollback then rollback_to () ;

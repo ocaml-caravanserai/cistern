@@ -729,8 +729,10 @@ let tests =
           , (fun _ _ ->
               Time.sleep Mono (Span.s 1) ;
               7 )
-          , "cancelled / Ok"
-          , ["START TRANSACTION"; "SAVEPOINT cistern_sp_1"; "COMMIT"] ) ]
+            (* Phase 5a0: the Tx fails, and the end rolls back. Before, the row
+               expected Ok and a COMMIT. *)
+          , "cancelled / Connection_lost"
+          , ["START TRANSACTION"; "SAVEPOINT cistern_sp_1"; "ROLLBACK"] ) ]
         (fun (name, g, expected, expected_cmds) ->
           let cut = String.ends_with ~suffix:"Cancelled" name in
           let (r, cmds), _ =
@@ -1591,7 +1593,64 @@ let atomic_in_tx =
              Between two commands: the callback caught the cancel, and the end
              sends ROLLBACK on the usable connection. *)
           ignore connects ;
-          equal (list string) ends (end_events events) ) ]
+          equal (list string) ends (end_events events) )
+    ; cases "a caught cancel in the body of Tx.savepoint: the Tx fails (5a0)"
+        ~id:(fun (n, _, _) -> n)
+        [ ( "one savepoint"
+          , (fun tx body -> Tx.savepoint tx body)
+          , ["SAVEPOINT cistern_sp_1"; "UPDATE a"] )
+        ; ( "a nested savepoint"
+          , (fun tx body ->
+              ignore (Tx.savepoint tx (fun tx -> Tx.exec_exn tx (x "UPDATE n"))) ;
+              Tx.savepoint tx (fun tx ->
+                  ignore (Tx.exec_exn tx (x "UPDATE o")) ;
+                  match Tx.savepoint tx body with
+                  | Ok () ->
+                      ()
+                  | Error e ->
+                      raise (Cistern.Cistern_error e) ) )
+          , [ "SAVEPOINT cistern_sp_1"
+            ; "UPDATE n"
+            ; "RELEASE SAVEPOINT cistern_sp_1"
+            ; "SAVEPOINT cistern_sp_2"
+            ; "UPDATE o"
+            ; "SAVEPOINT cistern_sp_3"
+            ; "UPDATE a" ] )
+        ; ( "a cancel at the end of the body, with no check in it"
+          , (fun tx _ ->
+              Tx.savepoint tx (fun tx ->
+                  ignore (Tx.exec_exn tx (x "UPDATE a")) ;
+                  Fiber.shield (fun () -> Time.sleep Mono (Span.ms 50)) ) )
+          , ["SAVEPOINT cistern_sp_1"; "UPDATE a"] ) ]
+        (fun (_, run, middle) ->
+          let r, inner, cmds, _, events =
+            run_tx (fun _ note tx ->
+                step note (Tx.exec tx (x "UPDATE p")) ;
+                ( match
+                    Fiber.with_timeout Mono (Span.ms 20) (fun () ->
+                        run tx (fun tx ->
+                            ignore (Tx.exec_exn tx (x "UPDATE a")) ;
+                            Fiber.shield (fun () ->
+                                Time.sleep Mono (Span.ms 50) ) ;
+                            Fiber.check_cancel () ;
+                            ignore (Tx.exec_exn tx (x "UPDATE b")) ) )
+                  with
+                | r ->
+                    step note r
+                | exception Fiber.Timeout ->
+                    note "cancelled" ) ;
+                (* The Tx does not continue. *)
+                step note (Tx.exec tx (x "UPDATE q")) )
+          in
+          equal string "Connection_lost" r ;
+          equal string "Ok / cancelled / Connection_lost" inner ;
+          (* No UPDATE b, UPDATE q or COMMIT: the end rolls back the part of the
+             body that ran. *)
+          equal (list string)
+            (("START TRANSACTION" :: "UPDATE p" :: middle) @ ["ROLLBACK"])
+            cmds ;
+          equal (list string) ["query \"ROLLBACK\" done 0"] (end_events events) )
+    ]
 
 (* The storm of Db.transaction and Db.exec (the plan of phase 1.3, 4.2, and the
    assertions of review C2). [fibers] fibers on 4 virtual domains and a pool of
@@ -1731,6 +1790,33 @@ let tx_storm ?(tls = false) ?(kill = false) ~fibers ~seed ~seam () =
                                              statement () ;
                                              raise (E.Cistern_error E.Not_found) )
                                         )
+                                  | 2 when Random.State.int rs 8 = 0 -> (
+                                    (* Phase 5a0: a savepoint whose body gets a
+                                       cancel that the callback catches. Then
+                                       the Tx fails: the next statement gives an
+                                       error, with no command. *)
+                                    match
+                                      Fiber.with_timeout Mono (Span.us 500)
+                                        (fun () ->
+                                          Tx.savepoint tx (fun _ ->
+                                              statement () ;
+                                              Fiber.shield (fun () ->
+                                                  Time.sleep Mono (Span.ms 1) ) ) )
+                                    with
+                                    | _ ->
+                                        ()
+                                    | exception Fiber.Timeout -> (
+                                      match
+                                        Tx.exec tx
+                                          (x
+                                             (Printf.sprintf "UPDATE c%d_%d" i k) )
+                                      with
+                                      | Ok _ ->
+                                          failwith
+                                            "a Tx continued after a caught \
+                                             cancel"
+                                      | Error _ ->
+                                          () ) )
                                   | _ ->
                                       statement () ) ;
                                   Time.sleep Mono
