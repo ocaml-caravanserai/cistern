@@ -51,6 +51,55 @@ val exec :
     an [Error.t]: [Weft.Fiber.Cancelled] goes up, and the pool aborts the
     connection. *)
 
+val push_schema :
+     ?timeout:Weft.Span.t
+  -> t
+  -> (module Cistern_core.Model_intf.MODEL) list
+  -> unit
+(** [push_schema db models] makes the tables of [models] that do not exist
+    (DESIGN.md, "DDL"):
+
+    + {!Cistern_core.Schema.check} of the models. Its messages raise
+      [Invalid_argument], with no connect.
+    + Its own connection, outside the pool (each call that runs adds one session
+      on the server), with [kill=false] (no round trip 3), a [Connect] event,
+      and the deadline [timeout] (default 30 s) for the connect and the
+      statements.
+    + [SET foreign_key_checks = 0, lock_wait_timeout = <n>]: [n] is the time
+      left at the [SET] in whole seconds, minus 1 s, rounded up, at least 1.
+      Thus the server gives 1205 for a metadata lock of the first table before
+      the deadline. For a later table, less time is left, and the deadline can
+      come first ([Timeout]).
+    + One [CREATE TABLE IF NOT EXISTS] for each model, in order, each with a
+      [Query] event. It never changes a table that exists.
+    + The close of the connection.
+
+    An error raises [Cistern_error]: [Connect] for a failed connect, [Timeout]
+    at the deadline, [Retryable `Lock_timeout] for 1205, and the error of the
+    server for a failed statement. The connection is then aborted. The tables of
+    the statements before the error exist, and [push_schema] can run again. An
+    empty list does nothing.
+
+    @raise Invalid_argument
+      after {!with_db}, in the fiber of a [Tx] (DDL commits the transaction and
+      waits for its metadata lock), or for a model that the checks refuse. *)
+
+val check_schema :
+  t -> (module Cistern_core.Model_intf.MODEL) list -> (unit, string list) result
+(** [check_schema db models] compares the tables of the database with [models]
+    (DESIGN.md, "DDL"). [Error] holds the messages of
+    {!Cistern_core.Schema.check}, or one message for each difference of
+    {!Cistern_sql.Ddl.compare}. It reads [information_schema.COLUMNS] with one
+    statement through the pool (with a [Query] event, and the names of the
+    tables as [?]). An empty list gives [Ok ()]. A table that the user of the
+    pool has no privilege on is not in [information_schema] for this user, thus
+    it shows as missing.
+
+    @raise Cistern_error
+      for an error of the pool, the connection or the server: it is not a
+      difference.
+    @raise Invalid_argument after {!with_db} or in the fiber of a [Tx]. *)
+
 val transaction :
   ?timeout:Weft.Span.t -> t -> (Tx.t -> 'a) -> ('a, Cistern_core.Error.t) result
 (** [transaction db f] runs [f] in a transaction on one connection of the pool

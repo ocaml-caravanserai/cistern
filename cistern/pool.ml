@@ -366,6 +366,8 @@ let kill t (e : conn P.entry) =
    sockets. The checkin then discards the entry. *)
 let abort_conn t c = release t (Connection.abort c)
 
+let config t = t.config
+
 let check_open t =
   if Atomic.get t.closed then invalid_arg "Db.t used after with_db"
 

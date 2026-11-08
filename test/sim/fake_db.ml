@@ -70,6 +70,7 @@ type scripted =
       (** The columns, these rows, then an ERR with this code in place of the
           end of the result set. *)
   | No_reply  (** The end of the connection, with no reply. *)
+  | Delay of int * scripted  (** The reply after this many ms (phase 2e). *)
 
 (** The reply to the identity SELECT of round trip 3. *)
 type identity_fault =
@@ -85,6 +86,10 @@ type identity_fault =
 type faults =
   { mutable refuse: bool  (** Accept, then close at once. *)
   ; mutable hang_greeting: bool  (** Send no greeting. *)
+  ; mutable greeting_ms: int  (** Before the greeting (phase 2e). *)
+  ; mutable version: string
+        (** The [@@version] of round trip 1 (phase 2e): a version with [MariaDB]
+            makes a MariaDB server. *)
   ; mutable latency_ms: int  (** Before each reply of a command. *)
   ; mutable reset_after: int option
         (** Reset the connection after this number of commands. *)
@@ -140,6 +145,8 @@ type t =
 let no_faults () =
   { refuse= false
   ; hang_greeting= false
+  ; greeting_ms= 0
+  ; version= "8.4.11"
   ; latency_ms= 0
   ; reset_after= None
   ; idle_4031_ms= None
@@ -230,7 +237,7 @@ let session db n =
           Some (if db.faults.rollback_on_timeout then "1" else "0")
       | _ ->
           v )
-    (F.session ())
+    (F.session ~version:db.faults.version ())
 
 (* The state of the transaction of one connection. *)
 type tx = {mutable open_: bool; mutable savepoints: string list}
@@ -295,7 +302,10 @@ let kill db flow n =
         send flow 1 (F.err 1094 "unknown thread") )
 
 (* The reply of a script, with the status of the transaction. *)
-let scripted tx flow = function
+let rec scripted tx flow = function
+  | Delay (ms, s) ->
+      Time.sleep Mono (Span.ms ms) ;
+      scripted tx flow s
   | Rows rows ->
       let n = match rows with r :: _ -> List.length r | [] -> 1 in
       sends flow 1
@@ -516,6 +526,8 @@ let serve db flow =
       match
         if db.faults.refuse then raise Stop ;
         if db.faults.hang_greeting then sync never ;
+        if db.faults.greeting_ms > 0 then
+          Time.sleep Mono (Span.ms db.faults.greeting_ms) ;
         let thread =
           match db.faults.identity with
           | Identity_greeting ->
