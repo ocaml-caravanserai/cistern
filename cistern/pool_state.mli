@@ -15,9 +15,15 @@
     The slots: the idle entries (a stack, the last checkin first), the entries
     in use (by a fiber, or given to a waiter), the running connects, and the
     entries that wait for a polite close by the opener ([closing], in two parts:
-    to close, and in close). Each keeps its slot. Thus
-    [idle + in_use + opening + closing <= size] always. Phase 1.5 adds the
-    [Killing] slots in the same way. *)
+    to close, and in close), and the [Killing] slots. Each keeps its slot. Thus
+    [idle + in_use + opening + closing + killing <= size] always.
+
+    A [Killing] slot is the slot of a connection that the shell aborted while
+    its statement can still run on the server (DESIGN.md, "Cancel"). The slot
+    stays until the killer sends [KILL] ({!killed}), or until its age limit of
+    30 s. Each operation first removes the [Killing] slots whose age limit is at
+    or before its [now]. Thus each operation, {!next_timer} and [wake] see such
+    a slot as free, also when no operation ran since its age limit. *)
 
 type time = Weft.Span.t
 
@@ -59,6 +65,11 @@ type waiter_id
 
 val waiter_id : waiter_id -> int
 
+(** The token of a [Killing] slot. Each {!killing} gives a new token. *)
+type token
+
+val token_id : token -> int
+
 type ('c, 'w) checkout =
   | Conn of 'c entry  (** An idle entry within its life and its idle limit. *)
   | Wait of waiter_id  (** The waiter went to the tail of the queue. *)
@@ -74,9 +85,10 @@ val cancel_wait :
      ('c, 'w) t
   -> time
   -> waiter_id
-  -> ('c, 'w) t * bool * Cistern_core.Error.t option
+  -> ('c, 'w) t * bool * Cistern_core.Error.t option * bool
 (** [cancel_wait s now id] removes the waiter. It gives [true] if the waiter was
-    in the queue, and the stored connect error. *)
+    in the queue, the stored connect error, and [wake]: the removal of an
+    expired [Killing] slot can let another waiter get a connect. *)
 
 type ('c, 'w) handed =
   | Give of 'w * 'c entry  (** To the oldest waiter: the entry stays in use. *)
@@ -109,10 +121,13 @@ val tick : ('c, 'w) t -> time -> ('c, 'w) t * ('c, 'w) tick
 (** [tick s now] is the work of the opener. *)
 
 val next_timer : ('c, 'w) t -> time -> time option
-(** [next_timer s now] is [Some t] only if [t] is later than [now] and [tick] at
-    [t], with no other operation, starts a connect: the end of the backoff of
-    the connects, when a waiter needs a connect and a slot is free. Else [None].
-    The opener waits for this time or for its doorbell. *)
+(** [next_timer s now] is the earliest [t] later than [now] at which [tick],
+    with no other operation, starts a connect. The candidates are the end of the
+    backoff of the connects and the age limits of the [Killing] slots. Thus an
+    age limit before the end of the backoff gives the end of the backoff. [None]
+    if no candidate starts a connect, or if [tick] at [now] starts a connect
+    (that tick gives the timer of its new state). The opener waits for this time
+    or for its doorbell. *)
 
 type ('c, 'w) opened =
   | Opened_give of 'w * 'c entry  (** To the oldest waiter. *)
@@ -147,11 +162,23 @@ val closed_done : ('c, 'w) t -> time -> int -> ('c, 'w) t * bool
     to close. Its slot is free. Another [id] changes nothing. *)
 
 val close_all : ('c, 'w) t -> time -> ('c, 'w) t * 'w list * 'c entry list
-(** [close_all s now] closes the pool. It gives the waiters (the shell fails
-    them with [Connection_lost]) and the idle entries, the entries to close and
-    the entries in close (the shell closes them; a second close of an entry in
-    close does nothing). The entries in use and the running connects come back
-    later: {!checkin} and {!opened} then give [Abort] and [Opened_close]. *)
+(** [close_all s now] closes the pool. The [Killing] slots stay. It gives the
+    waiters (the shell fails them with [Connection_lost]) and the idle entries,
+    the entries to close and the entries in close (the shell closes them; a
+    second close of an entry in close does nothing). The entries in use and the
+    running connects come back later: {!checkin} and {!opened} then give [Abort]
+    and [Opened_close]. *)
+
+val killing : ('c, 'w) t -> time -> 'c entry -> ('c, 'w) t * token * bool
+(** [killing s now e]: the shell aborted the entry [e] in use, and its statement
+    can still run on the server. The slot stays as a [Killing] slot with a new
+    token, until {!killed} of the token or until [now + 30 s] (the age limit).
+    This also holds on a closed pool: the drain frees the slot. *)
+
+val killed : ('c, 'w) t -> time -> token -> ('c, 'w) t * bool * bool
+(** [killed s now tok] frees the [Killing] slot of [tok]. It gives [true] if the
+    slot was there, and [wake]. A token whose slot passed its age limit, or a
+    token that {!killed} already freed, changes nothing. *)
 
 (** {1 Reading} *)
 
@@ -181,8 +208,13 @@ val last_dialect : ('c, 'w) t -> Cistern_core.Dialect.t option
 
 val backoff_end : ('c, 'w) t -> time option
 
+val killing_slots : ('c, 'w) t -> (token * time) list
+(** The [Killing] slots with their age limits, the oldest first. A slot past its
+    age limit stays in this list until the next operation. *)
+
 val free : ('c, 'w) t -> int
-(** [size − (idle + in_use + opening + closing)]. *)
+(** [size − (idle + in_use + opening + closing + killing)], with each slot of
+    {!killing_slots}. *)
 
 val demand : ('c, 'w) t -> int
 (** The waiters that no running connect serves: [waiting − opening], at least 0.

@@ -72,6 +72,174 @@ let tick o now =
 let failed o now =
   step o now "open_failed" (fun s now -> P.open_failed s now failure)
 
+(* A pool of 1 whose entry is in use by the waiter 0, opened at time 0. *)
+let one_in_use () =
+  let o = checkout (start 1) 0 0 in
+  let o = tick o 0 in
+  let st, r, wake =
+    P.opened o.st Span.zero "c0" ~wait_timeout:100 ~dialect:mysql ~u:0.
+  in
+  let e = match r with P.Opened_give (_, e) -> e | _ -> fail "no give" in
+  ({o with st; bell= o.bell || wake}, e)
+
+let killing o now e =
+  let tok = ref None in
+  let o =
+    step o now "killing" (fun s now ->
+        let s, k, wake = P.killing s now e in
+        tok := Some k ;
+        (s, wake) )
+  in
+  (o, Option.get !tok)
+
+let slots_text st =
+  String.concat ";"
+    (List.map
+       (fun (k, a) -> Printf.sprintf "%d@%s" (P.token_id k) (ms_text a))
+       (P.killing_slots st) )
+
+let killing_tests =
+  [ test "the stall of review C: an expired Killing slot and a later checkout"
+      (fun () ->
+        (* A pool of 1. At 1 s the entry becomes a Killing slot (age limit 31
+           s), with no waiter: no wake and no timer. At 41 s no operation has
+           removed the slot. A checkout waits, and it must wake the opener,
+           because the slot is free at its time. *)
+        let o, e = one_in_use () in
+        let o = tick o 0 in
+        let o, tok = killing o 1000 e in
+        equal int 0 (P.token_id tok) ;
+        equal bool false o.bell ;
+        equal string "none" (span_text (P.next_timer o.st (ms 1000))) ;
+        equal string "0@31000ms" (slots_text o.st) ;
+        equal int 0 (P.free o.st) ;
+        let st, r, wake = P.checkout o.st (ms 41000) 7 in
+        is_true (match r with P.Wait _ -> true | _ -> false) ;
+        equal bool true wake ;
+        equal string "" (slots_text st) ;
+        equal int 1 (P.free st) ;
+        let _, t = P.tick st (ms 41000) in
+        equal int 1 t.connects )
+  ; test "the timer at the age limit of a Killing slot" (fun () ->
+        (* The waiter comes first: the timer is the age limit, and a tick at it
+           starts the connect. *)
+        let o, e = one_in_use () in
+        let o = tick o 0 in
+        let o, _ = killing o 1000 e in
+        let o = checkout o 2000 8 in
+        equal bool true o.bell ;
+        equal string "31000ms" (span_text (P.next_timer o.st (ms 2000))) ;
+        let o = tick o 2000 in
+        equal string "31000ms" (span_text o.armed) ;
+        let _, t = P.tick o.st (ms 30999) in
+        equal int 0 t.connects ;
+        let _, t = P.tick o.st (ms 31000) in
+        equal int 1 t.connects )
+  ; test
+      "an age limit before the end of the backoff gives the end of the backoff"
+      (fun () ->
+        (* Size 2, two waiters, two connects. The first gives its entry to a
+           waiter, and the entry becomes a Killing slot at 950 ms (age limit
+           30950 ms). The second connect fails at 30900 ms: the backoff ends at
+           31000 ms. At the age limit a slot is free, but the backoff stops the
+           connect. *)
+        let s = with_waiters 2 2 in
+        let s, t = P.tick s Span.zero in
+        equal int 2 t.connects ;
+        let s, r, _ =
+          P.opened s Span.zero "c0" ~wait_timeout:100 ~dialect:mysql ~u:0.
+        in
+        let e =
+          match r with P.Opened_give (_, e) -> e | _ -> fail "no give"
+        in
+        let s, _, _ = P.killing s (ms 950) e in
+        let s, wake = P.open_failed s (ms 30900) failure in
+        equal bool true wake ;
+        equal string "31000ms" (span_text (P.backoff_end s)) ;
+        equal string "31000ms" (span_text (P.next_timer s (ms 30900))) ;
+        let _, t = P.tick s (ms 30950) in
+        equal int 0 t.connects ;
+        let _, t = P.tick s (ms 31000) in
+        equal int 1 t.connects )
+  ; test "no free slot: the end of the backoff after the earliest age limit"
+      (fun () ->
+        (* A state with no free slot, the end of the backoff at 100 ms, and an
+           age limit at 50 ms. No operation assumes that the time grows, thus
+           the killing at -29950 ms is permitted. At 50 ms a slot is free, but
+           the backoff stops the connect until 100 ms (review C of 1.5a, M1: the
+           closed form takes the later of the two). *)
+        let s = P.create ~size:2 ~max_lifetime:(Span.s 10) in
+        let s, _, _ = P.checkout s Span.zero 1 in
+        let s, _ = P.tick s Span.zero in
+        let s, r, _ =
+          P.opened s Span.zero "a" ~wait_timeout:100 ~dialect:mysql ~u:0.
+        in
+        let a =
+          match r with P.Opened_give (_, e) -> e | _ -> fail "no give"
+        in
+        let s, _, _ = P.checkout s Span.zero 2 in
+        let s, _ = P.tick s Span.zero in
+        let s, _ = P.open_failed s Span.zero failure in
+        let s, t = P.tick s (ms 100) in
+        equal int 1 t.connects ;
+        let s, _, _ = P.killing s (ms (-29950)) a in
+        let s, _, _ = P.checkout s (ms (-29900)) 3 in
+        equal int 0 (P.free s) ;
+        equal string "100ms" (span_text (P.next_timer s (ms 10))) ;
+        let _, t = P.tick s (ms 50) in
+        equal int 0 t.connects ;
+        let _, t = P.tick s (ms 100) in
+        equal int 1 t.connects )
+  ; test "killed: one time, and not after the age limit" (fun () ->
+        let o, e = one_in_use () in
+        let s, tok, _ = P.killing o.st (ms 1000) e in
+        let s2, freed, _ = P.killed s (ms 2000) tok in
+        equal bool true freed ;
+        equal int 1 (P.free s2) ;
+        let _, freed, _ = P.killed s2 (ms 3000) tok in
+        equal bool false freed ;
+        (* At the age limit the slot is already free. *)
+        let s3, freed, _ = P.killed s (ms 31000) tok in
+        equal bool false freed ;
+        equal string "" (slots_text s3) ;
+        (* 1 ns before it, killed frees it. *)
+        let _, freed, _ =
+          P.killed s (Span.of_ns (Int64.pred (Span.to_ns (ms 31000)))) tok
+        in
+        equal bool true freed )
+  ; test "the tokens are unique, and killed frees only its slot" (fun () ->
+        let s = with_waiters 2 2 in
+        let s, _ = P.tick s Span.zero in
+        let open_one s =
+          let s, r, _ =
+            P.opened s Span.zero "c" ~wait_timeout:100 ~dialect:mysql ~u:0.
+          in
+          (s, match r with P.Opened_give (_, e) -> e | _ -> fail "no give")
+        in
+        let s, a = open_one s in
+        let s, b = open_one s in
+        let s, ta, _ = P.killing s (ms 1000) a in
+        let s, tb, _ = P.killing s (ms 2000) b in
+        equal string "0@31000ms;1@32000ms" (slots_text s) ;
+        let s, _, _ = P.killed s (ms 3000) tb in
+        equal string "0@31000ms" (slots_text s) ;
+        ignore ta )
+  ; test "close_all keeps the Killing slots" (fun () ->
+        let o, e = one_in_use () in
+        let s, tok, _ = P.killing o.st (ms 1000) e in
+        let s, _, _ = P.close_all s (ms 2000) in
+        equal string "0@31000ms" (slots_text s) ;
+        let s, freed, wake = P.killed s (ms 3000) tok in
+        equal bool true freed ;
+        equal bool false wake ;
+        equal int 1 (P.free s) )
+  ; test "an age limit too large for a span" (fun () ->
+        let o, e = one_in_use () in
+        let late = Span.of_ns (Int64.sub Int64.max_int 1_000_000_000L) in
+        let s, _, _ = P.killing o.st late e in
+        equal (list int64) [Int64.max_int]
+          (List.map (fun (_, a) -> Span.to_ns a) (P.killing_slots s)) ) ]
+
 let tests =
   group "Pool_state"
     [ test "S0: a failed connect arms a timer that the opener knows" (fun () ->
@@ -85,7 +253,8 @@ let tests =
           let o = tick {o with st} 0 in
           let o = failed o 1 in
           (* cancel_wait gives no wake: the waiter leaves, the demand is 0. *)
-          let st, _, _ = P.cancel_wait o.st (ms 2) id in
+          let st, _, _, wake = P.cancel_wait o.st (ms 2) id in
+          equal bool false wake ;
           let o = tick {o with st} 3 in
           ignore (checkout o 50 2) )
     ; test "S2: two connects fail while the opener waits" (fun () ->
@@ -228,4 +397,5 @@ let tests =
             P.opened s Span.zero "c0" ~wait_timeout:100
               ~dialect:Cistern_core.Dialect.Mariadb ~u:0.
           in
-          is_true (P.last_dialect s = Some Cistern_core.Dialect.Mariadb) ) ]
+          is_true (P.last_dialect s = Some Cistern_core.Dialect.Mariadb) )
+    ; group "the Killing slots" killing_tests ]

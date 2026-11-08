@@ -21,6 +21,10 @@ type waiter_id = int
 
 let waiter_id id = id
 
+type token = int
+
+let token_id tok = tok
+
 (* A queue as two lists: the front, and the back in reverse order. *)
 type 'a queue = {front: 'a list; back: 'a list}
 
@@ -57,14 +61,19 @@ type ('c, 'w) t =
   ; backoff_step: Span.t
   ; closed: bool
   ; last_dialect: Dialect.t option
+  ; killing: (token * time) list
+        (* The Killing slots with their age limits, the oldest first. *)
   ; next_entry: int
-  ; next_waiter: int }
+  ; next_waiter: int
+  ; next_token: int }
 
 let first_step () = Span.ms 100
 
 let max_step () = Span.s 5
 
 let max_connects = 2
+
+let age_limit () = Span.s 30
 
 let create ~size ~max_lifetime =
   if size < 1 || size > 1000 then
@@ -84,8 +93,10 @@ let create ~size ~max_lifetime =
   ; backoff_step= first_step ()
   ; closed= false
   ; last_dialect= None
+  ; killing= []
   ; next_entry= 0
-  ; next_waiter= 0 }
+  ; next_waiter= 0
+  ; next_token= 0 }
 
 (* The arithmetic of spans, with no overflow: None if the sum is too large. *)
 let add a b =
@@ -107,7 +118,12 @@ let min_span a b = if a <. b then a else b
 let free s =
   s.size
   - ( List.length s.idle + s.in_use + s.opening + List.length s.to_close
-    + List.length s.in_close )
+    + List.length s.in_close + List.length s.killing )
+
+(* The Killing slots past their age limit at [now] are free. Each operation
+   first removes them, thus no operation sees such a slot as used. *)
+let expire s now =
+  {s with killing= List.filter (fun (_, a) -> now <. a) s.killing}
 
 let demand s = Int.max 0 (queue_length s.waiters - s.opening)
 
@@ -120,16 +136,31 @@ let starts s now =
   else
     Int.max 0 (Int.min (max_connects - s.opening) (Int.min (free s) (demand s)))
 
+(* The timer in a closed form, in O(k) for k Killing slots, because it runs
+   under the mutex of the pool after each operation (review C of 1.5a, M1). The
+   time does not change [closed], the demand or the running connects. A tick at
+   [t] starts a connect when [t] is not in the backoff and a slot is free at
+   [t]. The free slots only grow with the time: a Killing slot frees its slot at
+   its age limit. Thus the timer is the end of the backoff when a slot is free
+   now, else the later of the end of the backoff and the earliest age limit. A
+   tick now that starts a connect gives no timer: that tick gives the timer of
+   its new state. The model of the stateful test finds the timer with a search,
+   as a check of this form. *)
 let next_timer s now =
-  match s.backoff_end with
-  | Some e
-    when (not s.closed) && now <. e
-         && demand s > 0
-         && free s > 0
-         && s.opening < max_connects ->
-      Some e
-  | _ ->
-      None
+  let s = expire s now in
+  if s.closed || demand s = 0 || s.opening >= max_connects then None
+  else if free s > 0 then if in_backoff s now then s.backoff_end else None
+  else
+    let earliest =
+      List.fold_left
+        (fun m (_, a) -> match m with Some b when b <. a -> m | _ -> Some a)
+        None s.killing
+    in
+    match (earliest, s.backoff_end) with
+    | Some a, Some e ->
+        Some (max_span a e)
+    | a, _ ->
+        a
 
 (* The opener has work now, or a timer to arm. The opener reads its timer only
    in a tick, thus an operation that gives a timer must wake it. A wake while a
@@ -146,6 +177,7 @@ let too_old e now =
 type ('c, 'w) checkout = Conn of 'c entry | Wait of waiter_id | Closed
 
 let checkout s now w =
+  let s = expire s now in
   if s.closed then (s, Closed, false)
   else
     (* All the old entries move, also those under a fresh entry. *)
@@ -162,11 +194,13 @@ let checkout s now w =
     in
     (s, r, wake s now)
 
-let cancel_wait s _now id =
+let cancel_wait s now id =
+  let s = expire s now in
   let all = queue_to_list s.waiters in
   let rest = List.filter (fun (i, _) -> i <> id) all in
   let found = List.length rest < List.length all in
-  ({s with waiters= {front= rest; back= []}}, found, s.error)
+  let s = {s with waiters= {front= rest; back= []}} in
+  (s, found, s.error, wake s now)
 
 type ('c, 'w) handed =
   | Give of 'w * 'c entry
@@ -176,6 +210,7 @@ type ('c, 'w) handed =
   | Abort of 'c
 
 let checkin s now e ~reusable ~dirty =
+  let s = expire s now in
   let s' = {s with in_use= s.in_use - 1} in
   let s, r =
     if not reusable then (s', Freed)
@@ -198,6 +233,7 @@ type ('c, 'w) tick =
   {connects: int; to_close: 'c entry list; next_timer: time option}
 
 let tick s now =
+  let s = expire s now in
   let n = starts s now in
   let s' =
     { s with
@@ -216,6 +252,7 @@ type ('c, 'w) opened =
 let idle_limit w = max_span (Span.s 1) (min_span (Span.s 30) (Span.s (w - 5)))
 
 let opened s now c ~wait_timeout ~dialect ~u =
+  let s = expire s now in
   let s = {s with opening= s.opening - 1} in
   if s.closed then (s, Opened_close c, false)
   else
@@ -256,6 +293,7 @@ let opened s now c ~wait_timeout ~dialect ~u =
     (s, r, wake s now)
 
 let open_failed s now err =
+  let s = expire s now in
   let end_ =
     match add now s.backoff_step with
     | None ->
@@ -275,14 +313,17 @@ let open_failed s now err =
   (s, wake s now)
 
 let open_aborted s now =
+  let s = expire s now in
   let s = {s with opening= s.opening - 1} in
   (s, wake s now)
 
 let closed_done s now id =
+  let s = expire s now in
   let s = {s with in_close= List.filter (fun e -> e.id <> id) s.in_close} in
   (s, wake s now)
 
-let close_all s _now =
+let close_all s now =
+  let s = expire s now in
   let waiters = List.map snd (queue_to_list s.waiters) in
   let entries = s.idle @ s.to_close @ s.in_close in
   ( { s with
@@ -293,6 +334,33 @@ let close_all s _now =
     ; waiters= empty_queue }
   , waiters
   , entries )
+
+(* The age limit of a slot that [killing] keeps at [now]. A time too large for a
+   span gives the largest span. *)
+let age_end now =
+  match add now (age_limit ()) with
+  | Some t ->
+      t
+  | None ->
+      Span.of_ns Int64.max_int
+
+let killing s now (_ : 'c entry) =
+  let s = expire s now in
+  let tok = s.next_token in
+  let s =
+    { s with
+      in_use= s.in_use - 1
+    ; killing= s.killing @ [(tok, age_end now)]
+    ; next_token= tok + 1 }
+  in
+  (s, tok, wake s now)
+
+let killed s now tok =
+  let s = expire s now in
+  let rest = List.filter (fun (t, _) -> t <> tok) s.killing in
+  let freed = List.length rest < List.length s.killing in
+  let s = {s with killing= rest} in
+  (s, freed, wake s now)
 
 let size s = s.size
 
@@ -315,3 +383,5 @@ let error s = s.error
 let last_dialect s = s.last_dialect
 
 let backoff_end s = s.backoff_end
+
+let killing_slots s = s.killing

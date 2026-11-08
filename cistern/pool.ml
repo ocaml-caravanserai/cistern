@@ -433,7 +433,10 @@ let with_conn t ~start ~deadline f =
     let at = now t in
     let stored =
       op t (fun s ->
-          let s, _found, err = P.cancel_wait s at id in
+          (* The wake of cancel_wait comes with the Killing slots of the shell
+             (phase 1.5c1a): before, no shell operation makes a Killing slot,
+             thus cancel_wait has no work for the opener. *)
+          let s, _found, err, _wake = P.cancel_wait s at id in
           (s, err) )
     in
     let give_up () =
