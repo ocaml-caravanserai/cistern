@@ -666,6 +666,7 @@ let tests =
                (fun e -> String.starts_with ~prefix:"kill" e)
                (kill_events events) ) )
     ; test "a duplicate in the queue: its slot is free at once" (fun () ->
+          Pool.Private.reset_counters () ;
           let r, events =
             with_kill ~size:2
               ~setup:(fun db -> db.D.faults.kill_ms <- 100)
@@ -696,7 +697,9 @@ let tests =
             ["kill dropped 77 duplicate"; "kill 77 killed"]
             (List.filter
                (fun e -> String.starts_with ~prefix:"kill" e)
-               (kill_events events) ) )
+               (kill_events events) ) ;
+          (* The two kill requests: also the duplicate (phase 1.5c2). *)
+          equal int 2 (Pool.Private.counters ()).kill_requests )
     ; test "the drain past its limit of 15 s" (fun () ->
           let ended, after, events, outer =
             drain_case ~size:2

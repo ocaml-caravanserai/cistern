@@ -179,6 +179,14 @@ module Private : sig
       fiber can drop the entry in that window. It must not raise. The default
       does nothing. *)
 
+  val connect_control :
+    (   Cistern_mysql.Config.t
+     -> (Cistern_mysql.Connection.t, Cistern_core.Error.t) result )
+    ref
+  (** The connect of the control connection of the killer: [Connection.connect]
+      by default. A storm sets it to refuse only the control connection for a
+      time (phase 1.5c2). *)
+
   val trace : (string -> unit) ref
   (** Called with ["fill"] before the fill of a waiter, and with ["ring"] before
       the doorbell of the opener. A test reads the order of the effects with it.
@@ -194,6 +202,10 @@ module Private : sig
     ; cancel_in_stale: int
           (** A cancel in the stale check (at the lock of a TLS session). *)
     ; kill_dropped: int  (** The [Kill_dropped] events. *)
+    ; kill_requests: int
+          (** The kill requests that went to the queue, or that a full queue, a
+              duplicate or the end of the drain dropped: each one gives exactly
+              one [Kill] or [Kill_dropped] event. *)
     ; kill_retry: int  (** A first try of a [KILL] that failed. *)
     ; control_reopened: int
           (** A control connection past its idle limit, or stale. *) }

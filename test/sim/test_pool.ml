@@ -198,22 +198,183 @@ let permitted =
   ; "Connection_lost"
   ; "Constraint_violation Unique" ]
 
-let storm ~fibers ~seed ~seam =
+(* While it is set, the killer cannot open its control connection (the seam
+   Pool.Private.connect_control of a storm with KILL): only the control
+   connection is refused. *)
+let refuse_control = Atomic.make false
+
+let with_refuse_control f =
+  (Pool.Private.connect_control :=
+     fun c ->
+       if Atomic.get refuse_control then
+         Error (Cistern_core.Error.Connect "refused")
+       else Cistern_mysql.Connection.connect c ) ;
+  Fun.protect
+    ~finally:(fun () ->
+      Atomic.set refuse_control false ;
+      Pool.Private.connect_control := Cistern_mysql.Connection.connect )
+    f
+
+(* The storms with KILL (phase 1.5c2). [kill_faults db ~seed ~stop ~sample]:
+   until [stop ()], every 10 to 30 ms one fault of KILL: - for 5 ms: a late
+   reply (300 ms), a reply past the limit of a try (2.5 s), or the end of the
+   control connection at its next KILL; - for 5 s: replies past the limit, thus
+   the two tries of an entry fail (Kill_dropped Failed); - for 50 ms: the end of
+   the control connection at its next KILL, and the refusal of its reopen, only
+   of the control connection (the killer waits for its backoff); - for 30 ms:
+   another server identity for the new connections, thus an entry and the
+   control connection can name two servers (Kill_dropped Other_server). [sample]
+   runs at each turn. *)
+let kill_faults (db : D.t) ~seed ~stop ~sample =
+  let rs = Random.State.make [|seed; -1|] in
+  while not (stop ()) do
+    Time.sleep Mono (Span.ms (10 + Random.State.int rs 20)) ;
+    sample () ;
+    let hold =
+      match Random.State.int rs 8 with
+      | 0 ->
+          db.faults.kill_ms <- 300 ;
+          5
+      | 1 ->
+          db.faults.kill_ms <- 2500 ;
+          5
+      | 2 ->
+          db.faults.kill_close <- 1 ;
+          5
+      | 3 ->
+          db.faults.kill_ms <- 2500 ;
+          5000
+      | 4 ->
+          db.faults.kill_close <- 1 ;
+          Atomic.set refuse_control true ;
+          50
+      | 5 ->
+          db.faults.server_uuid <- "another-server" ;
+          30
+      | _ ->
+          5
+    in
+    Time.sleep Mono (Span.ms hold) ;
+    db.faults.kill_ms <- 0 ;
+    db.faults.kill_close <- 0 ;
+    Atomic.set refuse_control false ;
+    db.faults.server_uuid <- "5c607771-db0a-11f1-86e8-e86538021fcd"
+  done
+
+(* The fibers of the kills in a storm with KILL: [fibers / 50] statements of 60
+   ms ("SLEEP 60"), between the waves (at 35 to 55 ms and at 100 to 190 ms),
+   each cancelled after 5 to 40 ms while it runs. Thus each seed has kill
+   requests. *)
+let kill_fibers s pool ~seed ~fibers =
+  let n = fibers / 50 in
+  for i = 1 to n do
+    Fiber.fork s (fun () ->
+        let rs = Random.State.make [|seed; -2; i|] in
+        let at =
+          if Random.State.bool rs then 35 + Random.State.int rs 20
+          else 100 + Random.State.int rs 90
+        in
+        Time.sleep Mono (Span.ms at) ;
+        match
+          Fiber.with_timeout Mono
+            (Span.ms (5 + Random.State.int rs 35))
+            (fun () -> Db.exec ~timeout:(Span.s 1) pool (q "SLEEP 60"))
+        with
+        | _ ->
+            ()
+        | exception Fiber.Timeout ->
+            () )
+  done ;
+  n
+
+(* In the seeds with [seed mod 4 = 3], each KILL gives 1095: KILL goes off for
+   the pool at the first one (Kill_off). *)
+let not_owner_seed seed = seed mod 4 = 3
+
+(* Wait until the killer ended its work: no Killing slot and no entry (at most
+   20 s, the time of the late replies). *)
+let wait_killer p =
+  let n = ref 0 in
+  while
+    (Pool.Private.killing p > 0 || Pool.Private.queue p <> []) && !n < 2000
+  do
+    Time.sleep Mono (Span.ms 10) ;
+    incr n
+  done
+
+(* The kill events: "kill <duration> <id> <outcome>" and "kill dropped ...", not
+   "kill off". *)
+let kill_events events =
+  List.filter
+    (fun e ->
+      String.starts_with ~prefix:"kill " e
+      && not (String.starts_with ~prefix:"kill off" e) )
+    events
+
+let kills events =
+  List.length
+    (List.filter
+       (fun e -> not (String.starts_with ~prefix:"kill dropped" e))
+       (kill_events events) )
+
+type kill_record =
+  { requests: int
+  ; events: int
+  ; kills: int
+  ; control_max: int
+  ; off: bool
+  ; offs: int  (** The Kill_off events. *)
+  ; failed: int  (** The Kill_dropped Failed events. *)
+  ; other: int  (** The Kill_dropped Other_server events. *) }
+
+let dropped_with reason events =
+  List.length
+    (List.filter
+       (fun e ->
+         String.starts_with ~prefix:"kill dropped " e
+         && String.ends_with ~suffix:(" " ^ reason) e )
+       events )
+
+(* The record of KILL of a storm, from the counters and the events. *)
+let kill_record ~control_max events =
+  let c = Pool.Private.counters () in
+  { requests= c.kill_requests
+  ; events= List.length (kill_events events)
+  ; kills= kills events
+  ; control_max
+  ; off= List.exists (String.starts_with ~prefix:"kill off") events
+  ; offs=
+      List.length (List.filter (String.starts_with ~prefix:"kill off") events)
+  ; failed= dropped_with "failed" events
+  ; other= dropped_with "other_server" events }
+
+let storm ?(kill = false) ~fibers ~seed ~seam () =
   Pool.Private.after_op :=
     if seam then fun () -> Fiber.shield (fun () -> Time.sleep Mono (Span.ms 1))
     else ignore ;
   Fun.protect
     ~finally:(fun () -> Pool.Private.after_op := ignore)
     (fun () ->
+      let control_max = ref 0 and extra = ref 0 in
       let (outcomes, quiet, live), events =
-        with_pool ~size:8 ~seed ~domains:4 ~max_lifetime:(Span.ms 80)
+        with_pool ~kill ~size:8 ~seed ~domains:4 ~max_lifetime:(Span.ms 80)
           ~checkout_timeout:(Span.ms 5)
           ~setup:(fun db ->
             db.faults.idle_4031_ms <- Some 25 ;
-            db.faults.reset_ms <- 1 )
-          (fun _ _ pool ->
-            let outcomes = ref [] in
+            db.faults.reset_ms <- 1 ;
+            if kill && not_owner_seed seed then db.faults.kill_err <- Some 1095 )
+          (fun _ db pool ->
+            let p = Db.Private.pool pool in
+            let outcomes = ref [] and ended = Atomic.make 0 in
             Fiber.scope (fun s ->
+                if kill then extra := kill_fibers s pool ~seed ~fibers ;
+                if kill then
+                  Fiber.fork s (fun () ->
+                      kill_faults db ~seed
+                        ~stop:(fun () -> Atomic.get ended >= fibers)
+                        ~sample:(fun () ->
+                          control_max :=
+                            Int.max !control_max (Pool.Private.control p) ) ) ;
                 for i = 1 to fibers do
                   Fiber.fork s (fun () ->
                       let rs = Random.State.make [|seed; i|] in
@@ -231,14 +392,18 @@ let storm ~fibers ~seed ~seam =
                         | 2 ->
                             "FAIL 1062"
                         | _ ->
-                            Printf.sprintf "SLEEP %d" (Random.State.int rs 11)
+                            (* With KILL, longer statements: more cancels come
+                               while a statement runs. *)
+                            Printf.sprintf "SLEEP %d"
+                              (Random.State.int rs (if kill then 31 else 11))
                       in
                       (* Above the margin of 50 ms. *)
                       let timeout = Span.ms (50 + Random.State.int rs 70) in
                       let run () = Db.exec ~timeout pool (q sql) in
                       let o =
                         match
-                          if Random.State.int rs 4 = 0 then
+                          if Random.State.int rs (if kill then 2 else 4) = 0
+                          then
                             Fiber.with_timeout Mono
                               (Span.ms (1 + Random.State.int rs 60))
                               run
@@ -255,12 +420,14 @@ let storm ~fibers ~seed ~seam =
                         | exception e ->
                             "exception " ^ Printexc.to_string e
                       in
-                      outcomes := o :: !outcomes )
+                      outcomes := o :: !outcomes ;
+                      Atomic.incr ended )
                 done ) ;
-            (* The pool is quiet when the connects and the polite closes ended.
-               The check of liveness runs with no seam, because each operation
-               of the seam takes 1 ms. *)
+            (* The pool is quiet when the connects, the polite closes and the
+               work of the killer ended. The check of liveness runs with no
+               seam, because each operation of the seam takes 1 ms. *)
             Pool.Private.after_op := ignore ;
+            wait_killer p ;
             Time.sleep Mono (Span.ms 100) ;
             let idle, in_use, opening, _, waiting =
               Pool.Private.state (Db.Private.pool pool)
@@ -280,9 +447,30 @@ let storm ~fibers ~seed ~seam =
             in
             (List.sort compare !outcomes, quiet, live) )
       in
-      (outcomes, List.length (queries events), quiet, live) )
+      ( (outcomes, List.length (queries events) - !extra, quiet, live)
+      , kill_record ~control_max:!control_max events ) )
 
-let check_storm ~fibers (outcomes, queries, quiet, live) =
+(* The checks of a storm with KILL: one Kill or Kill_dropped event for each kill
+   request, at most one control connection, KILL off only in the seeds of 1095,
+   and kills in the other seeds. check_end (in with_pool) requires no Killing
+   slot, no entry and no control connection at the end. *)
+let check_kill ~seed ~min_kills k =
+  equal ~msg:"one Kill or Kill_dropped event for each kill request" int
+    k.requests k.events ;
+  (* A sample each 10 to 30 ms, not a proof: check_end finds a leak at the
+     end. *)
+  is_true ~msg:"at most one control connection" (k.control_max <= 1) ;
+  is_true ~msg:"at most one Kill_off event" (k.offs <= 1) ;
+  (* A seed of 1095 with no kill request sends no KILL. *)
+  equal ~msg:"Kill_off only in the seeds of 1095" bool
+    (not_owner_seed seed && k.requests > 0)
+    k.off ;
+  if not (not_owner_seed seed) then
+    is_true
+      ~msg:(Printf.sprintf "at least %d kills (%d)" min_kills k.kills)
+      (k.kills >= min_kills)
+
+let check_storm ?(min_ran = 80) ~fibers (outcomes, queries, quiet, live) =
   equal ~msg:"one outcome for each fiber" int fibers (List.length outcomes) ;
   (* The storm must run statements, not only waiters at their limit: at least 80
      execs of each seed run a statement (ok, or the error of FAIL). In the
@@ -293,7 +481,9 @@ let check_storm ~fibers (outcomes, queries, quiet, live) =
          (fun o -> o = "ok" || o = "Constraint_violation Unique")
          outcomes )
   in
-  is_true ~msg:(Printf.sprintf "at least 80 statements ran (%d)" ran) (ran >= 80) ;
+  is_true
+    ~msg:(Printf.sprintf "at least %d statements ran (%d)" min_ran ran)
+    (ran >= min_ran) ;
   List.iter
     (fun o -> is_true ~msg:("a permitted outcome: " ^ o) (List.mem o permitted))
     outcomes ;
@@ -317,7 +507,7 @@ let check_storm ~fibers (outcomes, queries, quiet, live) =
 let storm_test ~fibers ~seeds () =
   Pool.Private.reset_counters () ;
   for seed = 0 to seeds - 1 do
-    check_storm ~fibers (storm ~fibers ~seed ~seam:(seed >= 2))
+    check_storm ~fibers (fst (storm ~fibers ~seed ~seam:(seed >= 2) ()))
   done ;
   let c = Pool.Private.counters () in
   List.iter
@@ -327,6 +517,44 @@ let storm_test ~fibers ~seeds () =
     ; ("cancel_in_reset", c.cancel_in_reset)
     ; ("expired_at_checkout", c.expired_at_checkout)
     ; ("stale_at_checkout", c.stale_at_checkout) ]
+
+(* The storm with kill=true (phase 1.5c2) over [seeds] seeds: the checks of the
+   storm and of KILL for each seed. The Killing slots and the fibers of the
+   kills take slots, thus fewer statements run: in the record of PR 1.5c2 (with
+   the faults of its review), the fewest were 53 of 200 and 18 of 1000 (the
+   bounds are 25 and 9), and the fewest kills of a seed with no 1095 were 6 of
+   200 and 7 of 1000 (the bound is 2). Each bound is about half of its
+   record. With
+   [race], the race counters of the killer (a sum over the seeds) must be above
+   0. *)
+(* The sums of a run of storms with KILL. With [race], the race counters of the
+   killer and the drops of Failed and Other_server (not the Off drops of the
+   seeds of 1095), as sums over the seeds, must be above 0. *)
+let check_race ~race records =
+  if race then
+    let c = Pool.Private.counters () in
+    let sum f = List.fold_left (fun n k -> n + f k) 0 records in
+    List.iter
+      (fun (name, n) ->
+        is_true ~msg:(Printf.sprintf "%s above 0 (%d)" name n) (n > 0) )
+      [ ("kill_retry", c.kill_retry)
+      ; ("control_reopened", c.control_reopened)
+      ; ("Kill_dropped Failed", sum (fun k -> k.failed))
+      ; ("Kill_dropped Other_server", sum (fun k -> k.other)) ]
+
+let kill_storm_test ?(race = false) ~fibers ~seeds ~min_ran ~min_kills () =
+  with_refuse_control
+  @@ fun () ->
+  Pool.Private.reset_counters () ;
+  let records = ref [] in
+  for seed = 0 to seeds - 1 do
+    let before = (Pool.Private.counters ()).kill_requests in
+    let r, k = storm ~kill:true ~fibers ~seed ~seam:(seed >= 2) () in
+    check_storm ~min_ran ~fibers r ;
+    check_kill ~seed ~min_kills {k with requests= k.requests - before} ;
+    records := k :: !records
+  done ;
+  check_race ~race !records
 
 let tests =
   group "Db and the pool"
@@ -1404,11 +1632,18 @@ let tests =
           in
           equal string "2 true" r )
     ; test "the storm: 200 fibers, 8 seeds, 4 domains"
-        (storm_test ~fibers:200 ~seeds:8) ]
+        (storm_test ~fibers:200 ~seeds:8)
+    ; test "the storm with KILL: 200 fibers, 8 seeds, 4 domains"
+        (kill_storm_test ~race:true ~fibers:200 ~seeds:8 ~min_ran:25
+           ~min_kills:2 ) ]
 
 (* The slow storm, outside the gate: make sim-slow (CISTERN_SLOW). *)
 let slow_tests =
   group "Db and the pool, slow"
     [ tag "slow"
         (test "the storm: 1000 fibers, 20 seeds, 4 domains"
-           (storm_test ~fibers:1000 ~seeds:20) ) ]
+           (storm_test ~fibers:1000 ~seeds:20) )
+    ; tag "slow"
+        (test "the storm with KILL: 1000 fibers, 20 seeds, 4 domains"
+           (kill_storm_test ~race:true ~fibers:1000 ~seeds:20 ~min_ran:9
+              ~min_kills:2 ) ) ]

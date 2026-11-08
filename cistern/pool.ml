@@ -67,6 +67,8 @@ module Private = struct
 
   let before_try = ref ignore
 
+  let connect_control = ref Connection.connect
+
   let trace = ref ignore
 
   type counters =
@@ -77,6 +79,7 @@ module Private = struct
     ; stale_at_checkout: int
     ; cancel_in_stale: int
     ; kill_dropped: int
+    ; kill_requests: int
     ; kill_retry: int
     ; control_reopened: int }
 
@@ -94,6 +97,8 @@ module Private = struct
 
   let kill_dropped = Atomic.make 0
 
+  let kill_requests = Atomic.make 0
+
   let kill_retry = Atomic.make 0
 
   let control_reopened = Atomic.make 0
@@ -106,6 +111,7 @@ module Private = struct
     ; stale_at_checkout= Atomic.get stale_at_checkout
     ; cancel_in_stale= Atomic.get cancel_in_stale
     ; kill_dropped= Atomic.get kill_dropped
+    ; kill_requests= Atomic.get kill_requests
     ; kill_retry= Atomic.get kill_retry
     ; control_reopened= Atomic.get control_reopened }
 
@@ -119,6 +125,7 @@ module Private = struct
       ; stale_at_checkout
       ; cancel_in_stale
       ; kill_dropped
+      ; kill_requests
       ; kill_retry
       ; control_reopened ]
 
@@ -325,6 +332,11 @@ let kill t (e : conn P.entry) =
             let s, _, wake = P.checkin s now e ~reusable:false ~dirty:e.dirty in
             (s, `Freed wake) )
   in
+  ( match r with
+  | `Queued _ | `Dropped _ ->
+      Atomic.incr Private.kill_requests
+  | `Freed _ ->
+      () ) ;
   match r with
   | `Queued wake ->
       if wake then ring t ;
@@ -886,7 +898,7 @@ let open_control t k =
              ; duration= Time.diff Clock.Mono (Time.now Clock.Mono) t0
              ; error } )
       in
-      match Connection.connect t.config with
+      match !Private.connect_control t.config with
       | Ok c -> (
           Atomic.incr t.control_sockets ;
           let info = Connection.info c in
