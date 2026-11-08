@@ -48,4 +48,6 @@
   (ocaml
    (>= 5.5))
   (ppxlib
-   (>= 0.38))))
+   (>= 0.38))
+  (cistern
+   (= :version))))

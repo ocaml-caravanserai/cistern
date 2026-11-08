@@ -125,12 +125,14 @@
           };
         };
 
-      # The deriver [@@deriving cistern].
+      # The deriver [@@deriving cistern]. It links cistern.names and
+      # cistern.schema of the package cistern (phase 3a).
       ppxPackage =
         {
           lib,
           buildDunePackage,
           ppxlib,
+          cistern,
         }:
         buildDunePackage {
           pname = "ppx_cistern";
@@ -140,7 +142,10 @@
             ./ppx_cistern.opam
             ./ppx
           ];
-          propagatedBuildInputs = [ ppxlib ];
+          propagatedBuildInputs = [
+            ppxlib
+            cistern
+          ];
           doCheck = false;
           meta = meta lib // {
             description = "The deriver of Cistern models";

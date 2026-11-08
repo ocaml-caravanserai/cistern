@@ -1,7 +1,10 @@
-; DESIGN.md, "Libraries".
+; DESIGN.md, "Libraries". The deriver [@@deriving cistern] (phase 3). It
+; links cistern.names and cistern.schema, never cistern.core.
 
 (library
  (name ppx_cistern)
  (public_name ppx_cistern)
  (kind ppx_rewriter)
- (libraries ppxlib))
+ (libraries ppxlib cistern.names cistern.schema)
+ (instrumentation
+  (backend ppx_windtrap.mutate)))
