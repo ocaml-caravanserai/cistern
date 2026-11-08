@@ -254,6 +254,8 @@
                 ./test
                 # The limits rows of test/unit read doc/limits.mld.
                 ./doc
+                # The README rule of test/readme reads the examples.
+                ./examples
               ]
               ++ libraryDirs
             );

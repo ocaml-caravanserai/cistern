@@ -13,7 +13,7 @@
 #
 # Rule 2: each dune file outside test/ has one library stanza, with a
 # public_name and the mutation backend. If the directory has a .ml file, a
-# test stanza of a suite has the library in its libraries. Two files are
+# test stanza of a suite has the library in its libraries. Three files are
 # exceptions, and each must be exactly one stanza:
 #
 # - The file dune at the root (phase 5a): (env (_ (odoc (warnings fatal)))).
@@ -22,6 +22,10 @@
 #   warnings.
 # - The file doc/dune: (documentation (package cistern)), the pages of the
 #   doc of the user.
+# - The file examples/dune: the library cistern_examples, with no public_name
+#   (it is not installed) and no mutation backend (the examples of README.md,
+#   which only the integration suite runs). Its stanza is exactly the text
+#   of $examples below.
 #
 # The check fails closed: a dune file that it cannot read gives a failure,
 # not a pass. It refuses enabled_if, build_if and include_subdirs in these
@@ -104,6 +108,7 @@ for s in "$@"; do
   linked="$linked $(field "$t" libraries)"
 done
 
+examples="(library (name cistern_examples) (libraries cistern weft weft.os mirage-crypto-rng.unix) (preprocess (pps ppx_cistern)))"
 seen=""
 for d in $files; do
   case $d in test/*) continue ;; esac
@@ -113,6 +118,11 @@ for d in $files; do
   if [ "$d" = dune ]; then
     [ "$all" = "(env (_ (odoc (warnings fatal))))" ] ||
       fail "cannot read $d: the file dune at the root is not exactly (env (_ (odoc (warnings fatal))))"
+    continue
+  fi
+  if [ "$d" = examples/dune ]; then
+    [ "$all" = "$examples" ] ||
+      fail "cannot read $d: the file examples/dune is not exactly $examples"
     continue
   fi
   if [ "$d" = doc/dune ]; then

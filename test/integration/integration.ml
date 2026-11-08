@@ -353,6 +353,7 @@ let () =
         @ [ query_tests
           ; Tls_tests.deterministic
           ; Kill_tests.deterministic
+          ; Example_tests.deterministic
           ; Claims.deterministic ]
     | Some "timing" ->
         [Db_tests.timing; Tx_tests.timing; Tls_tests.timing; Claims.timing]

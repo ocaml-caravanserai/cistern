@@ -12,6 +12,7 @@
   cistern.mysql
   cistern_test_models
   cistern_test_models_ppx
+  cistern_examples
   weft-tls
   tls
   x509

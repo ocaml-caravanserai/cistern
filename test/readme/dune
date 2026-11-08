@@ -1,0 +1,32 @@
+; The README rule (phase 5b; the plan of phase 5, F2). gen.exe makes the
+; expected README.md: each block after a marker <!-- example: <name> --> gets
+; the text of the region <name> of examples/*.ml. dune runtest compares it
+; with README.md, and dune promote updates README.md. gen.exe finds a fence of
+; backquotes or tildes after a prefix of spaces, > and list markers, with the
+; language in any case. It refuses an OCaml block (ocaml or ml) with no
+; marker, a block in a language other than sh, nix, dune and text, and a fence
+; that is not at column 0 (except after <!-- no-check -->), an indented code
+; block, a <pre> block, CRLF line ends, an unknown or unused region, and a
+; region two times.
+
+(executable
+ (name gen))
+
+(rule
+ (with-stdout-to
+  README.md.gen
+  (run
+   ./gen.exe
+   %{dep:../../README.md}
+   %{dep:../../examples/blog.ml}
+   %{dep:../../examples/quickstart.ml}
+   %{dep:../../examples/queries.ml}
+   %{dep:../../examples/transactions.ml}
+   %{dep:../../examples/relations.ml}
+   %{dep:../../examples/raw.ml}
+   %{dep:../../examples/errors.ml})))
+
+(rule
+ (alias runtest)
+ (action
+  (diff ../../README.md README.md.gen)))
