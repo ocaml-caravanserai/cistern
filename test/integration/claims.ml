@@ -978,10 +978,98 @@ let c36 =
           equal string "Text \"ref\" Text \"c36_n_idx\"" (explain "c36.n = 5") ;
           exec_ok c "DROP TABLE c36" ) )
 
+(* C37 (phase 4a0, H1 of the plan review A of phase 4, and L2 and L3 of its
+   regression review): MariaDB with innodb_snapshot_isolation (the default of
+   11.8) gives 1020 for a locking read of a row that another session changed
+   after the snapshot of the transaction (a plain read made the snapshot), and
+   the server rolls back the whole transaction. Two parts: - On one connection:
+   the ERR packet, then a ping reads IN_TRANS (an ERR leaves the flag of the
+   last OK), and the own row is gone. MariaDB 11.4 sets the variable in its
+   session (SET SESSION), 11.8 has it by default. - Through Db.transaction on
+   11.8 and with the default of the others: the Tx gives Retryable `Rolled_back,
+   with no Implicit_commit. *)
+let c37 =
+  on all "C37: 1020 of MariaDB with innodb_snapshot_isolation" (fun () ->
+      warm () ;
+      let res = function Ok _ -> "ok" | Error e -> error_text e in
+      let count () =
+        with_conn (user_conn ()) (fun o ->
+            one_text o (sql "SELECT COUNT(*) FROM c37 WHERE id = 2") )
+      in
+      let fresh () =
+        with_conn (user_conn ()) (fun o ->
+            table o "c37" "(id INT PRIMARY KEY, v INT) ENGINE=InnoDB" ;
+            exec_ok o "INSERT INTO c37 VALUES (1, 0)" )
+      in
+      (* The part on one connection. *)
+      fresh () ;
+      let read_text, in_trans =
+        with_conn (user_conn ()) (fun c ->
+            if server = "mariadb114" then
+              exec_ok c "SET SESSION innodb_snapshot_isolation = ON" ;
+            if mariadb then
+              equal string "Int 1"
+                (one_text c (sql "SELECT @@SESSION.innodb_snapshot_isolation")) ;
+            exec_ok c "START TRANSACTION" ;
+            exec_ok c "INSERT INTO c37 VALUES (2, 0)" ;
+            ignore (one c (sql "SELECT v FROM c37 WHERE id = 1")) ;
+            with_conn (user_conn ()) (fun o ->
+                exec_ok o "UPDATE c37 SET v = 1 WHERE id = 1" ) ;
+            let r = exec c (sql "SELECT v FROM c37 WHERE id = 1 FOR UPDATE") in
+            equal string "ok" (unit_text (Conn.ping c)) ;
+            let in_trans = in_trans c in
+            if in_trans then exec_ok c "ROLLBACK" ;
+            (r, in_trans) )
+      in
+      if mariadb then (
+        equal string "1020 HY000: Retryable rolled back" read_text ;
+        equal bool false in_trans ;
+        equal string "Int 0" (count ()) )
+      else (
+        equal string "ok" read_text ;
+        equal bool true in_trans ) ;
+      (* The part through Db.transaction, with the default of the server. *)
+      fresh () ;
+      let inner, result =
+        Cistern.Db.with_db ~pool_size:2 (Db_tests.config ()) (fun db ->
+            let inner = ref "none" in
+            let r =
+              Cistern.Db.transaction db (fun tx ->
+                  let run s = Cistern.Tx.exec tx s in
+                  ignore
+                    (run
+                       (Cistern.Raw.exec
+                          (Cistern.Raw.sql "INSERT INTO c37 VALUES (2, 0)") ) ) ;
+                  ignore
+                    (run
+                       (Cistern.Raw.query
+                          (Cistern.Raw.sql "SELECT v FROM c37 WHERE id = 1") ) ) ;
+                  with_conn (user_conn ()) (fun o ->
+                      exec_ok o "UPDATE c37 SET v = 1 WHERE id = 1" ) ;
+                  inner :=
+                    res
+                      (run
+                         (Cistern.Raw.query
+                            (Cistern.Raw.sql
+                               "SELECT v FROM c37 WHERE id = 1 FOR UPDATE" ) ) ) )
+            in
+            (!inner, res r) )
+      in
+      if server = "mariadb118" then (
+        equal string "Retryable rolled back" inner ;
+        equal string "Retryable rolled back" result ;
+        equal string "Int 0" (count ()) )
+      else (
+        equal string "ok" inner ;
+        equal string "ok" result ;
+        equal string "Int 1" (count ()) ) ;
+      with_conn (user_conn ()) (fun o -> exec_ok o "DROP TABLE c37") )
+
 let deterministic =
   group "claims"
     [ c1
     ; c36
+    ; c37
     ; c2
     ; c3
     ; c4

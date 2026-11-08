@@ -54,6 +54,7 @@ let table : row list =
     ; on both 1213 (Retryable `Deadlock)
     ; on both 1205 (Retryable `Lock_timeout)
     ; on [Mysql] 3101 (Retryable `Rolled_back)
+    ; on [Mariadb] 1020 (Retryable `Rolled_back)
     ; on [Mysql] 3024 Statement_timeout
     ; on [Mariadb] 1969 Statement_timeout
     ; on [Mysql] 4031 Connection_lost
@@ -74,6 +75,7 @@ let crossed : row list =
   ; (Mariadb, 4031, "HY000", "m", driver 4031)
   ; (Mysql, 1927, "HY000", "m", driver 1927)
   ; (Mariadb, 3101, "HY000", "m", driver 3101)
+  ; (Mysql, 1020, "HY000", "m", driver 1020)
   ; (Mariadb, 3673, "HY000", "m", driver 3673) ]
 
 (* 1290 is Read_only only for the options --read-only and --super-read-only. *)

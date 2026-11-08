@@ -59,6 +59,11 @@ let of_server (d : Dialect.t) ~code ~sqlstate ~message =
       Retryable `Lock_timeout
   | Mysql, 3101 ->
       Retryable `Rolled_back
+  (* MariaDB with innodb_snapshot_isolation (the default of 11.8): a row changed
+     after the snapshot of the transaction. The server rolled back the whole
+     transaction (phase 4a0). *)
+  | Mariadb, 1020 ->
+      Retryable `Rolled_back
   | Mysql, 3024 | Mariadb, 1969 ->
       Statement_timeout
   | _, 1290 ->
