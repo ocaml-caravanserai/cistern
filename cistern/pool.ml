@@ -759,67 +759,71 @@ let exec t ~timeout stmt =
   (* Before each other check: a misuse emits no event. *)
   check_open t ;
   if in_tx t then invalid_arg "Db.exec in the fiber of a Tx" ;
-  let meta = Stmt.Private.meta stmt in
-  let t0 = Time.now Clock.Mono in
-  let event ?c outcome =
-    emit t
-      (Event.Query
-         { sql= String.concat "; " (meta.redacted (dialect t c))
-         ; duration= Time.diff Clock.Mono (Time.now Clock.Mono) t0
-         ; outcome } )
-  in
-  let failed ?c e = event ?c (Event.Failed e) ; Error e in
-  let cancelled ?c ~sent ex =
-    event ?c (Event.Cancelled {sent}) ;
-    raise ex
-  in
-  ( match Fiber.check_cancel () with
-  | () ->
-      ()
-  | exception (Fiber.Cancelled _ as ex) ->
-      cancelled ~sent:false ex ) ;
-  let start = now t in
-  let deadline = add_span start timeout in
-  (* One statement on the held connection, as data for [with_conn]. *)
-  let run (h : held) =
-    let c = h.c in
-    let ctx = Exec.make c in
-    let give_back = Give_back {dirty= h.dirty || meta.raw <> None} in
-    match Stmt.Private.run stmt ctx with
-    | Ok ran ->
-        ( Value ran
-        , (fun () -> event ~c (Event.Done {rows= ran.rows}))
-        , give_back )
-    | Error err ->
-        (Err err, (fun () -> event ~c (Event.Failed err)), give_back)
-    | exception (Fiber.Cancelled _ as ex) ->
-        let sent = Exec.sent ctx in
-        (Cancel ex, (fun () -> event ~c (Event.Cancelled {sent})), Discard)
-  in
-  match meta.text with
-  | Some (Error message) ->
-      failed (Error.Invalid_value {code= None; message})
-  | _ -> (
-    match with_conn t ~start ~deadline run with
-    | Checkout_failed err ->
-        failed err
-    | Margin c ->
-        failed ~c Error.Timeout
-    | Reset_failed (c, err) ->
-        failed ~c err
-    | Cancelled_before ex ->
-        cancelled ~sent:false ex
-    | Ran (Value ran, event) ->
-        event () ;
-        Ok (ran.finish ())
-    | Ran (Err err, event) ->
-        event () ; Error err
-    | Ran (Cancel ex, event) ->
-        event () ; raise ex
-    | Ran (Reraise (ex, bt), event) ->
-        (event () ;
-         Printexc.raise_with_backtrace ex bt )
-        [@mutate off "the function of exec gives no Reraise"] )
+  match Stmt.Private.pure_value stmt with
+  | Some v ->
+      Ok (v ())
+  | None -> (
+      let meta = Stmt.Private.meta stmt in
+      let t0 = Time.now Clock.Mono in
+      let event ?c outcome =
+        emit t
+          (Event.Query
+             { sql= String.concat "; " (meta.redacted (dialect t c))
+             ; duration= Time.diff Clock.Mono (Time.now Clock.Mono) t0
+             ; outcome } )
+      in
+      let failed ?c e = event ?c (Event.Failed e) ; Error e in
+      let cancelled ?c ~sent ex =
+        event ?c (Event.Cancelled {sent}) ;
+        raise ex
+      in
+      ( match Fiber.check_cancel () with
+      | () ->
+          ()
+      | exception (Fiber.Cancelled _ as ex) ->
+          cancelled ~sent:false ex ) ;
+      let start = now t in
+      let deadline = add_span start timeout in
+      (* One statement on the held connection, as data for [with_conn]. *)
+      let run (h : held) =
+        let c = h.c in
+        let ctx = Exec.make c in
+        let give_back = Give_back {dirty= h.dirty || meta.raw <> None} in
+        match Stmt.Private.run stmt ctx with
+        | Ok ran ->
+            ( Value ran
+            , (fun () -> event ~c (Event.Done {rows= ran.rows}))
+            , give_back )
+        | Error err ->
+            (Err err, (fun () -> event ~c (Event.Failed err)), give_back)
+        | exception (Fiber.Cancelled _ as ex) ->
+            let sent = Exec.sent ctx in
+            (Cancel ex, (fun () -> event ~c (Event.Cancelled {sent})), Discard)
+      in
+      match meta.text with
+      | Some (Error message) ->
+          failed (Error.Invalid_value {code= None; message})
+      | _ -> (
+        match with_conn t ~start ~deadline run with
+        | Checkout_failed err ->
+            failed err
+        | Margin c ->
+            failed ~c Error.Timeout
+        | Reset_failed (c, err) ->
+            failed ~c err
+        | Cancelled_before ex ->
+            cancelled ~sent:false ex
+        | Ran (Value ran, event) ->
+            event () ;
+            Ok (ran.finish ())
+        | Ran (Err err, event) ->
+            event () ; Error err
+        | Ran (Cancel ex, event) ->
+            event () ; raise ex
+        | Ran (Reraise (ex, bt), event) ->
+            (event () ;
+             Printexc.raise_with_backtrace ex bt )
+            [@mutate off "the function of exec gives no Reraise"] ) )
 
 (* The killer (D5 to D9). *)
 

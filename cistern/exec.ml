@@ -18,4 +18,9 @@ let query ?kind ctx r = keep ctx (Connection.query ?kind ctx.conn r)
 
 let exec ?kind ctx r = keep ctx (Connection.exec ?kind ctx.conn r)
 
+let rows ?kind ctx r decode =
+  keep ctx (Connection.query_rows ?kind ctx.conn r decode)
+
+let dialect ctx = (Connection.info ctx.conn).dialect
+
 let sent ctx = ctx.sent || Connection.sent ctx.conn

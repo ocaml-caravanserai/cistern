@@ -173,6 +173,19 @@ val exec :
 (** [exec t r] runs [r] as {!query} does, ignores the rows, and gives the counts
     of the last OK packet. *)
 
+val query_rows :
+     ?kind:Outcome.command
+  -> t
+  -> Cistern_core.Raw.t
+  -> (string option array -> ('a, string) result)
+  -> ('a list, Cistern_core.Error.t) result
+(** [query_rows t r decode] runs [r] as {!query} does, and gives [decode] of
+    each row of the first result set, with the text of each column as the server
+    sent it ([None] for SQL [NULL]). The typed statements of phase 2 use it. The
+    client reads the whole reply before the first [decode]. A row that [decode]
+    refuses gives [Decode msg], and the connection stays usable. [msg] must not
+    hold the text of a value. *)
+
 type kill_result =
   | Killed  (** An OK. *)
   | Gone  (** 1094: no such session. The query is already gone. *)

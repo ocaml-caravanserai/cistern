@@ -11,6 +11,7 @@
  (libraries
   cistern
   cistern.core
+  cistern_test_models
   cistern.mysql
   weft
   weft.flow

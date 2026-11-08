@@ -1,0 +1,7 @@
+; The hand-written models of phase 2 (DESIGN.md, "Generated code"): the
+; reference of the code that the ppx of phase 3 makes. A library of the
+; tests, with no mutation backend.
+
+(library
+ (name cistern_test_models)
+ (libraries cistern ptime))

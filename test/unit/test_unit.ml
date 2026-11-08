@@ -19,6 +19,7 @@ let () =
        ; Test_names.tests
        ; Test_schema.tests
        ; Test_expr.tests
+       ; Test_models.tests
        ; Test_config.tests
        ; Test_tls_setup.tests
        ; Test_wire.tests

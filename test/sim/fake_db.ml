@@ -32,6 +32,9 @@
    connection n (its flow closes, as a real KILL), and gives an OK, 1094 for no
    such connection, or the code of the fault [kill_err].
 
+   Phase 2d1: the fault [script] answers an exact SQL text first (rows, an OK
+   with counts, an ERR, or the end with no reply), for the typed statements.
+
    COM_PING, COM_INIT_DB and COM_RESET_CONNECTION give an OK, COM_QUIT ends the
    connection. The faults are mutable, so that a test can change them in its
    run. The server counts the connections, the handshakes in progress, the
@@ -54,6 +57,19 @@ type commit_fault =
       (** After this many ms, an ERR with this code (as [Commit_err]). *)
   | Commit_in_trans  (** The commit, and an OK with IN_TRANS (a chain). *)
   | Commit_seq0  (** 4031 with the id 0 before the read of COMMIT, the end. *)
+
+(** The reply of a script to one SQL text (phase 2d1): the exact SQL of the
+    typed statements. *)
+type scripted =
+  | Rows of string option list list
+      (** A result set with these rows, each with the same number of columns
+          (one column if there is no row). *)
+  | Counts of {affected: int64; insert: int64}  (** An OK with these counts. *)
+  | Err of int  (** An ERR with this code. *)
+  | Rows_err of string option list list * int
+      (** The columns, these rows, then an ERR with this code in place of the
+          end of the result set. *)
+  | No_reply  (** The end of the connection, with no reply. *)
 
 (** The reply to the identity SELECT of round trip 3. *)
 type identity_fault =
@@ -100,7 +116,9 @@ type faults =
   ; mutable id_of: int -> int
         (** The thread id and CONNECTION_ID() of the connection [n]: [n] by
             default. Two connections with one id make a duplicate, or the id of
-            the control connection. *) }
+            the control connection. *)
+  ; mutable script: string -> scripted option
+        (** The reply to a SQL text, before the words of the interpreter. *) }
 
 type t =
   { faults: faults
@@ -141,7 +159,8 @@ let no_faults () =
   ; kill_err= None
   ; kill_ms= 0
   ; kill_close= 0
-  ; id_of= Fun.id }
+  ; id_of= Fun.id
+  ; script= (fun _ -> None) }
 
 (* An INT column with the binary set. *)
 let int_column name =
@@ -275,127 +294,156 @@ let kill db flow n =
     | None ->
         send flow 1 (F.err 1094 "unknown thread") )
 
-let reply db tx flow sql =
-  let word, rest =
-    match String.index_opt sql ' ' with
-    | Some i ->
-        (String.sub sql 0 i, String.sub sql (i + 1) (String.length sql - i - 1))
-    | None ->
-        (sql, "")
-  in
-  let named prefix =
-    if String.starts_with ~prefix rest then
-      Some
-        (String.sub rest (String.length prefix)
-           (String.length rest - String.length prefix) )
-    else None
-  in
-  match (word, int_of rest) with
-  | "SELECT", Some n ->
+(* The reply of a script, with the status of the transaction. *)
+let scripted tx flow = function
+  | Rows rows ->
+      let n = match rows with r :: _ -> List.length r | [] -> 1 in
       sends flow 1
-        ( F.result_set [Some (string_of_int n)]
-        |> fun l ->
-        match l with
-        | count :: _ :: rest ->
-            count :: int_column "n"
-            :: List.filteri (fun i _ -> i < List.length rest - 1) rest
-            @ [F.ok_with ~header:'\xfe' ~status:(status tx) ()]
-        | l ->
-            l )
-  | "SLEEP", Some ms ->
-      Time.sleep Mono (Span.ms ms) ;
-      send flow 1 (F.ok ~status:(status tx) ())
-  | "FAIL", Some code ->
-      send flow 1 (F.err code "fail")
-  | "FAILV", Some code ->
-      (* A message that quotes a value of a row, as a 1062 does. *)
-      send flow 1 (F.err code "Duplicate entry 'secret@example.com' for key")
-  | ("BEGIN" | "START"), _ -> (
-    match db.faults.begin_err with
-    | Some code ->
-        send flow 1 (F.err code "begin")
-    | None ->
-        if not db.faults.begin_no_trans then tx.open_ <- true ;
-        tx.savepoints <- [] ;
-        ok tx flow )
-  | "COMMIT", _ ->
-      commit db tx flow
-  | "ROLLBACK", _ -> (
-    match named "TO SAVEPOINT " with
-    | Some n ->
-        if List.mem n tx.savepoints then (
-          (* The savepoints after it go. *)
-          let rec keep = function
-            | [] ->
-                []
-            | x :: rest ->
-                if x = n then x :: rest else keep rest
-          in
-          tx.savepoints <- keep tx.savepoints ;
-          ok tx flow )
-        else send flow 1 (F.err 1305 "no savepoint")
-    | None -> (
-      match db.faults.rollback_err with
-      | Some code ->
-          send flow 1 (F.err code "rollback")
-      | None ->
-          end_tx tx ; ok tx flow ) )
-  | "SAVEPOINT", _ -> (
-    match db.faults.savepoint_err with
-    | Some code ->
-        send flow 1 (F.err code "savepoint")
-    | None ->
-        tx.savepoints <- rest :: tx.savepoints ;
-        ok tx flow )
-  | "RELEASE", _ -> (
-    match named "SAVEPOINT " with
-    | Some n when List.mem n tx.savepoints ->
-        let rec after = function
-          | [] ->
-              []
-          | x :: rest ->
-              if x = n then rest else after rest
-        in
-        tx.savepoints <- after tx.savepoints ;
-        ok tx flow
-    | _ ->
-        send flow 1 (F.err 1305 "no savepoint") )
-  | "DEADLOCK", _ ->
-      end_tx tx ;
-      send flow 1 (F.err 1213 "deadlock")
-  | "LOCKWAIT", _ ->
-      if db.faults.rollback_on_timeout then end_tx tx ;
-      send flow 1 (F.err 1205 "lock wait")
-  | ("CREATE" | "TRUNCATE"), _ ->
-      end_tx tx ; ok tx flow
-  | "DDLFAIL", _ ->
-      end_tx tx ;
-      send flow 1 (F.err 1050 "exists")
-  | "KILL", _ when String.starts_with ~prefix:"CONNECTION " rest -> (
-    match int_of (String.sub rest 11 (String.length rest - 11)) with
-    | Some n ->
-        kill db flow n
-    | None ->
-        send flow 1 (F.err 1064 "syntax") )
-  | "INFILE", _ ->
-      send flow 1 "\xfbfile"
-  | "FORGET", _ ->
-      tx.savepoints <- [] ;
-      ok tx flow
-  | "CLOSE", _ ->
-      ok tx flow ; raise Stop
-  | "INSERT", _ ->
-      send flow 1 (F.ok_with ~affected:2L ~insert:7L ~status:(status tx) ())
-  | "DEAF", _ ->
-      (* The OK, and 5 ms later the OK of the next command, which the server
-         never reads. Then the server reads nothing for 3 s, and closes. *)
-      send flow 1 (F.ok ()) ;
-      Time.sleep Mono (Span.ms 5) ;
-      send flow 1 (F.ok_with ~affected:1L ()) ;
-      Time.sleep Mono (Span.s 3) ;
+        ( String.make 1 (Char.chr n)
+          :: List.init n (fun i -> F.column (Printf.sprintf "c%d" i))
+        @ List.map F.row rows
+        @ [F.ok_with ~header:'\xfe' ~status:(status tx) ()] )
+  | Counts {affected; insert} ->
+      send flow 1 (F.ok_with ~affected ~insert ~status:(status tx) ())
+  | Err code ->
+      send flow 1 (F.err code "scripted")
+  | Rows_err (rows, code) ->
+      let n = match rows with r :: _ -> List.length r | [] -> 1 in
+      sends flow 1
+        ( String.make 1 (Char.chr n)
+          :: List.init n (fun i -> F.column (Printf.sprintf "c%d" i))
+        @ List.map F.row rows
+        @ [F.err code "scripted"] )
+  | No_reply ->
       raise Stop
-  | _ ->
-      ok tx flow
+
+let reply db tx flow sql =
+  match db.faults.script sql with
+  | Some s ->
+      scripted tx flow s
+  | None -> (
+      let word, rest =
+        match String.index_opt sql ' ' with
+        | Some i ->
+            ( String.sub sql 0 i
+            , String.sub sql (i + 1) (String.length sql - i - 1) )
+        | None ->
+            (sql, "")
+      in
+      let named prefix =
+        if String.starts_with ~prefix rest then
+          Some
+            (String.sub rest (String.length prefix)
+               (String.length rest - String.length prefix) )
+        else None
+      in
+      match (word, int_of rest) with
+      | "SELECT", Some n ->
+          sends flow 1
+            ( F.result_set [Some (string_of_int n)]
+            |> fun l ->
+            match l with
+            | count :: _ :: rest ->
+                count :: int_column "n"
+                :: List.filteri (fun i _ -> i < List.length rest - 1) rest
+                @ [F.ok_with ~header:'\xfe' ~status:(status tx) ()]
+            | l ->
+                l )
+      | "SLEEP", Some ms ->
+          Time.sleep Mono (Span.ms ms) ;
+          send flow 1 (F.ok ~status:(status tx) ())
+      | "FAIL", Some code ->
+          send flow 1 (F.err code "fail")
+      | "FAILV", Some code ->
+          (* A message that quotes a value of a row, as a 1062 does. *)
+          send flow 1
+            (F.err code "Duplicate entry 'secret@example.com' for key")
+      | ("BEGIN" | "START"), _ -> (
+        match db.faults.begin_err with
+        | Some code ->
+            send flow 1 (F.err code "begin")
+        | None ->
+            if not db.faults.begin_no_trans then tx.open_ <- true ;
+            tx.savepoints <- [] ;
+            ok tx flow )
+      | "COMMIT", _ ->
+          commit db tx flow
+      | "ROLLBACK", _ -> (
+        match named "TO SAVEPOINT " with
+        | Some n ->
+            if List.mem n tx.savepoints then (
+              (* The savepoints after it go. *)
+              let rec keep = function
+                | [] ->
+                    []
+                | x :: rest ->
+                    if x = n then x :: rest else keep rest
+              in
+              tx.savepoints <- keep tx.savepoints ;
+              ok tx flow )
+            else send flow 1 (F.err 1305 "no savepoint")
+        | None -> (
+          match db.faults.rollback_err with
+          | Some code ->
+              send flow 1 (F.err code "rollback")
+          | None ->
+              end_tx tx ; ok tx flow ) )
+      | "SAVEPOINT", _ -> (
+        match db.faults.savepoint_err with
+        | Some code ->
+            send flow 1 (F.err code "savepoint")
+        | None ->
+            tx.savepoints <- rest :: tx.savepoints ;
+            ok tx flow )
+      | "RELEASE", _ -> (
+        match named "SAVEPOINT " with
+        | Some n when List.mem n tx.savepoints ->
+            let rec after = function
+              | [] ->
+                  []
+              | x :: rest ->
+                  if x = n then rest else after rest
+            in
+            tx.savepoints <- after tx.savepoints ;
+            ok tx flow
+        | _ ->
+            send flow 1 (F.err 1305 "no savepoint") )
+      | "DEADLOCK", _ ->
+          end_tx tx ;
+          send flow 1 (F.err 1213 "deadlock")
+      | "LOCKWAIT", _ ->
+          if db.faults.rollback_on_timeout then end_tx tx ;
+          send flow 1 (F.err 1205 "lock wait")
+      | ("CREATE" | "TRUNCATE"), _ ->
+          end_tx tx ; ok tx flow
+      | "DDLFAIL", _ ->
+          end_tx tx ;
+          send flow 1 (F.err 1050 "exists")
+      | "KILL", _ when String.starts_with ~prefix:"CONNECTION " rest -> (
+        match int_of (String.sub rest 11 (String.length rest - 11)) with
+        | Some n ->
+            kill db flow n
+        | None ->
+            send flow 1 (F.err 1064 "syntax") )
+      | "INFILE", _ ->
+          send flow 1 "\xfbfile"
+      | "FORGET", _ ->
+          tx.savepoints <- [] ;
+          ok tx flow
+      | "CLOSE", _ ->
+          ok tx flow ; raise Stop
+      | "INSERT", _ ->
+          send flow 1 (F.ok_with ~affected:2L ~insert:7L ~status:(status tx) ())
+      | "DEAF", _ ->
+          (* The OK, and 5 ms later the OK of the next command, which the server
+             never reads. Then the server reads nothing for 3 s, and closes. *)
+          send flow 1 (F.ok ()) ;
+          Time.sleep Mono (Span.ms 5) ;
+          send flow 1 (F.ok_with ~affected:1L ()) ;
+          Time.sleep Mono (Span.s 3) ;
+          raise Stop
+      | _ ->
+          ok tx flow )
 
 (* The next command packet. With the fault [idle_4031_ms], an idle connection
    gets 4031 and the end. *)

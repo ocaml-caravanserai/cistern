@@ -41,7 +41,19 @@ module Private : sig
     -> finish:('r -> 'a)
     -> 'a t
 
+  val pure : 'a -> 'a t
+  (** [pure v] is a statement with no command: [Db.exec] and [Tx.exec] make
+      their checks of misuse (a use after [with_db], [Db.exec] in a [Tx], the
+      first error of a failed [Tx]), then give [v] with no checkout, no command
+      and no event. [update] with no field gives one (DESIGN.md, "Execution of
+      one statement"). A cancelled fiber also gets [v]: no check of the cancel,
+      because no I/O happens. *)
+
+  val pure_value : 'a t -> (unit -> 'a) option
+  (** The value of a statement of {!pure}, after {!map}. *)
+
   val meta : 'a t -> meta
+  (** The meta of a statement of {!pure} has no SQL. *)
 
   (** A statement that ran: its count of rows, and its value, which the pool
       makes after the checkin. *)

@@ -13,6 +13,11 @@ module Decimal = Cistern_core.Decimal
 module Dialect = Cistern_core.Dialect
 module Exec_result = Cistern_core.Exec_result
 module Config = Cistern_mysql.Config
+module Field = Cistern_core.Field
+module Expr = Cistern_core.Expr
+module Update = Cistern_core.Update
+
+module type MODEL = Cistern_core.Model_intf.MODEL
 
 exception Cistern_error = Cistern_core.Error.Cistern_error
 
@@ -21,4 +26,10 @@ module Private = struct
   module Pool_state = Pool_state
   module Exec = Exec
   module Tx_rules = Tx_rules
+  module Field = Cistern_core.Field
+  module Expr = Cistern_core.Expr
+  module Update = Cistern_core.Update
+  module Schema = Cistern_core.Schema
+  module Decoder = Cistern_core.Decoder
+  module Model = Model
 end
