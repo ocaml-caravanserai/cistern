@@ -378,14 +378,16 @@ val Model.child :
   -> C.draft list -> ('p, 'k) child
 
 (* stage 3 of User *)
-let create ~name ~email ?(todos = []) () =
+let create ~name ~email ?todos () =
   Cistern.Private.Model.create (module Cistern_model__user) { name; email }
-    ~children:[ Cistern.Private.Model.child (module Cistern_model__todo)
-                  ~fk:Cistern_drafts__user.Set_todo.user_id
-                  ~set:Cistern_drafts__user.Set_user.todos todos ]
+    ~children:(match todos with
+               | None -> []
+               | Some ds -> [ Cistern.Private.Model.child (module Cistern_model__todo)
+                                ~fk:Cistern_drafts__user.Set_todo.user_id
+                                ~set:Cistern_fields__user.Set_user.todos ds ])
 ```
 
-`fk` and `set` are setters of stage 1. Thus `create` gives the parent with `Loaded` children. Because `references` is always the key of the parent in version 1, `'k` is `M.key` of the parent, and all children of one parent have one type `('p, 'k) child`.
+`fk` and `set` are setters of stage 1: `fk` sets a draft key (in `Cistern_drafts__<first>`), and `set` a relation field (in `Cistern_fields__<first>`, phase 4c1, E3). Thus `create` gives the parent with `Loaded` children. With children, `create` is one atomic statement (see "Execution of one statement"): the parent `INSERT`, the key (the last insert id, or the key of the draft), then one `INSERT` for each child in the order of the list. No child (no group, or only empty lists) gives the `create` of phase 2, which is not atomic. `Stmt.to_sql` shows the key of an `[@auto]` parent in each child as `<last_insert_id>`, and the redacted SQL of the events shows `?`. A value with no literal in the parent or in a child gives `Invalid_value` before the checkout. Because `references` is always the key of the parent in version 1, `'k` is `M.key` of the parent, and all children of one parent have one type `('p, 'k) child`.
 
 Implementation note (compiled on OCaml 5.5.0 in round 5): the definition of a module-dependent function needs a full type annotation, `let child : (module C : MODEL) -> ... = fun (module C) ~fk ~set ds -> ...`. The short form `let child (module C : MODEL) ~fk ...` gives the error "The module C would escape its scope".
 
@@ -441,8 +443,9 @@ Filters:
 `type 'a Deferred.t = Unloaded | Loaded of 'a` (immutable, no closures, so `=` and printing work). `Deferred.get` gives `Some` of a loaded value and `None` for `Unloaded`, and `Deferred.get_exn` raises `Invalid_argument` for `Unloaded` (phase 4a).
 
 - `get_by_*`, `find_by_*` and queries give `Unloaded` relations, unless `include_` loads them.
-- `create` gives `Loaded` children. Each child has an `Unloaded` back-reference.
-- `update` keeps the relations of its input record. If the update changes a `belongs_to` key, that relation becomes `Unloaded`.
+- `create` gives `Loaded` children for each has_many whose list the caller gave, also for an empty list (`Loaded []`, because a new row has no child), and `Unloaded` for a has_many with no list (phase 4c1, the review of 4c1, L1). Each child has an `Unloaded` back-reference.
+- `update` keeps the relations of its input record. If the update changes a `belongs_to` key, that relation becomes `Unloaded` (phase 4c1, E9): the setter of the key field calls `Cistern.Private.Encode.reset`, which compares the encoded keys with `Value.equal`, and keeps the relation for the same key. `Field.set` of the key field does the same, because it uses this setter.
+- The relation fields are not columns: `MODEL.fields`, `Q`, the drafts and `update` have no relation field, and `decode` and `of_draft` give `Unloaded`. The setters of the relation fields (`Set_user.todos`, `Set_todo.user`, which set `Loaded`) are in `Cistern_fields__<first>` (phase 4c1, E3).
 - `include_` never fills the inverse relation, so no data is cyclic.
 
 ### Usage
@@ -1357,6 +1360,6 @@ Phase 2 (the typed API with hand-written models): 2a0 (the events with no messag
 
 Phase 3 (`ppx_cistern` for models without relations) is complete. 3a0 (cistern#40) moves `Schema` into the library `cistern.schema`, with the structured faults of `Schema.faults`. 3a (cistern#41) adds the deriver `cistern`, the parser of a group, all the errors of the ppx with their locations, and the suite `test/ppx`. 3b (cistern#42) generates stage 1 (`Cistern.Private.Encode`, the lift of the one `Schema.model` value), and the hand-written stage 1 of `kinds`, `auto_only` and the new `person` has the form of the ppx. 3c (cistern#43) generates stages 2 and 3 (labels for `update` and `create`), and the hand-written files have the whole form of the ppx (3a0 to 3c merged 2026-11-08). 3d completes phase 3: it moves the tests of the groups with no relation to the derived models of `test/model_ppx`, and adds the hostile group with its SQL names to the integration suite. The group of `user` and `todo` stays hand-written, with the tests of its relation, until phase 4.
 
-Phase 4 (relations): 4a0 fixes the merged code of phases 1.3 and 2: error 1020 of MariaDB (`innodb_snapshot_isolation`, the default of 11.8) is `Retryable `Rolled_back`, so a `Tx` fails with no ping and no `Implicit_commit` (claim C37). 4a adds `Cistern.Deferred`, the abstract `Relation.t` with the constructors of `Cistern.Private.Relation`, and the relation of a fault of `Schema.faults`. 4b1 runs an atomic statement of `Db.exec` through the code of `Db.transaction`, with one event for each command, and the pool storm runs atomic statements with the invariant that no holder gets a session in a transaction. 4b2 runs an atomic statement of `Tx.exec` through the savepoint code of `Tx.savepoint` (E6), and the Tx storm runs atomic statements in 1 of 10 steps, with one event for each command.
+Phase 4 (relations): 4a0 fixes the merged code of phases 1.3 and 2: error 1020 of MariaDB (`innodb_snapshot_isolation`, the default of 11.8) is `Retryable `Rolled_back`, so a `Tx` fails with no ping and no `Implicit_commit` (claim C37). 4a adds `Cistern.Deferred`, the abstract `Relation.t` with the constructors of `Cistern.Private.Relation`, and the relation of a fault of `Schema.faults`. 4b1 runs an atomic statement of `Db.exec` through the code of `Db.transaction`, with one event for each command, and the pool storm runs atomic statements with the invariant that no holder gets a session in a transaction. 4b2 runs an atomic statement of `Tx.exec` through the savepoint code of `Tx.savepoint` (E6), and the Tx storm runs atomic statements in 1 of 10 steps, with one event for each command. 4c1 adds the nested create (`Model.child`, `Model.create ~children`), the reset of a `belongs_to` relation for a new key (`Encode.reset`), and the relation fields of the hand-written `user` and `todo` with their setters.
 
 Round 5 found 3 critical defects. Two of them were in fixes of round 4 (the session reset and the killer drain), and one was a gap from an earlier draft (`Decimal`). Most of the critical and major findings are in the cancel path with `KILL`. Thus phases 1.1 to 1.4 ship without `KILL` (`kill=false`), and phase 1.5 adds it. The remaining risk is in server behavior that only a real server can show (the "not verified" claims). Phase 1.1 tests these claims first.

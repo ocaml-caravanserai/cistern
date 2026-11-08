@@ -30,6 +30,9 @@ let set f v = Option.map (Update.set f) v
 
 let updates l = List.filter_map Fun.id l
 
+let reset encode old k rel =
+  if Value.equal (encode old) (encode k) then rel else Deferred.Unloaded
+
 let auto = function
   | Some k ->
       k

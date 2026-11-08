@@ -295,6 +295,39 @@ let suite ~events (run : 'a. 'a Stmt.t -> ('a, Cistern.Error.t) result) =
            (events ()) ) )
     [0; 4; 8; 12; 16; 20] ;
   ignore (ok (Query.delete (Todo.where Todo.Q.(title ==. "page")))) ;
+  (* The nested create (phase 4c1): the parent, then its children with its key,
+     in one atomic statement. *)
+  let n1 =
+    ok
+      (User.create ~name:"nested" ~email:"n1@x"
+         ~todos:[Todo.draft ~title:"n-a" (); Todo.draft ~title:"n-b" ()]
+         () )
+  in
+  ( match n1.todos with
+  | Cistern.Deferred.Loaded [a; b] ->
+      equal (list int64) [n1.id; n1.id] [a.user_id; b.user_id] ;
+      is_true (Int64.compare a.id b.id < 0) ;
+      equal (list string) ["n-a"; "n-b"]
+        (List.map
+           (fun (t : User_todo.todo) -> t.title)
+           (ok
+              (Query.to_list
+                 (Query.order_by Todo.Q.id `Asc (Todo.filter_by_user_id n1.id)) ) ) )
+  | _ ->
+      fail "the children of the nested create" ) ;
+  (* A child that the server refuses: no row of the statement stays, also not
+     the parent. *)
+  equal string "Invalid_value 1406"
+    (text
+       (run
+          (User.create ~name:"nested" ~email:"n2@x"
+             ~todos:
+               [ Todo.draft ~title:"n-c" ()
+               ; Todo.draft ~title:(String.make 300 't') () ]
+             () ) ) ) ;
+  equal bool true (ok (User.find_by_email "n2@x") = None) ;
+  equal int 0
+    (List.length (ok (Query.to_list (Todo.where Todo.Q.(title ==. "n-c"))))) ;
   (* The errors: each fails only its statement. *)
   equal string "Constraint_violation Unique"
     (text (run (P.create ~city:"x" ~email:"a@x" ()))) ;

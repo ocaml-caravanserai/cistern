@@ -38,10 +38,39 @@ val where : (module M : MODEL) -> (M.t, bool) Expr.t -> M.t Query.t
 (** [where (module M) e] is [Query.where e (all (module M))]. The generated
     [filter_by_<field>] of an [[@index]] field is [where] with [==.]. *)
 
-val create : (module M : MODEL) -> M.draft -> M.t Stmt.t
+(** The children of one has_many of a nested create: the drafts of the child
+    model, the setter of the key of the parent in a child draft, and the setter
+    of the relation field of the parent (phase 4c1, the plan of phase 4, E10).
+*)
+type ('p, 'k) child
+
+val child :
+  (module C : MODEL)
+  ->    fk:(C.draft -> 'k -> C.draft)
+     -> set:('p -> C.t list -> 'p)
+     -> C.draft list
+     -> ('p, 'k) child
+(** [child (module C) ~fk ~set ds] is the children [ds] of a parent with the key
+    type ['k]. [fk d k] is the draft [d] with the key [k] of the parent, and
+    [set p cs] the parent [p] with its children [cs] ([Loaded]). *)
+
+val create :
+  (module M : MODEL)
+  -> ?children:(M.t, M.key) child list -> M.draft -> M.t Stmt.t
 (** [create (module M) d] inserts the row of [d], and gives it with the key: for
     an [[@auto]] key, the last insert id ([Decode] if it is 0), else the key of
-    [d]. No [SELECT] after it. *)
+    [d]. No [SELECT] after it.
+
+    With [children] (a nested create of one level, phase 4c1): the parent
+    [INSERT], then one [INSERT] for each child, in the order of the list, with
+    the key of the parent through [fk]. The statement is atomic: in [Db.exec] it
+    runs in the transaction of [Db.transaction], in [Tx.exec] in a savepoint
+    ([Stmt.Private.meta]). The result is the parent with its children through
+    [set], and each child comes from its [of_draft] (its relations [Unloaded]).
+    Each group gives [Loaded] children, also an empty group ([Loaded []]); a
+    relation with no group stays [Unloaded]. No child (no group, or only empty
+    groups) gives one [INSERT], which is not atomic. {!Stmt.to_sql} shows the
+    key of an [[@auto]] parent in a child as [<last_insert_id>]. *)
 
 val update : (module M : MODEL) -> M.t Update.t list -> M.t -> M.t Stmt.t
 (** [update (module M) us r] sets the fields of [us] in the row of the key of

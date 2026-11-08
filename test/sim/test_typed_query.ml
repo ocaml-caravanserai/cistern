@@ -29,7 +29,13 @@ let cols =
 let row id name = [Some id; Some name; Some (name ^ "@x"); None; None; Some "1"]
 
 let user id name =
-  {User_todo.id; name; email= name ^ "@x"; nick= None; age= None; active= true}
+  { User_todo.id
+  ; name
+  ; email= name ^ "@x"
+  ; nick= None
+  ; age= None
+  ; active= true
+  ; todos= Cistern.Deferred.Unloaded }
 
 let older = User.where User.Q.(age >. Some 30)
 
@@ -187,12 +193,14 @@ let tests =
             = ( Ok
                   [ { User_todo.id= 1L
                     ; user_id= 7L
+                    ; user= Cistern.Deferred.Unloaded
                     ; title= "Milk"
                     ; done_= false
                     ; note= None } ]
               , Ok
                   [ { User_todo.id= 2L
                     ; user_id= 7L
+                    ; user= Cistern.Deferred.Unloaded
                     ; title= "Eggs"
                     ; done_= true
                     ; note= Some "n" } ] ) ) )
@@ -373,3 +381,281 @@ let tests =
           in
           equal bool true
             (r = (Ok (Ok [user 1L "a"], Ok true, Ok 1, Ok 1, Ok 1), true)) ) ]
+
+(* The nested create of the hand-written user and todo (phase 4c1, the plan of
+   phase 4, E10) on Fake_db: the parent gets the id 41, each todo the next id
+   from 100. [fail] gives an ERR 1062 for the todo with this title. *)
+let nested_tests =
+  let setup ?fail db =
+    let next = ref 99 in
+    db.D.faults.script <-
+      (fun sql ->
+        if String.starts_with ~prefix:"INSERT INTO `user`" sql then
+          Some (D.Counts {affected= 1L; insert= 41L})
+        else if String.starts_with ~prefix:"INSERT INTO `todo`" sql then (
+          match fail with
+          | Some title when Test_atomic.contains sql title ->
+              Some (D.Err 1062)
+          | _ ->
+              incr next ;
+              Some (D.Counts {affected= 1L; insert= Int64.of_int !next}) )
+        else None )
+  in
+  let milk = Todo.draft ~title:"Milk" ()
+  and eggs = Todo.draft ~title:"Eggs" () in
+  let ann = User.create ~name:"Ann" ~email:"a@x" ~todos:[milk; eggs] () in
+  (* The commands of the fake server after the connect, and the query events. *)
+  let commands (db : D.t) =
+    List.rev db.log
+    |> List.filter (fun s -> s <> "" && s <> "CLEAN")
+    |> List.map (fun s ->
+        if String.starts_with ~prefix:"INSERT INTO `todo`" s then
+          (* The key of the parent, and the title. *)
+          if Test_atomic.contains s "(41," then
+            if Test_atomic.contains s "X'4D696C6B'" then "todo 41 Milk"
+            else "todo 41 Eggs"
+          else "todo ?"
+        else if String.starts_with ~prefix:"INSERT INTO `user`" s then "user"
+        else s )
+  in
+  let child_ids (u : User_todo.user) =
+    match u.todos with
+    | Cistern.Deferred.Loaded l ->
+        List.map
+          (fun (t : User_todo.todo) ->
+            Printf.sprintf "%Ld %Ld %s %s" t.id t.user_id t.title
+              ( match t.user with
+              | Cistern.Deferred.Unloaded ->
+                  "Unloaded"
+              | Loaded _ ->
+                  "Loaded" ) )
+          l
+    | Unloaded ->
+        ["Unloaded"]
+  in
+  group "the nested create"
+    [ test "in Db.exec: the transaction, the ids, the events" (fun () ->
+          let (r, cmds), events =
+            with_pool ~size:1
+              ~setup:(fun db -> setup db)
+              (fun _ db pool ->
+                let r = Db.exec pool ann in
+                (r, commands db) )
+          in
+          ( match r with
+          | Ok u ->
+              equal int64 41L u.id ;
+              equal (list string)
+                ["100 41 Milk Unloaded"; "101 41 Eggs Unloaded"]
+                (child_ids u)
+          | Error e ->
+              fail (E.to_string e) ) ;
+          equal (list string)
+            [ "START TRANSACTION"
+            ; "user"
+            ; "todo 41 Milk"
+            ; "todo 41 Eggs"
+            ; "COMMIT" ]
+            cmds ;
+          let child =
+            "query \"INSERT INTO `todo` (`user_id`, `title`, `done`, `note`) \
+             VALUES (?, ?, ?, ?)\" done 1"
+          in
+          equal (list string)
+            [ "query \"START TRANSACTION\" done 0"
+            ; "query \"INSERT INTO `user` (`name`, `email`, `nick`, `age`, \
+               `active`) VALUES (?, ?, ?, ?, ?)\" done 1"
+            ; child
+            ; child
+            ; "query \"COMMIT\" done 0" ]
+            (Test_pool.queries events) )
+    ; test "in a Tx: a savepoint" (fun () ->
+          let (r, cmds), _ =
+            with_pool ~size:1
+              ~setup:(fun db -> setup db)
+              (fun _ db pool ->
+                let r = Db.transaction pool (fun tx -> Tx.exec_exn tx ann) in
+                (r, commands db) )
+          in
+          ( match r with
+          | Ok u ->
+              equal (list string)
+                ["100 41 Milk Unloaded"; "101 41 Eggs Unloaded"]
+                (child_ids u)
+          | Error e ->
+              fail (E.to_string e) ) ;
+          equal (list string)
+            [ "START TRANSACTION"
+            ; "SAVEPOINT cistern_sp_1"
+            ; "user"
+            ; "todo 41 Milk"
+            ; "todo 41 Eggs"
+            ; "RELEASE SAVEPOINT cistern_sp_1"
+            ; "COMMIT" ]
+            cmds )
+    ; test "an empty list of todos gives Loaded [], no list gives Unloaded"
+        (fun () ->
+          let (a, b), _ =
+            with_pool ~size:1
+              ~setup:(fun db -> setup db)
+              (fun _ _ pool ->
+                let a =
+                  Db.exec pool (User.create ~name:"A" ~email:"a@x" ~todos:[] ())
+                in
+                let b = Db.exec pool (User.create ~name:"B" ~email:"b@x" ()) in
+                (a, b) )
+          in
+          match (a, b) with
+          | Ok a, Ok b ->
+              is_true (a.todos = Cistern.Deferred.Loaded []) ;
+              is_true (b.todos = Cistern.Deferred.Unloaded)
+          | _ ->
+              fail "the creates" )
+    ; test "two has_many: the commands and the records of each group" (fun () ->
+          (* The ids: 11 for a kid, 21 for rex, 22 for tom. *)
+          let coded db =
+            let id n = Some (D.Counts {affected= 1L; insert= n}) in
+            db.D.faults.script <-
+              (fun sql ->
+                if String.starts_with ~prefix:"INSERT INTO `c`" sql then id 11L
+                else if String.starts_with ~prefix:"INSERT INTO `d`" sql then
+                  if Test_atomic.contains sql "X'726578'" then id 21L
+                  else id 22L
+                else None )
+          in
+          let shape (p : Coded.p) =
+            let ids = function
+              | Cistern.Deferred.Loaded l ->
+                  String.concat "," l
+              | Unloaded ->
+                  "Unloaded"
+            in
+            Printf.sprintf "kids %s pets %s"
+              (ids
+                 Cistern.Deferred.(
+                   match p.kids with
+                   | Loaded l ->
+                       Loaded
+                         (List.map
+                            (fun (c : Coded.c) -> Printf.sprintf "%Ld" c.id)
+                            l )
+                   | Unloaded ->
+                       Unloaded ) )
+              (ids
+                 Cistern.Deferred.(
+                   match p.pets with
+                   | Loaded l ->
+                       Loaded
+                         (List.map
+                            (fun (d : Coded.d) ->
+                              Printf.sprintf "%Ld %s %s" d.did d.owner d.name )
+                            l )
+                   | Unloaded ->
+                       Unloaded ) )
+          in
+          let r, _ =
+            with_pool ~size:1 ~setup:coded (fun _ db pool ->
+                let run s =
+                  let from = List.length db.D.log in
+                  let r =
+                    match Db.exec pool s with
+                    | Ok p ->
+                        shape p
+                    | Error e ->
+                        E.to_string e
+                  in
+                  let cmds =
+                    List.rev db.D.log
+                    |> List.filteri (fun i _ -> i >= from)
+                    |> List.map (fun s ->
+                        match String.index_opt s '(' with
+                        | Some i ->
+                            String.sub s 0 (i - 1)
+                        | None ->
+                            s )
+                  in
+                  r :: cmds
+                in
+                [ run (Coded.create ~pets:["rex"; "tom"] [2.])
+                ; run (Coded.create ~pets:["rex"] [])
+                ; run (Coded.create ~pets:[] []) ] )
+          in
+          equal
+            (list (list string))
+            [ [ "kids 11 pets 21 A rex,22 A tom"
+              ; "START TRANSACTION"
+              ; "INSERT INTO `p`"
+              ; "INSERT INTO `c`"
+              ; "INSERT INTO `d`"
+              ; "INSERT INTO `d`"
+              ; "COMMIT" ]
+            ; [ "kids  pets 21 A rex"
+              ; "START TRANSACTION"
+              ; "INSERT INTO `p`"
+              ; "INSERT INTO `d`"
+              ; "COMMIT" ]
+            ; ["kids  pets "; "INSERT INTO `p`"] ]
+            r )
+    ; test "a lost reply of a child in a Tx: Outcome_unknown" (fun () ->
+          let inner = ref "" in
+          let r, _ =
+            with_pool ~size:1
+              ~setup:(fun db ->
+                setup db ;
+                let s = db.D.faults.script in
+                db.D.faults.script <-
+                  (fun sql ->
+                    if Test_atomic.contains sql "X'45676773'" then
+                      Some D.No_reply
+                    else s sql ) )
+              (fun _ _ pool ->
+                Db.transaction pool (fun tx -> inner := text (Tx.exec tx ann)) )
+          in
+          (* A child INSERT is a write: its lost reply is not known. The Tx ends
+             with the final error of a lost reply of DML. *)
+          equal string "Outcome_unknown statement" !inner ;
+          equal bool true (r = Error E.Connection_lost) )
+    ; test "an error of the second child: ROLLBACK, the error" (fun () ->
+          let (r, cmds), _ =
+            with_pool ~size:1
+              ~setup:(fun db -> setup ~fail:"X'45676773'" db)
+              (fun _ db pool ->
+                let r = text (Db.exec pool ann) in
+                (r, commands db) )
+          in
+          equal string "Constraint_violation Unique: scripted" r ;
+          equal (list string)
+            [ "START TRANSACTION"
+            ; "user"
+            ; "todo 41 Milk"
+            ; "todo 41 Eggs"
+            ; "ROLLBACK" ]
+            cmds )
+    ; test "an error of the second child in a Tx: ROLLBACK TO, the Tx goes on"
+        (fun () ->
+          let (r, cmds), _ =
+            with_pool ~size:1
+              ~setup:(fun db -> setup ~fail:"X'45676773'" db)
+              (fun _ db pool ->
+                let r =
+                  Db.transaction pool (fun tx ->
+                      let a = text (Tx.exec tx ann) in
+                      let b =
+                        text
+                          (Tx.exec tx (User.create ~name:"Bo" ~email:"b@x" ()))
+                      in
+                      a ^ " / " ^ b )
+                in
+                (r, commands db) )
+          in
+          equal bool true (r = Ok "Constraint_violation Unique: scripted / ok") ;
+          equal (list string)
+            [ "START TRANSACTION"
+            ; "SAVEPOINT cistern_sp_1"
+            ; "user"
+            ; "todo 41 Milk"
+            ; "todo 41 Eggs"
+            ; "ROLLBACK TO SAVEPOINT cistern_sp_1"
+            ; "user"
+            ; "COMMIT" ]
+            cmds ) ]

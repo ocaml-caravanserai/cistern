@@ -244,3 +244,169 @@ let tests =
             (List.length
                (Cistern.Private.Schema.faults
                   [Stubs.node; Stubs.person; Stubs.msg] ) ) ) ]
+
+(* The nested create, the reset of a Belongs_to key and the relation fields of
+   the hand-written user and todo (phase 4c1, the plan of phase 4, E3, E9 and
+   E10). *)
+let nested =
+  let module User = User_todo.User in
+  let module Todo = User_todo.Todo in
+  let module Q = User_todo.Todo.Q in
+  let sql s = Cistern.Stmt.to_sql Cistern_core.Dialect.Mysql s in
+  let redacted s =
+    (Cistern.Stmt.Private.meta s).redacted Cistern_core.Dialect.Mysql
+  in
+  let atomic s = (Cistern.Stmt.Private.meta s).atomic in
+  let ann ?todos () = User.create ~name:"Ann" ~email:"a@x" ?todos () in
+  let milk = Todo.draft ~title:"Milk" ()
+  and eggs = Todo.draft ~title:"Eggs" () in
+  let todo user =
+    {User_todo.id= 1L; user_id= 2L; user; title= "t"; done_= false; note= None}
+  in
+  let ann_row : User_todo.user =
+    { id= 2L
+    ; name= "Ann"
+    ; email= "a@x"
+    ; nick= None
+    ; age= None
+    ; active= true
+    ; todos= Deferred.Unloaded }
+  in
+  let state (t : User_todo.todo) =
+    match t.user with Deferred.Unloaded -> "Unloaded" | Loaded u -> u.name
+  in
+  group "The nested create"
+    [ test "to_sql: the parent, then each child with <last_insert_id>" (fun () ->
+          let s = ann ~todos:[milk; eggs] () in
+          equal (list string)
+            [ "INSERT INTO `user` (`name`, `email`, `nick`, `age`, `active`) \
+               VALUES (_utf8mb4 X'416E6E', _utf8mb4 X'614078', NULL, NULL, 1)"
+            ; "INSERT INTO `todo` (`user_id`, `title`, `done`, `note`) VALUES \
+               (<last_insert_id>, _utf8mb4 X'4D696C6B', 0, NULL)"
+            ; "INSERT INTO `todo` (`user_id`, `title`, `done`, `note`) VALUES \
+               (<last_insert_id>, _utf8mb4 X'45676773', 0, NULL)" ]
+            (sql s) ;
+          (* The redacted SQL of the events: ? also for the key of the parent
+             (E7). *)
+          let child =
+            "INSERT INTO `todo` (`user_id`, `title`, `done`, `note`) VALUES \
+             (?, ?, ?, ?)"
+          in
+          equal (list string)
+            [ "INSERT INTO `user` (`name`, `email`, `nick`, `age`, `active`) \
+               VALUES (?, ?, ?, ?, ?)"
+            ; child
+            ; child ]
+            (redacted s) ;
+          is_true (atomic s) ;
+          is_false (Cistern.Stmt.Private.meta s).for_update )
+    ; test "a key that is not [@auto]: the key of the draft in each child"
+        (fun () ->
+          equal (list string)
+            [ "INSERT INTO `p` (`code`, `x`) VALUES (_utf8mb4 X'41', 1e0)"
+            ; "INSERT INTO `c` (`pcode`, `y`) VALUES (_utf8mb4 X'41', 2e0)" ]
+            (sql (Coded.create [2.])) ;
+          equal bool true
+            ((Cistern.Stmt.Private.meta (Coded.create [2.])).text = None) )
+    ; test "a value with no literal in the parent or in a child: Invalid_value"
+        (fun () ->
+          let text s = (Cistern.Stmt.Private.meta s).text in
+          let nan = Float.nan in
+          equal bool true
+            ( text (Coded.create ~x:nan [2.])
+              = Some (Error "a NaN is not a SQL value")
+            && text (Coded.create [2.; nan])
+               = Some (Error "a NaN is not a SQL value") ) ;
+          equal (list string)
+            [ "INSERT INTO `p` (`code`, `x`) VALUES (_utf8mb4 X'41', 1e0)"
+            ; "INSERT INTO `c` (`pcode`, `y`) VALUES (_utf8mb4 X'41', 2e0)"
+            ; "<Invalid_value: a NaN is not a SQL value>" ]
+            (sql (Coded.create [2.; nan])) )
+    ; test "each label of User.create" (fun () ->
+          (* Each label gives its own value: N, E, K, 3, 0, and the todo T, 1,
+             O. *)
+          equal (list string)
+            [ "INSERT INTO `user` (`name`, `email`, `nick`, `age`, `active`) \
+               VALUES (_utf8mb4 X'4E', _utf8mb4 X'45', _utf8mb4 X'4B', 3, 0)"
+            ; "INSERT INTO `todo` (`user_id`, `title`, `done`, `note`) VALUES \
+               (<last_insert_id>, _utf8mb4 X'54', 1, _utf8mb4 X'4F')" ]
+            (sql
+               (User.create ~name:"N" ~email:"E" ~nick:"K" ~age:3 ~active:false
+                  ~todos:[Todo.draft ~title:"T" ~done_:true ~note:"O" ()]
+                  () ) ) )
+    ; test "two has_many: the groups in the order of the list" (fun () ->
+          let p =
+            "INSERT INTO `p` (`code`, `x`) VALUES (_utf8mb4 X'41', 1e0)"
+          in
+          let c =
+            "INSERT INTO `c` (`pcode`, `y`) VALUES (_utf8mb4 X'41', 2e0)"
+          in
+          let d =
+            "INSERT INTO `d` (`owner`, `name`) VALUES (_utf8mb4 X'41', \
+             _utf8mb4 X'726578')"
+          in
+          let s = Coded.create ~pets:["rex"] [2.; 2.] in
+          equal (list string) [p; c; c; d] (sql s) ;
+          equal int 4 (List.length (redacted s)) ;
+          is_true (atomic s) ;
+          (* One empty group and one with a child: atomic, with the child. *)
+          equal (list string) [p; d] (sql (Coded.create ~pets:["rex"] [])) ;
+          is_true (atomic (Coded.create ~pets:["rex"] [])) ;
+          equal (list string) [p; c] (sql (Coded.create ~pets:[] [2.])) ;
+          is_true (atomic (Coded.create ~pets:[] [2.])) ;
+          (* Two empty groups: one INSERT, not atomic. *)
+          equal (list string) [p] (sql (Coded.create ~pets:[] [])) ;
+          is_false (atomic (Coded.create ~pets:[] [])) )
+    ; test "no child, or an empty list: one INSERT, not atomic" (fun () ->
+          equal (list string) (sql (ann ())) (sql (ann ~todos:[] ())) ;
+          equal int 1 (List.length (sql (ann ~todos:[] ()))) ;
+          is_false (atomic (ann ())) ;
+          is_false (atomic (ann ~todos:[] ())) )
+    ; test "decode and of_draft give Unloaded" (fun () ->
+          let t =
+            Cistern.Private.Decoder.run User_todo.Cistern_model__todo.decode
+              [|Some "1"; Some "2"; Some "t"; Some "0"; None|]
+          in
+          equal (result string string) (Ok "Unloaded") (Result.map state t) ;
+          let u =
+            User_todo.Cistern_model__user.of_draft
+              (User.draft ~name:"Ann" ~email:"a@x" ())
+              (Some 2L)
+          in
+          is_true (u.todos = Deferred.Unloaded) ;
+          let t = User_todo.Cistern_model__todo.of_draft milk (Some 1L) in
+          equal string "Unloaded" (state t) )
+    ; test "the setters of the relation fields set Loaded" (fun () ->
+          let u =
+            User_todo.Cistern_fields__user.Set_user.todos ann_row [todo Unloaded]
+          in
+          is_true (u.todos = Deferred.Loaded [todo Unloaded]) ;
+          let t =
+            User_todo.Cistern_fields__user.Set_todo.user (todo Unloaded) ann_row
+          in
+          equal string "Ann" (state t) )
+    ; test "a new key resets the Belongs_to, the same key keeps it" (fun () ->
+          let t = todo (Deferred.Loaded ann_row) in
+          equal (list string)
+            ["Unloaded"; "Ann"; "Unloaded"; "Ann"]
+            [ state (Cistern.Private.Field.set Q.user_id t 3L)
+            ; state (Cistern.Private.Field.set Q.user_id t 2L)
+            ; state
+                (Cistern.Private.Update.apply
+                   (Cistern.Private.Update.set Q.user_id 3L)
+                   t )
+            ; state
+                (Cistern.Private.Update.apply
+                   (Cistern.Private.Update.set Q.user_id 2L)
+                   t ) ] ;
+          (* The key changes in each case. *)
+          equal int64 3L (Cistern.Private.Field.set Q.user_id t 3L).user_id )
+    ; test "Encode.reset compares the encoded keys" (fun () ->
+          let e = Cistern.Private.Encode.int64 in
+          let l = Deferred.Loaded "p" in
+          equal bool true
+            ( Cistern.Private.Encode.reset e 1L 1L l = l
+            && Cistern.Private.Encode.reset e 1L 2L l = Deferred.Unloaded
+            && Cistern.Private.Encode.reset Cistern.Private.Encode.float 0.0
+                 (-0.0) l
+               = Deferred.Unloaded ) ) ]
