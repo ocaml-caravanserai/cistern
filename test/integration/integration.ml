@@ -211,6 +211,56 @@ let tests =
           in_weft (fun () ->
               equal string "connected"
                 (connect_ping (on_socket ~user:"root" ~password:"" ())) ) )
+    ; test "round trip 3: the identity of the test user, and root" (fun () ->
+          (* The identity of each connection is the one that a separate query on
+             it reads. Root has SUPER: its pool would turn KILL off. *)
+          in_weft (fun () ->
+              let read c sql =
+                match Conn.Private.query_text c (Raw.sql sql) with
+                | Ok [row] ->
+                    Array.to_list (Array.map (Option.value ~default:"NULL") row)
+                | _ ->
+                    failwith sql
+              in
+              let identity_text c =
+                match (Conn.info c).identity with
+                | Conn.Checked (Mysql_server {uuid; start}) ->
+                    [uuid; Int64.to_string start]
+                | Conn.Checked
+                    (Mariadb_server
+                       {server_uid; hostname; port; server_id; start} ) ->
+                    [ server_uid
+                    ; hostname
+                    ; string_of_int port
+                    ; Int64.to_string server_id
+                    ; Int64.to_string start ]
+                | Conn.Unchecked ->
+                    ["unchecked"]
+                | Conn.Refused r ->
+                    [ Format.asprintf "%a" Cistern_core.Event.pp
+                        (Cistern_core.Event.Kill_off {reason= r}) ]
+              in
+              let expected c =
+                if mysql then
+                  read c
+                    "SELECT @@server_uuid, UNIX_TIMESTAMP() - (SELECT \
+                     VARIABLE_VALUE FROM performance_schema.global_status \
+                     WHERE VARIABLE_NAME = 'Uptime')"
+                else
+                  read c
+                    "SELECT @@server_uid, @@hostname, @@port, @@server_id, \
+                     UNIX_TIMESTAMP() - (SELECT VARIABLE_VALUE FROM \
+                     information_schema.GLOBAL_STATUS WHERE VARIABLE_NAME = \
+                     'UPTIME')"
+              in
+              warm () ;
+              List.iter
+                (fun config ->
+                  with_conn config (fun c ->
+                      equal (list string) (expected c) (identity_text c) ) )
+                [on_socket ~clear:true (); on_tcp (); on_tls ()] ;
+              with_conn (on_socket ~user:"root" ~password:"" ()) (fun c ->
+                  equal (list string) ["kill off privileged"] (identity_text c) ) ) )
     ; test "a wrong password" (fun () ->
           in_weft (fun () ->
               warm () ;

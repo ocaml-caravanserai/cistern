@@ -33,6 +33,8 @@ type t =
   ; closed: bool Atomic.t
   ; sockets: int Atomic.t
   ; over_bound: int Atomic.t
+  ; kill_off: bool Atomic.t
+        (** [KILL] is off for the pool (the plan of phase 1.5, D6a). *)
   ; txs: Fibers.t Atomic.t }
 
 module Private = struct
@@ -82,6 +84,8 @@ module Private = struct
 
   let over_bound t = Atomic.get t.over_bound
 
+  let kill_off t = Atomic.get t.kill_off
+
   let idle_expiry t =
     Mutex.protect t.mutex (fun () ->
         List.map (fun (e : _ P.entry) -> e.expires) (P.idle t.st) )
@@ -120,6 +124,7 @@ let create ?random ?(on_query = ignore) ~pool_size ~max_lifetime
   ; closed= Atomic.make false
   ; sockets= Atomic.make 0
   ; over_bound= Atomic.make 0
+  ; kill_off= Atomic.make false
   ; txs= Atomic.make Fibers.empty }
 
 (* The time of the pool: the span since its origin. *)
@@ -232,7 +237,7 @@ let connect t =
          ; error } )
   in
   match Connection.connect t.config with
-  | Ok c ->
+  | Ok c -> (
       ( if Atomic.fetch_and_add t.sockets 1 >= t.size then
           Atomic.incr t.over_bound )
       [@mutate off "a detector for the tests: a correct pool never reaches it"] ;
@@ -256,7 +261,15 @@ let connect t =
       | P.Opened_close c ->
           (abort [@mutate off "connect fibers end before shutdown"]) t c ) ;
       if wake then ring t ;
-      event None
+      event None ;
+      (* The first refused identity turns KILL off for the pool, with one event:
+         a compare_and_set decides it, also across domains. *)
+      match info.identity with
+      | Connection.Refused reason ->
+          if Atomic.compare_and_set t.kill_off false true then
+            emit t (Event.Kill_off {reason})
+      | Connection.Unchecked | Connection.Checked _ ->
+          () )
   | Error err ->
       open_failed t err ; event (Some err)
   | exception (Fiber.Cancelled _ as ex) ->

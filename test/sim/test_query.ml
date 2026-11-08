@@ -18,7 +18,7 @@ module T = Types_fixture
 
 let tcp () =
   Result.get_ok
-    (C.make ~tls:C.No_tls
+    (C.make ~kill:false ~tls:C.No_tls
        ~address:(C.Tcp {host= "10.0.0.1"; port= 3306})
        ~user:"u" ~password:"pw" ~database:"db" () )
 

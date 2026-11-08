@@ -66,10 +66,11 @@ let install () =
 
 let password = "secret-pw"
 
-(* A TCP configuration with TLS. [ca] is a path. *)
+(* A TCP configuration with TLS. [ca] is a path. With [kill=false]: the scripts
+   of Fake_server have no round trip 3. *)
 let config ?(host = "10.0.0.1") ?ca ?fingerprint ?authenticator mode =
   Result.get_ok
-    (C.make
+    (C.make ~kill:false
        ~tls:(C.Tls {mode; ca; fingerprint})
        ?authenticator
        ~address:(C.Tcp {host; port= 3306})

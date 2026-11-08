@@ -178,6 +178,9 @@ module Private : sig
   val sockets : t -> int
   (** The open sockets of the client. *)
 
+  val kill_off : t -> bool
+  (** [KILL] is off for the pool: a connection gave a refused identity. *)
+
   val over_bound : t -> int
   (** The count of the opens that found more than [pool_size] sockets: 0 in a
       correct run. *)

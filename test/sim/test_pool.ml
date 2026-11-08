@@ -179,12 +179,18 @@ let deaf ~hold =
    max_lifetime and 4031 faults. Each fiber starts at a random time in one of
    three waves and records one outcome. Then, when the pool is quiet, 8 fibers
    must each get a connection at once. It gives the outcomes, sorted. *)
+(* Connection_lost: the server of the idle fault (4031 after 25 ms) can send
+   its 4031 between the stale check of a connection and the read of the
+   statement, on another virtual domain at the same time. The ERR has the
+   sequence id 0 (rule R-SEQ0): the statement did not run. Round trip 3 of PR
+   1.5b changed the schedule, and seed 3 of the slow storm reaches it. *)
 let permitted =
   [ "ok"
   ; "cancelled"
   ; "Timeout"
   ; "Pool_exhausted"
   ; "Outcome_unknown statement"
+  ; "Connection_lost"
   ; "Constraint_violation Unique" ]
 
 let storm ~fibers ~seed ~seam =
