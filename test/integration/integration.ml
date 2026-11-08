@@ -348,7 +348,7 @@ let () =
     | None | Some "" | Some "deterministic" ->
         (* The Db tests first: they count the sessions of the test user. *)
         Db_tests.deterministic :: Tx_tests.deterministic
-        :: Schema_tests.deterministic :: tests
+        :: Schema_tests.deterministic :: Typed_tests.deterministic :: tests
         @ [ query_tests
           ; Tls_tests.deterministic
           ; Kill_tests.deterministic

@@ -47,4 +47,46 @@ let deterministic =
                               needs 255"
                            ; "\"todo\".\"id\": the column has no \
                               AUTO_INCREMENT, the model needs it ([@auto])" ] )
-                        (Db.check_schema db models) ) ) ) ) ]
+                        (Db.check_schema db models) ) ) ) )
+    ; test
+        "check_schema finds DATETIME with no fraction, a case-insensitive \
+         collation and an unsigned column" (fun () ->
+          in_weft (fun () ->
+              warm () ;
+              Db.with_db (Db_tests.config ()) (fun db ->
+                  let run s = ignore (Db.exec_exn db (Raw.exec (Raw.sql s))) in
+                  let kinds = [Kinds.Kinds.model] in
+                  run "DROP TABLE IF EXISTS `kinds`" ;
+                  Fun.protect
+                    ~finally:(fun () -> run "DROP TABLE IF EXISTS `kinds`")
+                    (fun () ->
+                      Db.push_schema db kinds ;
+                      equal
+                        (result unit (list string))
+                        (Ok ()) (Db.check_schema db kinds) ;
+                      let ci =
+                        if mysql then "utf8mb4_0900_ai_ci"
+                        else "utf8mb4_general_ci"
+                      in
+                      let bin =
+                        if mysql then "utf8mb4_0900_bin"
+                        else "utf8mb4_nopad_bin"
+                      in
+                      run "ALTER TABLE `kinds` MODIFY `t` DATETIME NOT NULL" ;
+                      run
+                        ( "ALTER TABLE `kinds` MODIFY `s` MEDIUMTEXT COLLATE "
+                        ^ ci ^ " NOT NULL" ) ;
+                      run
+                        "ALTER TABLE `kinds` MODIFY `i` BIGINT UNSIGNED NOT \
+                         NULL" ;
+                      equal
+                        (result unit (list string))
+                        (Error
+                           [ "\"kinds\".\"i\": the column is unsigned"
+                           ; Printf.sprintf
+                               "\"kinds\".\"s\": the collation is \"%s\", the \
+                                model needs %s"
+                               ci bin
+                           ; "\"kinds\".\"t\": the precision is 0, the model \
+                              needs 6" ] )
+                        (Db.check_schema db kinds) ) ) ) ) ]
