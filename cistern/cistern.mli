@@ -68,6 +68,9 @@ module Query : sig
     with module Private := Query.Private
 end
 
+(** The value of a relation field (DESIGN.md, "Deferred values"). *)
+module Deferred = Cistern_core.Deferred
+
 (** The signature of a model module (DESIGN.md, "Generated code"). *)
 module type MODEL = Cistern_core.Model_intf.MODEL
 
@@ -87,7 +90,20 @@ module Private : sig
   module Schema = Cistern_core.Schema
   module Decoder = Cistern_core.Decoder
   module Encode = Cistern_core.Encode
+  module Deferred = Cistern_core.Deferred
+  module Relation = Relation
   module Model = Model
   module Query = Query
   module Schema_ops = Schema_ops
+end
+
+(** A relation, for [Query.include_]. The generated [Rel] makes it, through
+    [Cistern.Private.Relation]. It comes after [Private], so that
+    [Private.Relation] is the whole module. *)
+module Relation : sig
+  type ('m, 'r) t = ('m, 'r) Private.Relation.t
+
+  val name : (_, _) t -> string
+
+  val kind : (_, _) t -> [`Has_many | `Belongs_to]
 end
