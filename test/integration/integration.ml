@@ -348,7 +348,10 @@ let () =
     | None | Some "" | Some "deterministic" ->
         (* The Db tests first: they count the sessions of the test user. *)
         (Db_tests.deterministic :: Tx_tests.deterministic :: tests)
-        @ [query_tests; Tls_tests.deterministic; Claims.deterministic]
+        @ [ query_tests
+          ; Tls_tests.deterministic
+          ; Kill_tests.deterministic
+          ; Claims.deterministic ]
     | Some "timing" ->
         [Db_tests.timing; Tx_tests.timing; Tls_tests.timing; Claims.timing]
     | Some "shutdown" ->

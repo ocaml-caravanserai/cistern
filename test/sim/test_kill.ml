@@ -506,6 +506,23 @@ let tests =
           equal int 5 (List.length kills) ;
           is_true ~msg:(String.concat "; " kills)
             (String.ends_with ~suffix:"drain_timeout" (List.nth kills 4)) )
+    ; test "no KILL for a cancel in the session reset" (fun () ->
+          (* A raw statement makes the entry dirty. The next exec gets a cancel
+             during its reset: no statement was sent, no KILL (review A of 1.5d,
+             D4). *)
+          let r, events =
+            with_kill (fun _ db pool ->
+                let a = T.result_text (Db.exec pool (q "SELECT 1")) in
+                db.D.faults.reset_ms <- 50 ;
+                let b = cancelled pool "SELECT 2" in
+                wait 100 ;
+                [ a
+                ; b
+                ; string_of_int db.D.killed
+                ; string_of_int (Pool.Private.killing (pool_of pool)) ] )
+          in
+          equal (list string) ["1"; "cancelled"; "0"; "0"] r ;
+          equal (list string) [] (only_kills events) )
     ; test "the control connection: a failed connect, then the backoff"
         (fun () ->
           let r, events =

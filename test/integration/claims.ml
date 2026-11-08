@@ -5,7 +5,7 @@
 (* The claims of DESIGN.md, "Verification of claims (phase 1.1)", on the real
    servers, with Cistern's own client (the plan of phase 1.1, section 7). Each
    test names its claim. The group [deterministic] runs in each integration job.
-   The groups [timing] (C8a, C8b, C9) and [shutdown] (C8c, which stops the
+   The groups [timing] (C8a, C8b, C9, C34) and [shutdown] (C8c, which stops the
    server) run only in the nightly db.yml.
 
    A test asserts what the server gives today: the error number and SQLSTATE of
@@ -808,6 +808,138 @@ let c31 =
           is_false ~msg:"stale" (Conn.stale c) ;
           equal string "Int 2" (one_text c (sql "SELECT 2")) ) )
 
+(* The claims of KILL (phase 1.5d), with Connection.kill of Cistern's client.
+   [sleeping c s f]: a SELECT SLEEP of [s] seconds on [c] in a fiber, [f] while
+   it runs (root sees it in PROCESSLIST), and the result of the SELECT. *)
+let sleeping c s f =
+  let info = Printf.sprintf "SELECT SLEEP(%d)" s in
+  Weft.Fiber.scope (fun s ->
+      let p = Weft.Fiber.fork_promise s (fun () -> exec c (sql info)) in
+      let id = (Conn.info c).connection_id in
+      let rec poll n =
+        if
+          admin
+            (Printf.sprintf
+               "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID = \
+                %Ld AND INFO = '%s'"
+               id info )
+          <> "1"
+        then
+          if n = 0 then failwith "integration: no SLEEP that runs"
+          else (
+            Weft.Time.sleep Weft.Clock.Mono (Weft.Span.ms 10) ;
+            poll (n - 1) )
+      in
+      poll 500 ;
+      let r = f id in
+      (r, Weft.Promise.await p) )
+
+let kill_text = function
+  | Ok Conn.Killed ->
+      "killed"
+  | Ok Conn.Gone ->
+      "gone"
+  | Ok Conn.Not_owner ->
+      "not_owner"
+  | Error e ->
+      error_text e
+
+(* C32 (K1, K3 of the plan of phase 1.5). *)
+let c32 =
+  on all "C32: the test user kills its own session; 1095 for root's" (fun () ->
+      warm () ;
+      with_conn (user_conn ()) (fun killer ->
+          with_conn (user_conn ()) (fun victim ->
+              let k, r =
+                sleeping victim 5 (fun id -> kill_text (Conn.kill killer id))
+              in
+              equal string "killed" k ;
+              equal string "Outcome_unknown statement" r ) ;
+          with_conn (root ()) (fun r ->
+              let k, _ =
+                sleeping r 1 (fun id -> kill_text (Conn.kill killer id))
+              in
+              equal string "not_owner" k ;
+              (* The connection of the test user stays usable. *)
+              equal string "ok" (unit_text (Conn.ping killer)) ) ) )
+
+(* C33 (K2). *)
+let c33 =
+  on all "C33: KILL of an id that does not exist: 1094" (fun () ->
+      warm () ;
+      with_conn (user_conn ()) (fun c ->
+          equal string "gone" (kill_text (Conn.kill c 4_000_000_000L)) ;
+          equal string "ok" (unit_text (Conn.ping c)) ) )
+
+(* C35 (V7, the probe P1 of review A of the plan of phase 1.5): the form of C27,
+   with KILL CONNECTION of Cistern's client. *)
+let c35 =
+  on all "C35: KILL CONNECTION of a COMMIT that waits: a rollback" (fun () ->
+      warm () ;
+      with_conn (user_conn ()) (fun killer ->
+          with_conn (user_conn ()) (fun c ->
+              table c "c35" "(id INT PRIMARY KEY) ENGINE=InnoDB" ;
+              let id = (Conn.info c).connection_id in
+              exec_ok c "START TRANSACTION" ;
+              exec_ok c "INSERT INTO c35 VALUES (1)" ;
+              let commit, gone_with_lock =
+                with_conn (root ()) (fun r ->
+                    exec_ok r "FLUSH TABLES WITH READ LOCK" ;
+                    Fun.protect
+                      ~finally:(fun () -> exec_ok r "UNLOCK TABLES")
+                      (fun () ->
+                        Weft.Fiber.scope (fun s ->
+                            let p =
+                              Weft.Fiber.fork_promise s (fun () ->
+                                  exec c (sql "COMMIT") )
+                            in
+                            let count () =
+                              admin
+                                (Printf.sprintf
+                                   "SELECT COUNT(*) FROM \
+                                    information_schema.PROCESSLIST WHERE ID = \
+                                    %Ld"
+                                   id )
+                            in
+                            let rec poll n =
+                              if
+                                admin
+                                  (Printf.sprintf
+                                     "SELECT COUNT(*) FROM \
+                                      information_schema.PROCESSLIST WHERE ID \
+                                      = %Ld AND INFO = 'COMMIT'"
+                                     id )
+                                <> "1"
+                              then
+                                if n = 0 then
+                                  failwith "c35: no COMMIT that waits"
+                                else (
+                                  Weft.Time.sleep Weft.Clock.Mono
+                                    (Weft.Span.ms 50) ;
+                                  poll (n - 1) )
+                            in
+                            poll 100 ;
+                            equal string "killed"
+                              (kill_text (Conn.kill killer id)) ;
+                            let r = Weft.Promise.await p in
+                            let rec gone n =
+                              count () = "0"
+                              || n > 0
+                                 &&
+                                 ( Weft.Time.sleep Weft.Clock.Mono
+                                     (Weft.Span.ms 10) ;
+                                   gone (n - 1) )
+                            in
+                            (r, gone 100) ) ) )
+              in
+              (* The end of the stream after the flush of COMMIT. *)
+              equal string "Outcome_unknown statement" commit ;
+              is_true ~msg:"the session goes while the lock is held"
+                gone_with_lock ) ;
+          equal string "Int 0"
+            (one_text killer (sql "SELECT COUNT(*) FROM c35")) ;
+          exec_ok killer "DROP TABLE c35" ) )
+
 let deterministic =
   group "claims"
     [ c1
@@ -833,7 +965,10 @@ let deterministic =
     ; c28
     ; c29
     ; c30
-    ; c31 ]
+    ; c31
+    ; c32
+    ; c33
+    ; c35 ]
 
 (* The timing claims. A connection A waits on a row lock that the admin holds;
    the killer polls the server until A waits, then acts. *)
@@ -947,7 +1082,42 @@ let c9 =
           equal string "Int 0" (one_text c (sql "SELECT COUNT(*) FROM c9")) ;
           exec_ok c "DROP TABLE c9" ) )
 
-let timing = group "timing claims" [c8a; c8b; c9]
+(* C34 (K4, P1 of phase 1.5): a killed session leaves PROCESSLIST within 1 s
+   (the probes: 1 to 64 ms). *)
+let c34 =
+  on all "C34: a killed session leaves PROCESSLIST within 1 s" (fun () ->
+      warm () ;
+      with_conn (user_conn ()) (fun killer ->
+          with_conn (user_conn ()) (fun victim ->
+              let left, _ =
+                sleeping victim 5 (fun id ->
+                    let t0 = Weft.Time.now Weft.Clock.Mono in
+                    ignore (Conn.kill killer id) ;
+                    (* At most 5 s. *)
+                    let rec wait n =
+                      if
+                        n > 0
+                        && admin
+                             (Printf.sprintf
+                                "SELECT COUNT(*) FROM \
+                                 information_schema.PROCESSLIST WHERE ID = %Ld"
+                                id )
+                           <> "0"
+                      then (
+                        Weft.Time.sleep Weft.Clock.Mono (Weft.Span.ms 5) ;
+                        wait (n - 1) )
+                    in
+                    wait 1000 ;
+                    Int64.to_float
+                      (Weft.Span.to_ns
+                         (Weft.Time.diff Weft.Clock.Mono
+                            (Weft.Time.now Weft.Clock.Mono)
+                            t0 ) )
+                    /. 1e9 )
+              in
+              is_true ~msg:(Printf.sprintf "%.3f s" left) (left < 1.0) ) ) )
+
+let timing = group "timing claims" [c8a; c8b; c9; c34]
 
 (* C8c stops the server: the nightly job runs it last, then make db-up. *)
 let c8c =
