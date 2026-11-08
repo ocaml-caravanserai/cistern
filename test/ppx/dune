@@ -6,7 +6,14 @@
 
 (test
  (name test_ppx)
- (libraries ppx_cistern ppxlib cistern.schema cistern_test_models windtrap)
+ (libraries
+  ppx_cistern
+  ppxlib
+  cistern.schema
+  cistern_test_models
+  ppx_driver_check
+  windtrap)
  (deps
-  (glob_files ../model/*.ml))
+  (glob_files ../model/*.ml)
+  (glob_files driver/*.ml))
  (link_flags (-linkall)))

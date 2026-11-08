@@ -4,8 +4,8 @@
 
 (* The group of auto_only, written by hand: a model with only an [@auto] key.
    Its draft is empty (Cistern.Private.Encode.empty), and its create is INSERT
-   INTO auto_only () VALUES (). Stage 1 has the form of the ppx (see
-   kinds.ml). *)
+   INTO auto_only () VALUES (). The items after the declaration have the form of
+   the ppx (see kinds.ml). *)
 
 type auto_only = {id: int64 [@key] [@auto]}
 
@@ -84,17 +84,61 @@ module Cistern_model__auto_only :
 end
 [@@ocaml.warning "-23-27-30-32-34-37-40-41-42-60-69"]
 
+module Cistern_gen__auto_only = struct
+  module Auto_only = struct
+    type nonrec t = auto_only
+
+    module Q = struct
+      let id = Cistern_fields__auto_only.Auto_only.id
+
+      include Cistern__private__auto_only.Expr.Ops
+    end
+
+    let get_by_id cistern__k =
+      Cistern__private__auto_only.Model.get
+        (module Cistern_model__auto_only)
+        cistern__k
+
+    let find_by_id cistern__k =
+      Cistern__private__auto_only.Model.find
+        (module Cistern_model__auto_only)
+        cistern__k
+
+    let all =
+      Cistern__private__auto_only.Model.all (module Cistern_model__auto_only)
+
+    let where cistern__e =
+      Cistern__private__auto_only.Model.where
+        (module Cistern_model__auto_only)
+        cistern__e
+
+    let update cistern__r =
+      Cistern__private__auto_only.Model.update
+        (module Cistern_model__auto_only)
+        (Cistern__private__auto_only.Encode.updates [])
+        cistern__r
+
+    let delete cistern__r =
+      Cistern__private__auto_only.Model.delete
+        (module Cistern_model__auto_only)
+        cistern__r
+
+    let draft () : Cistern_drafts__auto_only.auto_only = ()
+  end
+end
+[@@ocaml.warning "-23-27-30-32-34-37-40-41-42-60-69"]
+
 module Auto_only = struct
-  type t = auto_only
+  include Cistern_gen__auto_only.Auto_only
+  module Drafts = Cistern_drafts__auto_only
 
-  let get_by_id k =
-    Cistern.Private.Model.get (module Cistern_model__auto_only) k
-
-  let delete r =
-    Cistern.Private.Model.delete (module Cistern_model__auto_only) r
+  type draft = Drafts.auto_only
 
   let model : (module Cistern.MODEL) = (module Cistern_model__auto_only)
 
   let create () =
-    Cistern.Private.Model.create (module Cistern_model__auto_only) ()
+    Cistern__private__auto_only.Model.create
+      (module Cistern_model__auto_only)
+      (Cistern_gen__auto_only.Auto_only.draft ())
 end
+[@@ocaml.warning "-23-27-30-32-34-37-40-41-42-60-69"]

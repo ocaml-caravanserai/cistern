@@ -303,20 +303,17 @@ let suite ~events (run : 'a. 'a Stmt.t -> ('a, Cistern.Error.t) result) =
   (* The round trip of each scalar, and the cut of a Ptime.t. *)
   let k =
     ok
-      (Kinds.create
-         (Kinds.draft ~id:1L ~i:(-5) ~s:"\xc3\xa9\x00?" ~s_opt:"x" ~b:true
-            ~b_opt:false ~f:(-0.0) ~f_opt:1e300
-            ~y:(Bytes.of_string "\x00\xff")
-            ~t:t_ns ~t_opt:t_1000 () ) )
+      (Kinds.create ~id:1L ~i:(-5) ~s:"\xc3\xa9\x00?" ~s_opt:"x" ~b:true
+         ~b_opt:false ~f:(-0.0) ~f_opt:1e300
+         ~y:(Bytes.of_string "\x00\xff")
+         ~t:t_ns ~t_opt:t_1000 () )
   in
   let back = ok (Kinds.get_by_id 1L) in
   equal bool true (back = k) ;
   equal bool true (Ptime.equal back.t (Ptime.truncate ~frac_s:6 t_ns)) ;
   (* MySQL keeps -0.0, MariaDB gives 0.0 (DESIGN.md, "Literals"). *)
   equal bool mysql (Float.sign_bit back.f) ;
-  let k' =
-    ok (Kinds.update [U.set Kinds.Q.t t_ns; U.set Kinds.Q.i_opt (Some 7)] k)
-  in
+  let k' = ok (Kinds.update ~t:t_ns ~i_opt:(Some 7) k) in
   equal bool true (ok (Kinds.get_by_id 1L) = k') ;
   (* Auto_only: INSERT INTO auto_only () VALUES (). *)
   let a = ok (Auto_only.create ()) and b = ok (Auto_only.create ()) in

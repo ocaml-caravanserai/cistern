@@ -219,6 +219,33 @@
      %{project_root}/test/model/.cistern_test_models.objs/byte
      model_order_by.ml)))))
 
+; A file of [@@deriving cistern]: ocamlc runs the driver with ppx_cistern.
+; The default thunk comes before any use of the library, so the typing needs
+; no other library.
+
+(executable
+ (name ppx_driver)
+ (modules ppx_driver)
+ (libraries ppx_cistern ppxlib)
+ (link_flags (-linkall)))
+
+(rule
+ (deps default_type.ml ppx_driver.exe)
+ (action
+  (with-outputs-to
+   default_type.out
+   (with-accepted-exit-codes
+    2
+    (run
+     %{ocamlc}
+     -color
+     never
+     -stop-after
+     typing
+     -ppx
+     "./ppx_driver.exe --as-ppx"
+     default_type.ml)))))
+
 (test
  (name test_typeerr)
  (modules test_typeerr)
@@ -239,4 +266,6 @@
   model_order_by.out
   model_order_by.expected
   query_private.out
-  query_private.expected))
+  query_private.expected
+  default_type.out
+  default_type.expected))

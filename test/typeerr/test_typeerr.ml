@@ -15,7 +15,8 @@ let files =
   ; "starts_with_opt_string"
   ; "model_where"
   ; "model_order_by"
-  ; "query_private" ]
+  ; "query_private"
+  ; "default_type" ]
 
 let read path = In_channel.with_open_bin path In_channel.input_all
 

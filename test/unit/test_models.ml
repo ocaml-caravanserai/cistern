@@ -134,6 +134,170 @@ let tests =
           equal int64 8L r.id ;
           equal string "c" r.city ;
           equal bool true r.active )
+    ; test "person and kinds: each label of update sets its column" (fun () ->
+          (* The column of the SET of an UPDATE with one column. *)
+          let set s =
+            match Cistern.Stmt.to_sql Cistern_core.Dialect.Mysql s with
+            | [sql] ->
+                let rec find i =
+                  if String.sub sql i 5 = " SET " then i + 5 else find (i + 1)
+                in
+                let i = find 0 in
+                String.sub sql i (String.index_from sql i '=' - i - 1)
+            | _ ->
+                "?"
+          in
+          let p =
+            { Person.id= 3L
+            ; email= "e"
+            ; nick= None
+            ; city= "c"
+            ; age= None
+            ; active= true }
+          in
+          let module P = Person.Person in
+          equal (list string)
+            ["`email`"; "`nick_name`"; "`city`"; "`age`"; "`active`"]
+            [ set (P.update ~email:"f" p)
+            ; set (P.update ~nick:(Some "n") p)
+            ; set (P.update ~city:"d" p)
+            ; set (P.update ~age:(Some 1) p)
+            ; set (P.update ~active:false p) ] ;
+          let t0 = Option.get (Ptime.of_float_s 0.) in
+          let k =
+            { Kinds.id= 1L
+            ; i= 1
+            ; i_opt= None
+            ; s= ""
+            ; s_opt= None
+            ; b= true
+            ; b_opt= None
+            ; f= 0.
+            ; f_opt= None
+            ; y= Bytes.empty
+            ; y_opt= None
+            ; t= t0
+            ; t_opt= None }
+          in
+          let module K = Kinds.Kinds in
+          equal (list string)
+            [ "`i`"
+            ; "`i_opt`"
+            ; "`s`"
+            ; "`s_opt`"
+            ; "`b`"
+            ; "`b_opt`"
+            ; "`f`"
+            ; "`f_opt`"
+            ; "`y`"
+            ; "`y_opt`"
+            ; "`t`"
+            ; "`t_opt`" ]
+            [ set (K.update ~i:2 k)
+            ; set (K.update ~i_opt:(Some 2) k)
+            ; set (K.update ~s:"x" k)
+            ; set (K.update ~s_opt:(Some "x") k)
+            ; set (K.update ~b:false k)
+            ; set (K.update ~b_opt:(Some false) k)
+            ; set (K.update ~f:1. k)
+            ; set (K.update ~f_opt:(Some 1.) k)
+            ; set (K.update ~y:(Bytes.of_string "x") k)
+            ; set (K.update ~y_opt:(Some Bytes.empty) k)
+            ; set (K.update ~t:t0 k)
+            ; set (K.update ~t_opt:(Some t0) k) ] )
+    ; test "person and kinds: each label of draft and of create" (fun () ->
+          let module P = Person.Person in
+          let d =
+            P.draft ~email:"e" ~nick:"n" ~city:"c" ~age:5 ~active:false ()
+          in
+          equal bool true
+            ( d
+            = { Person.Person.Drafts.email= "e"
+              ; nick= Some "n"
+              ; city= "c"
+              ; age= Some 5
+              ; active= false } ) ;
+          equal (list string)
+            [ "INSERT INTO `people` (`email`, `nick_name`, `city`, `age`, \
+               `active`) VALUES (_utf8mb4 X'65', _utf8mb4 X'6E', _utf8mb4 \
+               X'63', 5, 0)" ]
+            (Cistern.Stmt.to_sql Cistern_core.Dialect.Mysql
+               (P.create ~email:"e" ~nick:"n" ~city:"c" ~age:5 ~active:false ()) ) ;
+          let module K = Kinds.Kinds in
+          let t0 = Option.get (Ptime.of_float_s 0.) in
+          let kd =
+            K.draft ~id:1L ~i:2 ~i_opt:3 ~s:"s" ~s_opt:"so" ~b:true ~b_opt:false
+              ~f:1.5 ~f_opt:2.5 ~y:(Bytes.of_string "y")
+              ~y_opt:(Bytes.of_string "yo") ~t:t0 ~t_opt:t0 ()
+          in
+          equal bool true
+            ( kd
+            = { Kinds.Kinds.Drafts.id= 1L
+              ; i= 2
+              ; i_opt= Some 3
+              ; s= "s"
+              ; s_opt= Some "so"
+              ; b= true
+              ; b_opt= Some false
+              ; f= 1.5
+              ; f_opt= Some 2.5
+              ; y= Bytes.of_string "y"
+              ; y_opt= Some (Bytes.of_string "yo")
+              ; t= t0
+              ; t_opt= Some t0 } ) ;
+          equal (list string)
+            [ "INSERT INTO `kinds` (`id`, `i`, `i_opt`, `s`, `s_opt`, `b`, \
+               `b_opt`, `f`, `f_opt`, `y`, `y_opt`, `t`, `t_opt`) VALUES (1, \
+               2, 3, _utf8mb4 X'73', _utf8mb4 X'736F', 1, 0, 1.5e0, 2.5e0, \
+               X'79', X'796F', '1970-01-01 00:00:00.000000', '1970-01-01 \
+               00:00:00.000000')" ]
+            (Cistern.Stmt.to_sql Cistern_core.Dialect.Mysql
+               (K.create ~id:1L ~i:2 ~i_opt:3 ~s:"s" ~s_opt:"so" ~b:true
+                  ~b_opt:false ~f:1.5 ~f_opt:2.5 ~y:(Bytes.of_string "y")
+                  ~y_opt:(Bytes.of_string "yo") ~t:t0 ~t_opt:t0 () ) ) )
+    ; test "person: the SQL of the values of stages 2 and 3" (fun () ->
+          let sql s = Cistern.Stmt.to_sql Cistern_core.Dialect.Mysql s in
+          let r =
+            { Person.id= 3L
+            ; email= "e"
+            ; nick= None
+            ; city= "c"
+            ; age= None
+            ; active= true }
+          in
+          let select =
+            "SELECT `people`.`id`, `people`.`email`, `people`.`nick_name`, \
+             `people`.`city`, `people`.`age`, `people`.`active` FROM `people`"
+          in
+          equal
+            (list (list string))
+            [ [select ^ " WHERE `people`.`city` = _utf8mb4 X'4F736C6F'"]
+            ; [select ^ " WHERE `people`.`email` = _utf8mb4 X'65' LIMIT 1"]
+            ; [ "UPDATE `people` SET `city` = _utf8mb4 X'64', `age` = 4 WHERE \
+                 `people`.`id` = 3" ]
+            ; []
+            ; ["DELETE FROM `people` WHERE `people`.`id` = 3"]
+            ; [ "INSERT INTO `people` (`email`, `nick_name`, `city`, `age`, \
+                 `active`) VALUES (_utf8mb4 X'65', NULL, _utf8mb4 X'63', NULL, \
+                 1)" ]
+            ; [ "INSERT INTO `people` (`email`, `nick_name`, `city`, `age`, \
+                 `active`) VALUES (_utf8mb4 X'65', _utf8mb4 X'6E', _utf8mb4 \
+                 X'63', NULL, 0)" ]
+            ; [select]
+            ; [select ^ " WHERE `people`.`age` IS NULL"] ]
+            [ sql (Cistern.Query.to_list (Person.Person.filter_by_city "Oslo"))
+            ; sql (Person.Person.find_by_email "e")
+            ; sql (Person.Person.update ~city:"d" ~age:(Some 4) r)
+            ; sql (Person.Person.update r)
+            ; sql (Person.Person.delete r)
+            ; sql (Person.Person.create ~email:"e" ~city:"c" ())
+            ; sql
+                (Person.Person.create ~email:"e" ~city:"c" ~active:false
+                   ~nick:"n" () )
+            ; sql (Cistern.Query.to_list Person.Person.all)
+            ; sql
+                (Cistern.Query.to_list
+                   (Person.Person.where Person.Person.Q.(age ==. None)) ) ] )
     ; test "person: get_by_nick takes the value with no option" (fun () ->
           equal (list string)
             [ "SELECT `people`.`id`, `people`.`email`, `people`.`nick_name`, \

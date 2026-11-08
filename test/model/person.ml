@@ -5,7 +5,8 @@
 (* The group of person, written by hand (the plan of phase 3, D16): a single
    table with an [@auto] key, a [@unique] field, a nullable [@unique] field with
    its own column name, an [@index] field, an option field, a [@default], and
-   its own table name. Stage 1 has the form of the ppx (see kinds.ml). *)
+   its own table name. The items after the declaration have the form of the ppx
+   (see kinds.ml). *)
 
 type person =
   { id: int64 [@key] [@auto]
@@ -16,10 +17,10 @@ type person =
   ; active: bool [@default true] }
 [@@table "people"]
 
-module Cistern__private__person = Cistern.Private
+let cistern__default__person__5 () : bool = true
 [@@ocaml.warning "-23-27-30-32-34-37-40-41-42-60-69"]
 
-let cistern__default__person__5 () : bool = true
+module Cistern__private__person = Cistern.Private
 [@@ocaml.warning "-23-27-30-32-34-37-40-41-42-60-69"]
 
 module Cistern_fields__person = struct
@@ -253,57 +254,91 @@ end
 [@@ocaml.warning "-23-27-30-32-34-37-40-41-42-60-69"]
 
 module Cistern_gen__person = struct
-  module M = Cistern.Private.Model
-
   module Person = struct
-    type t = person
+    type nonrec t = person
 
     module Q = struct
-      module Fl = Cistern_fields__person.Person
+      let id = Cistern_fields__person.Person.id
 
-      let id = Fl.id
+      let email = Cistern_fields__person.Person.email
 
-      let email = Fl.email
+      let nick = Cistern_fields__person.Person.nick
 
-      let nick = Fl.nick
+      let city = Cistern_fields__person.Person.city
 
-      let city = Fl.city
+      let age = Cistern_fields__person.Person.age
 
-      let age = Fl.age
+      let active = Cistern_fields__person.Person.active
 
-      let active = Fl.active
-
-      include Cistern.Private.Expr.Ops
+      include Cistern__private__person.Expr.Ops
     end
 
-    let get_by_id k = M.get (module Cistern_model__person) k
+    let get_by_id cistern__k =
+      Cistern__private__person.Model.get
+        (module Cistern_model__person)
+        cistern__k
 
-    let find_by_id k = M.find (module Cistern_model__person) k
+    let find_by_id cistern__k =
+      Cistern__private__person.Model.find
+        (module Cistern_model__person)
+        cistern__k
 
-    let get_by_email v = M.get_by (module Cistern_model__person) Q.email v
+    let get_by_email cistern__v =
+      Cistern__private__person.Model.get_by
+        (module Cistern_model__person)
+        Q.email cistern__v
 
-    let find_by_email v = M.find_by (module Cistern_model__person) Q.email v
+    let find_by_email cistern__v =
+      Cistern__private__person.Model.find_by
+        (module Cistern_model__person)
+        Q.email cistern__v
 
-    (* None names no row: the value has no option. *)
-    let get_by_nick v = M.get_by (module Cistern_model__person) Q.nick (Some v)
+    let get_by_nick cistern__v =
+      Cistern__private__person.Model.get_by
+        (module Cistern_model__person)
+        Q.nick
+        (Cistern__private__person.Encode.some cistern__v)
 
-    let find_by_nick v = M.find_by (module Cistern_model__person) Q.nick (Some v)
+    let find_by_nick cistern__v =
+      Cistern__private__person.Model.find_by
+        (module Cistern_model__person)
+        Q.nick
+        (Cistern__private__person.Encode.some cistern__v)
 
-    let filter_by_city v = M.where (module Cistern_model__person) Q.(city ==. v)
+    let filter_by_city cistern__v =
+      Cistern__private__person.Model.where
+        (module Cistern_model__person)
+        (Cistern__private__person.Expr.Ops.( ==. ) Q.city cistern__v)
 
-    let update us r = M.update (module Cistern_model__person) us r
+    let all = Cistern__private__person.Model.all (module Cistern_model__person)
 
-    let delete r = M.delete (module Cistern_model__person) r
+    let where cistern__e =
+      Cistern__private__person.Model.where
+        (module Cistern_model__person)
+        cistern__e
 
-    let all = M.all (module Cistern_model__person)
+    let update ?email ?nick ?city ?age ?active cistern__r =
+      Cistern__private__person.Model.update
+        (module Cistern_model__person)
+        (Cistern__private__person.Encode.updates
+           [ Cistern__private__person.Encode.set Q.email email
+           ; Cistern__private__person.Encode.set Q.nick nick
+           ; Cistern__private__person.Encode.set Q.city city
+           ; Cistern__private__person.Encode.set Q.age age
+           ; Cistern__private__person.Encode.set Q.active active ] )
+        cistern__r
 
-    let where e = M.where (module Cistern_model__person) e
+    let delete cistern__r =
+      Cistern__private__person.Model.delete
+        (module Cistern_model__person)
+        cistern__r
 
     let draft ~email ?nick ~city ?age ?(active = cistern__default__person__5 ())
         () : Cistern_drafts__person.person =
       {email; nick; city; age; active}
   end
 end
+[@@ocaml.warning "-23-27-30-32-34-37-40-41-42-60-69"]
 
 module Person = struct
   include Cistern_gen__person.Person
@@ -313,5 +348,9 @@ module Person = struct
 
   let model : (module Cistern.MODEL) = (module Cistern_model__person)
 
-  let create d = Cistern.Private.Model.create (module Cistern_model__person) d
+  let create ~email ?nick ~city ?age ?active () =
+    Cistern__private__person.Model.create
+      (module Cistern_model__person)
+      (Cistern_gen__person.Person.draft ~email ?nick ~city ?age ?active ())
 end
+[@@ocaml.warning "-23-27-30-32-34-37-40-41-42-60-69"]

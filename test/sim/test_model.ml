@@ -118,7 +118,7 @@ let tests =
     ; test "create: the last insert id, 0, a key in the draft, Auto_only"
         (fun () ->
           let insert_kinds k =
-            Kinds.Kinds.draft ~id:k ~i:1 ~s:"s" ~b:true ~f:1.5
+            Kinds.Kinds.create ~id:k ~i:1 ~s:"s" ~b:true ~f:1.5
               ~y:(Bytes.of_string "y")
               ~t:(Option.get (Ptime.of_float_s 0.))
               ()
@@ -152,7 +152,7 @@ let tests =
                 let k =
                   Result.map
                     (fun (k : Kinds.kinds) -> k.id)
-                    (Db.exec pool (Kinds.Kinds.create (insert_kinds 4L)))
+                    (Db.exec pool (insert_kinds 4L))
                 in
                 (a, text b, o, k) )
           in
@@ -270,12 +270,7 @@ let tests =
                        () )
                     None
                 in
-                let a =
-                  Db.exec pool
-                    (Kinds.Kinds.update
-                       [Cistern.Update.set Kinds.Kinds.Q.f Float.nan]
-                       k )
-                in
+                let a = Db.exec pool (Kinds.Kinds.update ~f:Float.nan k) in
                 (text a, db.D.commands, db.D.connects) )
           in
           let a, commands, connects = r in

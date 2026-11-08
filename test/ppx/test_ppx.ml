@@ -7,4 +7,4 @@
 let () =
   exit
     (Windtrap.run "ppx"
-       [Desc_tests.tests; Error_tests.tests; Stage1_tests.tests] )
+       [Desc_tests.tests; Error_tests.tests; Generated_tests.tests] )

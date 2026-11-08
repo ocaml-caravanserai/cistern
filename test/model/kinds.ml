@@ -4,10 +4,12 @@
 
 (* The group of kinds, written by hand: each scalar, nullable and not, and a key
    with no [@auto]. The attributes are on the type declaration, as in a source
-   of [@@deriving cistern]. Stage 1 (the items up to Cistern_model__kinds) has
-   the form of the ppx (the plan of phase 3, D7 and D8): the suite test/ppx
-   checks that the Pprintast text of the ppx output for this type declaration is
-   the Pprintast text of these items. Thus these items have no doc comment.
+   of [@@deriving cistern]. The items after the declaration have the form of the
+   ppx (the plan of phase 3, D7 to D10): the suite test/ppx checks that the
+   Pprintast text of the ppx output for this type declaration is the Pprintast
+   text of these items. Thus these items have no doc comment. They came from the
+   generator, so the D2 test of test/ppx and the run-time rows give their
+   meaning.
 
    A Ptime.t is cut to 1 µs (not rounded) in of_draft (the one funnel of create)
    and in each set, as the literal and the server cut it. Thus the record that
@@ -486,60 +488,84 @@ end
 [@@ocaml.warning "-23-27-30-32-34-37-40-41-42-60-69"]
 
 module Cistern_gen__kinds = struct
-  module M = Cistern.Private.Model
-
   module Kinds = struct
-    type t = kinds
+    type nonrec t = kinds
 
     module Q = struct
-      module Fl = Cistern_fields__kinds.Kinds
+      let id = Cistern_fields__kinds.Kinds.id
 
-      let id = Fl.id
+      let i = Cistern_fields__kinds.Kinds.i
 
-      let i = Fl.i
+      let i_opt = Cistern_fields__kinds.Kinds.i_opt
 
-      let i_opt = Fl.i_opt
+      let s = Cistern_fields__kinds.Kinds.s
 
-      let s = Fl.s
+      let s_opt = Cistern_fields__kinds.Kinds.s_opt
 
-      let s_opt = Fl.s_opt
+      let b = Cistern_fields__kinds.Kinds.b
 
-      let b = Fl.b
+      let b_opt = Cistern_fields__kinds.Kinds.b_opt
 
-      let b_opt = Fl.b_opt
+      let f = Cistern_fields__kinds.Kinds.f
 
-      let f = Fl.f
+      let f_opt = Cistern_fields__kinds.Kinds.f_opt
 
-      let f_opt = Fl.f_opt
+      let y = Cistern_fields__kinds.Kinds.y
 
-      let y = Fl.y
+      let y_opt = Cistern_fields__kinds.Kinds.y_opt
 
-      let y_opt = Fl.y_opt
+      let t = Cistern_fields__kinds.Kinds.t
 
-      let t = Fl.t
+      let t_opt = Cistern_fields__kinds.Kinds.t_opt
 
-      let t_opt = Fl.t_opt
-
-      include Cistern.Private.Expr.Ops
+      include Cistern__private__kinds.Expr.Ops
     end
 
-    let get_by_id k = M.get (module Cistern_model__kinds) k
+    let get_by_id cistern__k =
+      Cistern__private__kinds.Model.get (module Cistern_model__kinds) cistern__k
 
-    let find_by_id k = M.find (module Cistern_model__kinds) k
+    let find_by_id cistern__k =
+      Cistern__private__kinds.Model.find
+        (module Cistern_model__kinds)
+        cistern__k
 
-    let update us r = M.update (module Cistern_model__kinds) us r
+    let all = Cistern__private__kinds.Model.all (module Cistern_model__kinds)
 
-    let delete r = M.delete (module Cistern_model__kinds) r
+    let where cistern__e =
+      Cistern__private__kinds.Model.where
+        (module Cistern_model__kinds)
+        cistern__e
 
-    let all = M.all (module Cistern_model__kinds)
+    let update ?i ?i_opt ?s ?s_opt ?b ?b_opt ?f ?f_opt ?y ?y_opt ?t ?t_opt
+        cistern__r =
+      Cistern__private__kinds.Model.update
+        (module Cistern_model__kinds)
+        (Cistern__private__kinds.Encode.updates
+           [ Cistern__private__kinds.Encode.set Q.i i
+           ; Cistern__private__kinds.Encode.set Q.i_opt i_opt
+           ; Cistern__private__kinds.Encode.set Q.s s
+           ; Cistern__private__kinds.Encode.set Q.s_opt s_opt
+           ; Cistern__private__kinds.Encode.set Q.b b
+           ; Cistern__private__kinds.Encode.set Q.b_opt b_opt
+           ; Cistern__private__kinds.Encode.set Q.f f
+           ; Cistern__private__kinds.Encode.set Q.f_opt f_opt
+           ; Cistern__private__kinds.Encode.set Q.y y
+           ; Cistern__private__kinds.Encode.set Q.y_opt y_opt
+           ; Cistern__private__kinds.Encode.set Q.t t
+           ; Cistern__private__kinds.Encode.set Q.t_opt t_opt ] )
+        cistern__r
 
-    let where e = M.where (module Cistern_model__kinds) e
+    let delete cistern__r =
+      Cistern__private__kinds.Model.delete
+        (module Cistern_model__kinds)
+        cistern__r
 
     let draft ~id ~i ?i_opt ~s ?s_opt ~b ?b_opt ~f ?f_opt ~y ?y_opt ~t ?t_opt ()
         : Cistern_drafts__kinds.kinds =
       {id; i; i_opt; s; s_opt; b; b_opt; f; f_opt; y; y_opt; t; t_opt}
   end
 end
+[@@ocaml.warning "-23-27-30-32-34-37-40-41-42-60-69"]
 
 module Kinds = struct
   include Cistern_gen__kinds.Kinds
@@ -549,5 +575,11 @@ module Kinds = struct
 
   let model : (module Cistern.MODEL) = (module Cistern_model__kinds)
 
-  let create d = Cistern.Private.Model.create (module Cistern_model__kinds) d
+  let create ~id ~i ?i_opt ~s ?s_opt ~b ?b_opt ~f ?f_opt ~y ?y_opt ~t ?t_opt ()
+      =
+    Cistern__private__kinds.Model.create
+      (module Cistern_model__kinds)
+      (Cistern_gen__kinds.Kinds.draft ~id ~i ?i_opt ~s ?s_opt ~b ?b_opt ~f
+         ?f_opt ~y ?y_opt ~t ?t_opt () )
 end
+[@@ocaml.warning "-23-27-30-32-34-37-40-41-42-60-69"]

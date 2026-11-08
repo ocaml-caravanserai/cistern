@@ -8,8 +8,7 @@ module Private = struct
   module Desc = Desc
   module Gen = Gen
 
-  (* Phase 3b: the checks and stage 1. *)
-  let expand ~loc (_rec_flag, tds) = Gen.stage1 (Desc.group ~loc tds)
+  let expand ~loc (_rec_flag, tds) = Gen.all (Desc.group ~loc tds)
 end
 
 let generate ~ctxt group =

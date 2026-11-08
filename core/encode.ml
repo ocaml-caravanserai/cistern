@@ -24,6 +24,12 @@ let cut t = Ptime.truncate ~frac_s:6 t
 
 let cut_opt t = Option.map cut t
 
+let some x = Some x
+
+let set f v = Option.map (Update.set f) v
+
+let updates l = List.filter_map Fun.id l
+
 let auto = function
   | Some k ->
       k
