@@ -133,10 +133,12 @@ let command tx ~strict sql =
 
 let exec ?timeout tx stmt =
   check tx "exec" ;
-  match tx.failed with
-  | Some f ->
+  match (tx.failed, Stmt.Private.pure_value stmt) with
+  | Some f, _ ->
       Error f.error
-  | None -> (
+  | None, Some v ->
+      Ok (v ())
+  | None, None -> (
       let meta = Stmt.Private.meta stmt in
       let word = Option.map Raw.first_word meta.raw in
       ( match word with

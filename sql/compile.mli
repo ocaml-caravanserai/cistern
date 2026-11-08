@@ -58,6 +58,12 @@ val get : Schema.model -> Value.t -> (Ast.t, string) result
 (** [get m k] is the row with the key [k]: [WHERE <key> = <k> LIMIT 1], with no
     order. [find] has the same SQL. *)
 
+val get_by : Schema.model -> column:string -> Value.t -> (Ast.t, string) result
+(** [get_by m ~column v] is the row with [v] in the column [column] (a field
+    with [[@unique]]): [WHERE <column> = <v> LIMIT 1], with no order. [find_by]
+    has the same SQL. [v] is never [Null]: a nullable unique field takes its
+    value with no [option]. *)
+
 val insert : Schema.model -> (string * Value.t) list -> (Ast.t, string) result
 (** [insert m cols] is the [INSERT] of the columns [cols] and their values. No
     column gives [INSERT INTO t () VALUES ()]. *)

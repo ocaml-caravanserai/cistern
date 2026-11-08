@@ -17,6 +17,51 @@ module Dialect = Cistern_core.Dialect
 module Exec_result = Cistern_core.Exec_result
 module Config = Cistern_mysql.Config
 
+(** The fields of a model (DESIGN.md, "Core user types"). The type is abstract:
+    a field of one model does not type as a field of another model. The
+    generated code makes each field with [Private.Field.make]. *)
+module Field : sig
+  type ('m, 'a) t = ('m, 'a) Cistern_core.Field.t
+
+  val table : (_, _) t -> string
+
+  val column : (_, _) t -> string
+
+  val nullable : (_, _) t -> bool
+
+  val get : ('m, 'a) t -> 'm -> 'a
+  (** [get f r] is the value of [f] in the record [r]. *)
+
+  val set : ('m, 'a) t -> 'm -> 'a -> 'm
+  (** [set f r v] is [r] with the value [v] for [f]. *)
+end
+
+(** The filters (DESIGN.md, "Filters"). The operators are in [X.Q] of each
+    model. *)
+module Expr : sig
+  type ('m, 'a) t = ('m, 'a) Cistern_core.Expr.t
+
+  val and_ : ('m, bool) t list -> ('m, bool) t
+  (** [and_ []] is [TRUE]. *)
+
+  val or_ : ('m, bool) t list -> ('m, bool) t
+  (** [or_ []] is [FALSE]. *)
+
+  module type OPS = Cistern_core.Expr.OPS
+end
+
+(** The changes of an update (DESIGN.md, "Core user types"). *)
+module Update : sig
+  type 'm t = 'm Cistern_core.Update.t
+
+  val set : ('m, 'a) Field.t -> 'a -> 'm t
+
+  val ( & ) : 'm t -> 'm t -> 'm t
+end
+
+(** The signature of a model module (DESIGN.md, "Generated code"). *)
+module type MODEL = Cistern_core.Model_intf.MODEL
+
 (** The exception of the [_exn] functions. It is [Error.Cistern_error]. *)
 exception Cistern_error of Error.t
 
@@ -27,4 +72,10 @@ module Private : sig
   module Pool_state = Pool_state
   module Exec = Exec
   module Tx_rules = Tx_rules
+  module Field = Cistern_core.Field
+  module Expr = Cistern_core.Expr
+  module Update = Cistern_core.Update
+  module Schema = Cistern_core.Schema
+  module Decoder = Cistern_core.Decoder
+  module Model = Model
 end

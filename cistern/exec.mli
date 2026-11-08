@@ -22,6 +22,18 @@ val exec :
   -> Cistern_core.Raw.t
   -> (Cistern_core.Exec_result.t, Cistern_core.Error.t) result
 
+val rows :
+     ?kind:Cistern_mysql.Outcome.command
+  -> ctx
+  -> Cistern_core.Raw.t
+  -> (string option array -> ('a, string) result)
+  -> ('a list, Cistern_core.Error.t) result
+(** [rows ctx r decode] is {!Cistern_mysql.Connection.query_rows}: [decode] of
+    each row. *)
+
+val dialect : ctx -> Cistern_core.Dialect.t
+(** The dialect of the connection. *)
+
 val sent : ctx -> bool
 (** [sent ctx] is true if a command of this statement flushed its packet: an
     earlier command that returned, or the command in progress

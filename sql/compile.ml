@@ -135,16 +135,18 @@ let exists q =
 
 let key_is m k = Some (Ast.Cmp (Eq, key_col m, lit k))
 
-let get (m : Schema.model) k =
+let get_by (m : Schema.model) ~column v =
   made (fun () ->
       Ast.Select
         { columns= columns m
         ; table= m.table
-        ; where= key_is m k
+        ; where= Some (Ast.Cmp (Eq, {table= m.table; column}, lit v))
         ; order= []
         ; limit= Some 1
         ; offset= None
         ; lock= No_lock } )
+
+let get (m : Schema.model) k = get_by m ~column:(key_col m).column k
 
 let insert (m : Schema.model) cols =
   made (fun () ->

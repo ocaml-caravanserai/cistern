@@ -19,22 +19,44 @@ module Private = struct
         ; rows: 'r -> int
         ; finish: 'r -> 'a }
         -> 'a t
+    | Pure : (unit -> 'a) -> 'a t
 
   let make meta ~run ~rows ~finish = Stmt {meta; run; rows; finish}
 
-  let meta (Stmt s) = s.meta
+  let pure v = Pure (fun () -> v)
+
+  let pure_value = function Pure f -> Some f | Stmt _ -> None
+
+  let no_command =
+    { redacted= (fun _ -> [])
+    ; kind= Read
+    ; raw= None
+    ; sql= (fun _ -> [])
+    ; text= None }
+
+  let meta = function Stmt s -> s.meta | Pure _ -> no_command
 
   type 'a ran = {rows: int; finish: unit -> 'a}
 
-  let run (Stmt s) ctx =
-    Result.map
-      (fun r -> {rows= s.rows r; finish= (fun () -> s.finish r)})
-      (s.run ctx)
+  let run s ctx =
+    match s with
+    | Stmt s ->
+        Result.map
+          (fun r -> {rows= s.rows r; finish= (fun () -> s.finish r)})
+          (s.run ctx)
+    | Pure f ->
+        Ok {rows= 0; finish= f}
+        [@mutate
+          off
+            "Db.exec and Tx.exec give the value of a pure statement before run"]
 end
 
 type 'a t = 'a Private.t
 
-let map f (Private.Stmt s) =
-  Private.Stmt {s with finish= (fun r -> f (s.finish r))}
+let map f = function
+  | Private.Stmt s ->
+      Private.Stmt {s with finish= (fun r -> f (s.finish r))}
+  | Private.Pure g ->
+      Private.Pure (fun () -> f (g ()))
 
 let to_sql d s = (Private.meta s).sql d

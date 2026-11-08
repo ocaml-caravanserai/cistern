@@ -821,6 +821,30 @@ let exec ?kind t raw =
         { Exec_result.affected_rows= ok.affected_rows
         ; last_insert_id= ok.last_insert_id } )
 
+let query_rows ?kind t raw decode =
+  run_query ?kind t raw (fun replies ->
+      (* The first result set, read to its end before the first decode. *)
+      match
+        List.find_map
+          (function Resultset.Rows r, _ -> Some r.rows | _ -> None)
+          replies
+      with
+      | None ->
+          Ok []
+      | Some rows -> (
+          let decoded =
+            List.fold_left
+              (fun acc row ->
+                Result.bind acc (fun l ->
+                    Result.map (fun v -> v :: l) (decode row) ) )
+              (Ok []) rows
+          in
+          match decoded with
+          | Ok l ->
+              Ok (List.rev l)
+          | Error m ->
+              raise (Event (Outcome.Bad_value m)) ) )
+
 let ok_command ?always_break t commands =
   command ?always_break t Outcome.Not_write (fun () ->
       List.iter
