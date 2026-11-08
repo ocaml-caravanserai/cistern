@@ -222,7 +222,12 @@ let model_faults models (m : model) =
       | Error e ->
           [Printf.sprintf "model %s: %s" (q m.name) e]
       | Ok () ->
-          [] )
+          if String.exists Char.Ascii.is_upper m.table then
+            [ Printf.sprintf
+                "model %s: the table %s has an uppercase ASCII letter (version \
+                 1 permits only lowercase table names)"
+                (q m.name) (q m.table) ]
+          else [] )
     @ List.filter_map
         (fun (f : field) ->
           match Cistern_names.valid_identifier f.column with

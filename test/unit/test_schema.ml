@@ -220,13 +220,26 @@ let checks =
       ; simple "b" ~table:"user"
       ; simple "c" ~table:"USER" ]
     , [ "the tables \"User\", \"user\", \"USER\" of the models \"a\", \"b\", \
-         \"c\" are equal with no regard to ASCII case" ] )
+         \"c\" are equal with no regard to ASCII case"
+      ; "model \"a\": the table \"User\" has an uppercase ASCII letter \
+         (version 1 permits only lowercase table names)"
+      ; "model \"c\": the table \"USER\" has an uppercase ASCII letter \
+         (version 1 permits only lowercase table names)" ] )
   ; ( "rule 2: table name"
     , [simple "a" ~table:(String.concat "" (List.init 64 (fun _ -> "€")))]
     , [ "model \"a\": "
         ^ rule_of
             (Cistern_names.valid_table_name
                (String.concat "" (List.init 64 (fun _ -> "€"))) ) ] )
+  ; ( "rule 2: an uppercase ASCII letter in a table name"
+    , [simple "a" ~table:"userA"; simple "b" ~table:"Z"]
+    , [ "model \"a\": the table \"userA\" has an uppercase ASCII letter \
+         (version 1 permits only lowercase table names)"
+      ; "model \"b\": the table \"Z\" has an uppercase ASCII letter (version 1 \
+         permits only lowercase table names)" ] )
+  ; ( "rule 2: a table name with a non-ASCII uppercase letter"
+    , [simple "a" ~table:"\xc3\x89t\xc3\xa9"]
+    , [] )
   ; ( "rule 2: column name"
     , [model "a" [id; field "x" Int ~column:"x "]]
     , ["model \"a\", field \"x\": the name \"x \" ends with white space"] )
@@ -433,17 +446,17 @@ let checks =
          constraint name is unique in the database)" ] )
   ; ( "rule 11: foreign key names that differ in case"
     , [ simple "p"
-      ; model "a" ~table:"A_b" [id; field "c" Int64] ~relations:[to_ "p" "c"]
+      ; model "a" ~table:"a_b" [id; field "c" Int64] ~relations:[to_ "p" "c"]
       ; model "b" ~table:"a" [id; field "B_c" Int64] ~relations:[to_ "p" "B_c"]
       ]
-    , [ "the foreign key names \"A_b_c_fk\", \"a_B_c_fk\" of the columns \
-         \"A_b.c\", \"a.B_c\" are equal with no regard to ASCII case (a \
+    , [ "the foreign key names \"a_b_c_fk\", \"a_B_c_fk\" of the columns \
+         \"a_b.c\", \"a.B_c\" are equal with no regard to ASCII case (a \
          constraint name is unique in the database)" ] )
   ; ( "rule 11 does not run after rule 1"
     , [ simple "p"
       ; model "a" ~table:"x" [id; field "c" Int64] ~relations:[to_ "p" "c"]
-      ; model "b" ~table:"X" [id; field "c" Int64] ~relations:[to_ "p" "c"] ]
-    , [ "the tables \"x\", \"X\" of the models \"a\", \"b\" are equal with no \
+      ; model "b" ~table:"x" [id; field "c" Int64] ~relations:[to_ "p" "c"] ]
+    , [ "the tables \"x\", \"x\" of the models \"a\", \"b\" are equal with no \
          regard to ASCII case" ] )
   ; ( "rule 11 does not run for a model that breaks rule 2"
     , [ simple "p"

@@ -287,11 +287,11 @@ and todo = {
 | `[@index]` | Index. Generates `filter_by_<field>`. |
 | `[@has_many]`, `[@belongs_to { key; references }]` | Relations. The field type is `'a Deferred.t`. `belongs_to` makes a `FOREIGN KEY ... ON DELETE RESTRICT`, and it acts as `[@index]` on the key field (one index, and `filter_by_<key>`). An explicit `[@index]` on that field adds no second index. A key field that is the `[@key]` or has `[@unique]` gets no plain index, because its index serves the foreign key. In version 1, `references` must be the `[@key]` field of the other model. |
 | `[@default v]` | The create argument becomes optional. The client puts the default in the `INSERT`. The DDL has no `DEFAULT` clauses. |
-| `[@column "x"]`, `[@@table "x"]` | Names in the database. The default table name is the type name. The rules (`Cistern_names.valid_identifier`): valid UTF-8, 1 to 64 characters (not bytes), each in U+0001 to U+FFFF (the servers keep names in utf8mb3), no backquote, and no ASCII white space at the end. A table name is also a file name: InnoDB encodes each character other than `[0-9A-Za-z_]` in 3 or 5 bytes, with a limit of 251 bytes. `Cistern_names.valid_table_name` counts 5 bytes for each such character, thus 64 × `€` is a valid column name but not a valid table name. A table name must not start with `#mysql50#`: MariaDB 11.4 refuses it (1103), and MariaDB 11.8 uses another table. The ppx and `Schema.check` apply these rules. |
+| `[@column "x"]`, `[@@table "x"]` | Names in the database. The default table name is the type name. The rules (`Cistern_names.valid_identifier`): valid UTF-8, 1 to 64 characters (not bytes), each in U+0001 to U+FFFF (the servers keep names in utf8mb3), no backquote, and no ASCII white space at the end. A table name is also a file name: InnoDB encodes each character other than `[0-9A-Za-z_]` in 3 or 5 bytes, with a limit of 251 bytes. `Cistern_names.valid_table_name` counts 5 bytes for each such character, thus 64 × `€` is a valid column name but not a valid table name. A table name must not start with `#mysql50#`: MariaDB 11.4 refuses it (1103), and MariaDB 11.8 uses another table. A table name has no uppercase ASCII letter (phase 2a). The ppx and `Schema.check` apply these rules. |
 
 The ppx refuses field names that clash with generated names:
 
-- For each field (the fields are values in `Q`): the names of `Expr.OPS` (`is_null`, `in_`, `starts_with`, `contains`).
+- For each field (the fields are values in `Q`): the names of `Expr.OPS` (`is_null`, `in_`, `starts_with`, `contains`, `starts_with_opt`, `contains_opt`, `not`).
 - For a relation field (it is also a value of the model module): `all`, `where`, `update`, `delete`, `draft`, `create`, `model`, `get_by_*`, `find_by_*`, `filter_by_*`.
 
 Thus a plain column can have a name such as `model` or `update`.
@@ -360,7 +360,8 @@ module User : sig
     val id : (t, int64) Field.t
     val name : (t, string) Field.t
     val email : (t, string) Field.t
-    include Expr.OPS   (* ==. <>. <. >. <=. >=. is_null in_ starts_with contains, and && || not *)
+    include Expr.OPS   (* ==. <>. <. >. <=. >=. is_null in_ starts_with contains
+                          starts_with_opt contains_opt, and && || not *)
   end
   module Rel : sig val todos : (t, todo) Relation.t end
   val get_by_id : int64 -> t Stmt.t
@@ -380,13 +381,16 @@ end
 Filters:
 
 - `&&`, `||` and `not` change meaning only inside `X.Q.( ... )`, where the field names already hide other names. `Expr.and_` and `Expr.or_` take lists.
+- Each filter is two-valued (phase 2a): on each row it is true or false, never SQL `NULL`. Thus `not p` selects the rows that `p` does not select, and `&&`, `||` and `not` act as the booleans of OCaml. An atom on a nullable field that SQL can make `NULL` gets the guard `IS NOT NULL AND`. The property test of `Expr` evaluates the model AST with the three-valued logic of SQL, over rows in OCaml, and compares each filter with its OCaml rule.
 - On a field with an `option` type, the filters follow OCaml equality, also for `NULL`:
   - `f ==. v` gives `f <=> v` (the NULL-safe operator of the two servers, which can use an index). `f ==. None` gives `IS NULL`.
   - `f <>. v` gives `NOT (f <=> v)`. Thus `f <>. Some 1` keeps the rows where `f` is `NULL`, as OCaml keeps `None`.
-  - `in_ f [None; Some 1]` gives `(f IN (1) OR f IS NULL)`.
-  - `<.`, `>.`, `<=.` and `>=.` with `None` raise `Invalid_argument` when the query is built.
+  - `in_ f [Some 1; Some 2]` gives `(f IS NOT NULL AND f IN (1, 2))`, `in_ f [None; Some 1]` gives `(f IN (1) OR f IS NULL)`, and `in_ f [None]` gives `f IS NULL`.
+  - `f <. Some 1` gives `(f IS NOT NULL AND f < 1)`, and the same for `>.`, `<=.` and `>=.`. Thus an order never selects `None`. With `None`, these operators raise `Invalid_argument` when the query is built.
+- On a field that is not an `option`, `==.` gives `=` and `<>.` gives `<>`, with no guard.
 - `in_ f []` gives `FALSE`. `IN ()` is a syntax error.
-- `starts_with` and `contains` give `LIKE <hex literal> ESCAPE '!'`. The client escapes `%`, `_` and `!` in the pattern with `!`. The escape character does not depend on `NO_BACKSLASH_ESCAPES`.
+- `starts_with` and `contains` give `LIKE <hex literal> ESCAPE '!'`. The client escapes `%`, `_` and `!` in the pattern with `!`. The escape character does not depend on `NO_BACKSLASH_ESCAPES`. They take a `string` field. On a `string option` field, `starts_with_opt` and `contains_opt` give `(f IS NOT NULL AND f LIKE ...)`: a `NULL` row does not match. The compiler refuses each of the four on a field of another type.
+- Each comparison has a column on one side and a literal on the other side, never two literals. A literal has the case-insensitive collation of the session, and the binary collation of the column wins.
 
 ### Deferred values
 
@@ -494,6 +498,42 @@ module Update : sig
   val set : ('m, 'a) Field.t -> 'a -> 'm t
   val ( & ) : 'm t -> 'm t -> 'm t
 end
+(* Model.update : (module M : MODEL) -> M.t Update.t list -> M.t -> M.t Stmt.t
+   (the empty list gives r with no statement), and Query.update takes one
+   Update.t. An Update.t that sets the key, or that sets one column two times,
+   raises Invalid_argument when the statement is made. *)
+
+module Field : sig
+  type ('m, 'a) t   (* abstract: a field of one model does not type as a field of another *)
+  val table : (_, _) t -> string
+  val column : (_, _) t -> string
+  val nullable : (_, _) t -> bool
+  val get : ('m, 'a) t -> 'm -> 'a
+  val set : ('m, 'a) t -> 'm -> 'a -> 'm
+end
+(* Cistern.Private.Field.make ~model ~field ~encode ~decode ~get ~set makes a
+   field from its Schema.model and Schema.field (the column, the scalar and
+   nullable come from the Schema.field) *)
+
+module Expr : sig
+  type ('m, 'a) t   (* abstract *)
+  val and_ : ('m, bool) t list -> ('m, bool) t   (* and_ [] is TRUE *)
+  val or_ : ('m, bool) t list -> ('m, bool) t    (* or_ [] is FALSE *)
+  module type OPS   (* the operators of X.Q: see "Filters" *)
+end
+
+module type MODEL = sig
+  type t
+  type key
+  type draft
+  val schema : Schema.model
+  val key : (t, key) Field.t
+  val fields : t Field.any list           (* the column fields, in the order of the record *)
+  val decode : Decoder.cursor -> t        (* the columns in the order of fields *)
+  val encode_draft : draft -> (string * Value.t) list
+  val of_draft : draft -> key option -> t
+end
+(* no type update and no key_of: Field.get M.key gives the key *)
 
 module Stmt : sig
   type 'a t   (* the commands of one statement, on one connection *)
@@ -590,7 +630,7 @@ Error 1153 (packet too large): the server did not run the statement, but it clos
 
 - One schema (`Schema`): models, fields, column names, types, the key, indexes and relations. `push_schema` and `check_schema` call `Schema.check` first. Its rules:
   1. The model names are unique. The table names are unique after the ASCII fold (the file system of macOS ignores case).
-  2. Each table name and each column name obeys the rules of names ("Model definition").
+  2. Each table name and each column name obeys the rules of names ("Model definition"). A table name has no uppercase ASCII letter (phase 2a), so that the name is the same on Linux and on macOS (`lower_case_table_names` 2), where `check_schema` finds a table by its name.
   3. Each model has exactly one `[@key]` field. The key is not an `option` and not a `float`.
   4. `[@auto]` is only on the key, and only on an `int64` field.
   5. The column names of a model are unique after the ASCII fold.
@@ -668,8 +708,8 @@ Use in Cistern:
 
 | Feature | Place | Gain |
 |---|---|---|
-| Module-dependent functions | Generic model operations on `module type MODEL` (types `t`, `key`, `draft`, `update`; the schema, the encoders and the decoders): `Model.get : (module M : MODEL) -> M.key -> M.t Stmt.t`, and the same for `find`, `create`, `child`, `update`, `delete`, `where` | Signatures without a value with four type parameters. The ppx makes less code. |
-| Polymorphic parameters | Generic loops over the fields of a record (encode a record to literals, `check_schema`): `iter_fields : ('a. ('m, 'a) Field.t -> 'a -> unit) -> 'm -> unit` | No wrapper records `{ f : 'a. ... }` |
+| Module-dependent functions | Generic model operations on `module type MODEL` (types `t`, `key`, `draft`; the schema, the encoders and the decoders): `Model.get : (module M : MODEL) -> M.key -> M.t Stmt.t`, and the same for `find`, `create`, `child`, `delete`, `where`; `Model.update : (module M : MODEL) -> M.t Update.t list -> M.t -> M.t Stmt.t` | Signatures without a value with four type parameters. The ppx makes less code. |
+| Polymorphic parameters | Generic loops over the fields of a record (encode a record to literals, `check_schema`): `iter_fields : ('a. ('m, 'a) Field.t -> 'a -> unit) -> 'm -> unit`. Phase 2 has no user of it, thus it comes with its first user | No wrapper records `{ f : 'a. ... }` |
 | Polymorphic parameters | Tests: one suite runs on `Db.exec` and on `Tx.exec` through a runner: `run : (('a. 'a Stmt.t -> ('a, Error.t) result) -> unit) -> unit` | No functor and no wrapper record |
 | Module-dependent functions | The integration suite: `suite : (module S : SERVER) -> Windtrap.test` | No functor |
 
@@ -988,10 +1028,10 @@ Phase 1.1 to phase 1.4 ship only the `kill=false` behavior: abort the connection
 ## Tests (windtrap)
 
 - Unit tests: the URL parser and the `ssl-mode` defaults, the schema checks, the SQL compiler for the two dialects (also `IS NULL`, `<=>` on `option` fields, `in_` with `None`, `in_ []`, `LIKE` escaping, `count` with `limit`, `Query.where`), the literals (also `Decimal.of_string` refuses SQL text), the first-word check of raw statements in a `Tx`, the error mapping, the two authentication scrambles with known values, and the parsers of recorded server rows (`@@version` strings, `information_schema` rows), so that the mutation gate reaches this code.
-- Property tests (`prop`): round trips of each type through literals and the text decoders (also `Int64.min_int` and `-0.0`), length-encoded integers, any OCaml string gives a literal that the test parser reads back without a change (also with `'`, `\` and NUL).
+- Property tests (`prop`): the filters of `Expr` (phase 2a: each filter is two-valued and selects the rows of its OCaml rule, thus `not p` selects the complement of `p`), round trips of each type through literals and the text decoders (also `Int64.min_int` and `-0.0`), length-encoded integers, any OCaml string gives a literal that the test parser reads back without a change (also with `'`, `\` and NUL).
 - Stateful tests: a sequential `stateful` test of `Pool_state` against a model (no connection goes to two holders, no slot is lost, `Killing` slots come back after their age limit at the next operation, `killed` with an old token frees nothing, `next_timer` is never later than the next change). The races of the weft shell are tested in the simulator.
 - Expect tests (`ppx_windtrap`): the generated code and the errors of the ppx (with `ppxlib` and `Pprintast`), a file with two deriving groups, the refused field names, and the SQL of each statement for each dialect (`Stmt.to_sql`).
-- Type-error test: a dune rule compiles a file that uses a field of another model in a filter, with `(with-accepted-exit-codes 2 ...)`, and windtrap `expect_file` checks the compiler message. No cram test, so that all tests are windtrap tests.
+- Type-error tests (`test/typeerr`): a dune rule types each file that the compiler must refuse, with `(with-accepted-exit-codes 2 ...)`, and windtrap `expect_file` checks the compiler message, which names the two types. A file that types makes its rule fail. Phase 2a refuses a filter and an update with the fields of two models, `starts_with` on an `int64` field and on a `string option` field, and `starts_with_opt` on a `string` field. Phase 2d1 adds the files of the hand-written models (a field of another model in `where` and in `order_by`). No cram test, so that all tests are windtrap tests.
 - README test: a dune build rule compiles the examples of `README.md`, as in caravan.
 - Mutation tests: `make mutate` as in weft, on the suites unit, prop, stateful, expect and sim. Each phase adds its suites to `SUITES` of the Makefile. `test/ocaml55` stays in `SUITES` as the check of the mutation backend. The integration suites are not in the mutation runs. The rule is the rule of weft (no surviving mutant on changed lines), with `[@mutate off]` and a reason where a mutant cannot be killed.
   - The gate gives the output of `git diff -U0` to windtrap (`--diff`). On a local machine, the base is the merge base with `origin/main`. In CI, the base is `HEAD^1`: the checkout of a pull request is a merge commit, and its first parent is the tip of the base branch at the time of the event.
@@ -1205,5 +1245,7 @@ Draft 12, 2026-11-06. It fixes the findings of review round 5 on draft 11. You a
 Phase 0 is done (2026-11-07): ocaml-caravanserai/cistern#1 (the skeleton), #2, #3 and #4 (`cistern.core`) and #5 (the test servers). The CI of #5 passed on all jobs, also the three macOS legs of `db.yml`. Phase 1.1 starts with its plan of six pull requests.
 
 Phases 1.1, 1.2 and 1.3 are done (2026-11-07): ocaml-caravanserai/cistern#6 to #20. Phase 1.4 (TLS): 1.4a is cistern#21, 1.4b1 (TLS on `Connection`) is cistern#22, and 1.4b2 (the pool and the storm on TLS) is cistern#23 (merged 2026-11-08). 1.4c (the integration tests, the claims C29 to C31, and MariaDB 11.4 on each PR) is cistern#24 (merged 2026-11-08), and it completes phase 1.4. Phase 1.5 (cancel with `KILL`): 1.5a (the `Killing` slots of `Pool_state`) is cistern#25, 1.5b (round trip 3 with the identity and the privilege check, `Connection.kill` and the events of `KILL`) is cistern#26, 1.5c1a (the kill queue, the killer with its control connection, and the kill requests of `Pool.exec` and `Tx`) is cistern#27, 1.5c1b (the drain at the end of `with_db`) is cistern#28, and 1.5c2 (the storms with `KILL`) is cistern#29 (all merged 2026-11-08). 1.5d (the integration tests of `KILL` and the claims C32 to C35) completes phase 1.5 and phase 1.
+
+Phase 2 (the typed API with hand-written models): 2a0 removes the messages of server errors from the events, and 2a adds `Field`, the model AST, `Expr` with the two-valued filters, `Update`, `module type MODEL` and the rule of lowercase table names to `cistern.core`.
 
 Round 5 found 3 critical defects. Two of them were in fixes of round 4 (the session reset and the killer drain), and one was a gap from an earlier draft (`Decimal`). Most of the critical and major findings are in the cancel path with `KILL`. Thus phases 1.1 to 1.4 ship without `KILL` (`kill=false`), and phase 1.5 adds it. The remaining risk is in server behavior that only a real server can show (the "not verified" claims). Phase 1.1 tests these claims first.

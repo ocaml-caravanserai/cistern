@@ -1,0 +1,6 @@
+File "mix_expr.ml", line 14, characters 24-32:
+14 |   Expr.Ops.(x ==. 1L && y ==. 2L)
+                             ^^^^^^^^
+Error: This expression has type (b, bool) Cistern_core.Expr.t
+       but an expression was expected of type (a, bool) Cistern_core.Expr.t
+       Type b is not compatible with type a

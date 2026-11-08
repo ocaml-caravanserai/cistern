@@ -1,0 +1,7 @@
+File "starts_with_int.ml", line 11, characters 56-57:
+11 | let _f (x : (a, int64) Field.t) = Expr.Ops.(starts_with x "1")
+                                                             ^
+Error: The value x has type (a, int64) Cistern_core.Field.t
+       but an expression was expected of type
+         (a, string) Cistern_core.Field.t
+       Type int64 is not compatible with type string
