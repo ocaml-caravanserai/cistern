@@ -47,6 +47,13 @@ val set : ('m, 'a) Field.t -> 'a option -> 'm Update.t option
 val updates : 'm Update.t option list -> 'm Update.t list
 (** [updates l] is the list of the values of [l], in order. *)
 
+val reset : ('k -> Value.t) -> 'k -> 'k -> 'r Deferred.t -> 'r Deferred.t
+(** [reset encode old k rel] is the relation [rel] of a belongs_to after its key
+    changes from [old] to [k] (phase 4c1, the plan of phase 4, E9): [Unloaded]
+    if the encoded keys are not equal ({!Value.equal}), else [rel]. The setter
+    of the key field calls it, thus [Field.set] and [update] of the key do the
+    same. *)
+
 val auto : 'k option -> 'k
 (** [auto k] is the key from the server in [of_draft] of a model with an
     [[@auto]] key. [Model.create] always gives [Some]. [auto None] raises

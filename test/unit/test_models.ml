@@ -65,7 +65,8 @@ let user =
   ; email= "ann@example.com"
   ; nick= Some "an"
   ; age= Some 33
-  ; active= true }
+  ; active= true
+  ; todos= Cistern.Deferred.Unloaded }
 
 let t0 = Option.get (Ptime.of_float_s 1700000000.)
 
@@ -376,6 +377,7 @@ let tests =
                 ( r
                 = { User_todo.id= 3L
                   ; user_id= 7L
+                  ; user= Cistern.Deferred.Unloaded
                   ; title= "Milk"
                   ; done_= true
                   ; note= Some "n" } )
@@ -484,11 +486,17 @@ let tests =
               ; email= "c"
               ; nick= None
               ; age= Some 1
-              ; active= false } ) )
+              ; active= false
+              ; todos= Cistern.Deferred.Unloaded } ) )
     ; test "todo: Field.set of each field" (fun () ->
           let module Q = User_todo.Todo.Q in
           let r =
-            {User_todo.id= 1L; user_id= 2L; title= "t"; done_= false; note= None}
+            { User_todo.id= 1L
+            ; user_id= 2L
+            ; user= Cistern.Deferred.Unloaded
+            ; title= "t"
+            ; done_= false
+            ; note= None }
           in
           equal bool true
             ( Field.set Q.id r 5L
@@ -498,6 +506,7 @@ let tests =
             |> (fun r -> Field.set Q.note r (Some "n"))
             = { User_todo.id= 5L
               ; user_id= 6L
+              ; user= Cistern.Deferred.Unloaded
               ; title= "u"
               ; done_= true
               ; note= Some "n" } ) )

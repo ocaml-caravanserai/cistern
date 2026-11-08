@@ -12,9 +12,11 @@
    title : string; [@index] done_ : bool; [@default false] [@column "done"] note
    : string option; } ]}
 
-   Phase 2 has no relation: the todo record has no user field, and the
-   Belongs_to is only in the schema, for the DDL and the checks. Each call of
-   the library goes through Cistern.Private. *)
+   The user record also has todos : todo list Deferred.t [@has_many]. Phase 4c1
+   adds the relation fields (the plan of phase 4, E3, E9, E10): they are not
+   columns, decode and of_draft give Unloaded, the setter of user_id resets
+   user, and User.create has ?todos. Each call of the library goes through
+   Cistern.Private. *)
 
 type user =
   { id: int64
@@ -22,10 +24,16 @@ type user =
   ; email: string
   ; nick: string option
   ; age: int option
-  ; active: bool }
+  ; active: bool
+  ; todos: todo list Cistern.Deferred.t }
 
 and todo =
-  {id: int64; user_id: int64; title: string; done_: bool; note: string option}
+  { id: int64
+  ; user_id: int64
+  ; user: user Cistern.Deferred.t
+  ; title: string
+  ; done_: bool
+  ; note: string option }
 
 (* Stage 1: the schemas and the fields of the two types. *)
 module Cistern_fields__user = struct
@@ -132,10 +140,15 @@ module Cistern_fields__user = struct
         ~get:(fun (r : todo) -> r.id)
         ~set:(fun (r : todo) v -> {r with id= v})
 
+    (* The setter of the key of a Belongs_to resets the relation for a new key
+       (E9). *)
     let user_id : (todo, int64) F.t =
       F.make ~model:schema ~field:s_user_id ~encode:int64 ~decode:D.int64
         ~get:(fun (r : todo) -> r.user_id)
-        ~set:(fun (r : todo) v -> {r with user_id= v})
+        ~set:(fun (r : todo) v ->
+          { r with
+            user_id= v
+          ; user= Cistern.Private.Encode.reset int64 r.user_id v r.user } )
 
     let title : (todo, string) F.t =
       F.make ~model:schema ~field:s_title ~encode:text ~decode:D.string
@@ -152,6 +165,18 @@ module Cistern_fields__user = struct
         ~decode:(D.option D.string)
         ~get:(fun (r : todo) -> r.note)
         ~set:(fun (r : todo) v -> {r with note= v})
+  end
+
+  (* The setters of the relation fields (E3): not columns, thus not typed
+     fields. *)
+  module Set_user = struct
+    let todos (cistern__r : user) v =
+      {cistern__r with todos= Cistern.Deferred.Loaded v}
+  end
+
+  module Set_todo = struct
+    let user (cistern__r : todo) v =
+      {cistern__r with user= Cistern.Deferred.Loaded v}
   end
 end
 
@@ -195,8 +220,8 @@ module Cistern_drafts__user = struct
     ; e T.done_ d.done_
     ; e T.note d.note ]
 
-  (* The setters of stage 1. Set_user gets the setters of the relations in phase
-     4. *)
+  (* The setters of the draft keys of stage 1. The setters of the relation
+     fields are in Cistern_fields__user (E3). *)
   module Set_todo = struct
     let user_id (d : todo) k = {d with user_id= Some k}
   end
@@ -238,7 +263,7 @@ module Cistern_model__user :
     let nick = D.next c (F.decode Fl.nick) in
     let age = D.next c (F.decode Fl.age) in
     let active = D.next c (F.decode Fl.active) in
-    {id; name; email; nick; age; active}
+    {id; name; email; nick; age; active; todos= Cistern.Deferred.Unloaded}
 
   let encode_draft = Cistern_drafts__user.encode_user
 
@@ -248,7 +273,8 @@ module Cistern_model__user :
     ; email= d.email
     ; nick= d.nick
     ; age= d.age
-    ; active= d.active }
+    ; active= d.active
+    ; todos= Cistern.Deferred.Unloaded }
 end
 
 module Cistern_model__todo :
@@ -279,7 +305,7 @@ module Cistern_model__todo :
     let title = D.next c (F.decode Fl.title) in
     let done_ = D.next c (F.decode Fl.done_) in
     let note = D.next c (F.decode Fl.note) in
-    {id; user_id; title; done_; note}
+    {id; user_id; user= Cistern.Deferred.Unloaded; title; done_; note}
 
   let encode_draft = Cistern_drafts__user.encode_todo
 
@@ -287,6 +313,7 @@ module Cistern_model__todo :
   let of_draft (d : draft) k : t =
     { id= Option.value k ~default:0L
     ; user_id= Option.value d.user_id ~default:0L
+    ; user= Cistern.Deferred.Unloaded
     ; title= d.title
     ; done_= d.done_
     ; note= d.note }
@@ -399,7 +426,8 @@ module Cistern_gen__user = struct
   end
 end
 
-(* Stage 3: create (with no children in phase 2), model and Drafts. *)
+(* Stage 3: create (with the children of each has_many, E10), model and
+   Drafts. *)
 module User = struct
   include Cistern_gen__user.User
   module Drafts = Cistern_drafts__user
@@ -408,9 +436,20 @@ module User = struct
 
   let model : (module Cistern.MODEL) = (module Cistern_model__user)
 
-  let create ~name ~email ?nick ?age ?active () =
+  (* A group only for a ?todos that the caller gave: then todos is Loaded, also
+     for an empty list. With no ?todos, todos stays Unloaded. *)
+  let create ~name ~email ?nick ?age ?active ?todos () =
     Cistern.Private.Model.create
       (module Cistern_model__user)
+      ~children:
+        ( match todos with
+        | None ->
+            []
+        | Some cistern__ds ->
+            [ Cistern.Private.Model.child
+                (module Cistern_model__todo)
+                ~fk:Drafts.Set_todo.user_id
+                ~set:Cistern_fields__user.Set_user.todos cistern__ds ] )
       (draft ~name ~email ?nick ?age ?active ())
 end
 
