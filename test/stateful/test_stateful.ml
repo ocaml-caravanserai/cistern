@@ -39,6 +39,8 @@ type s =
   ; closing_ids: int list  (** The entries that tick gave to close. *)
   ; opened_ids: int list  (** Each entry that opened made. *)
   ; gone: int list  (** The entries that went out of the state. *)
+  ; tokens: (int * P.token) list  (** Each token that killing gave, by id. *)
+  ; freed: int list  (** The tokens that killed freed. *)
   ; bell: bool  (** The doorbell of the opener. *)
   ; armed: Span.t option  (** The timer of the last tick. *)
   ; next_conn: int
@@ -92,16 +94,42 @@ let check_life (e : string P.entry) =
 
 let ids_of es = List.map (fun (e : _ P.entry) -> e.id) es
 
+let killing_text slots =
+  String.concat ";" (List.map (fun (k, a) -> Printf.sprintf "%d@%Ld" k a) slots)
+
+let s_killing_slots st =
+  List.map (fun (k, a) -> (P.token_id k, Span.to_ns a)) (P.killing_slots st)
+
+(* The Killing slots that hold their slot at [now]. *)
+let live_slots st now =
+  List.filter
+    (fun (_, a) -> Int64.compare a (Span.to_ns now) > 0)
+    (s_killing_slots st)
+
 (* The invariants of the pool, on the system side. *)
 let invariants (s : s) =
   let st = s.st in
   let idle = P.idle st in
   equal ~msg:"in_use is the held entries" int (List.length s.held) (P.in_use st) ;
+  let killing = List.length (P.killing_slots st) in
   is_true ~msg:"the slot bound"
-    (List.length idle + P.in_use st + P.opening st + P.closing st <= P.size st) ;
+    ( List.length idle + P.in_use st + P.opening st + P.closing st + killing
+    <= P.size st ) ;
   equal ~msg:"free" int
-    (P.size st - (List.length idle + P.in_use st + P.opening st + P.closing st))
+    ( P.size st
+    - (List.length idle + P.in_use st + P.opening st + P.closing st + killing)
+    )
     (P.free st) ;
+  let toks = List.map fst (s_killing_slots st) in
+  equal ~msg:"each token of a Killing slot is unique" int (List.length toks)
+    (List.length (List.sort_uniq compare toks)) ;
+  List.iter
+    (fun k ->
+      is_true ~msg:"a Killing slot has a token that killing gave"
+        (List.mem_assoc k s.tokens) ;
+      is_true ~msg:"a Killing slot has a token that killed did not free"
+        (not (List.mem k s.freed)) )
+    toks ;
   equal ~msg:"closing is to close and in close" int
     (List.length (P.to_close st) + List.length s.closing_ids)
     (P.closing st) ;
@@ -119,12 +147,14 @@ let invariants (s : s) =
   List.iter (fun (_, e) -> check_life e) s.held ;
   if P.waiting st > 0 then
     is_true ~msg:"no idle entry while a fiber waits" (idle = []) ;
-  (* Progress. *)
+  (* Progress. A Killing slot past its age limit is free at now, also when no
+     operation removed it. *)
   let tick_now = (snd (P.tick st s.now)).connects in
+  let expired = killing - List.length (live_slots st s.now) in
   if
     (not (P.is_closed st))
     && P.waiting st > P.opening st
-    && P.free st > 0
+    && P.free st + expired > 0
     && P.opening st < 2
   then
     is_true ~msg:"progress: a connect starts now or at the timer"
@@ -164,6 +194,8 @@ let agree (r : r) (s : s) =
     (List.length m.to_close + List.length m.in_close)
     (P.closing s.st) ;
   equal ~msg:"waiting" int (List.length m.waiters) (P.waiting s.st) ;
+  equal ~msg:"the Killing slots" string (killing_text m.killing)
+    (killing_text (s_killing_slots s.st)) ;
   equal ~msg:"the error" string
     (Option.value ~default:"-" m.error)
     (error_text (P.error s.st)) ;
@@ -202,6 +234,8 @@ let create size =
     ; closing_ids= []
     ; opened_ids= []
     ; gone= []
+    ; tokens= []
+    ; freed= []
     ; bell= false
     ; armed= None
     ; next_conn= 0
@@ -244,6 +278,11 @@ let r_checkout (r : r) =
         false ) ;
   cover "two old entries move at one checkout" (moved > 1) ;
   cover "a checkout on a closed pool" r.m.closed ;
+  cover "a checkout after an expired Killing slot"
+    (List.exists (fun (_, a) -> a <= r.m.now) r.m.killing) ;
+  cover "a checkout that waits, after an expired Killing slot"
+    ( List.exists (fun (_, a) -> a <= r.m.now) r.m.killing
+    && String.starts_with ~prefix:"wait" out ) ;
   let out = out ^ wake_text (M.wake m) in
   {r with m; label= r.label + 1; rout= out}
 
@@ -276,14 +315,22 @@ let r_checkin id reusable dirty (r : r) =
   {r with m; rout= out ^ wake_text (M.wake m)}
 
 let s_cancel id (s : s) =
-  let st, found, err = P.cancel_wait s.st s.now (List.assoc id s.wids) in
-  {s with st; out= Printf.sprintf "found %b error %s" found (error_text err)}
+  let st, found, err, wake = P.cancel_wait s.st s.now (List.assoc id s.wids) in
+  { s with
+    st
+  ; bell= s.bell || wake
+  ; out=
+      Printf.sprintf "found %b error %s%s" found (error_text err)
+        (wake_text wake) }
 
 let r_cancel id (r : r) =
   let m, out = M.cancel_wait r.m id in
   cover "a cancel of a waiter that got an entry" (List.mem id r.m.given) ;
   cover "a cancel of a waiter in the queue" (List.mem_assoc id r.m.waiters) ;
-  {r with m; rout= out}
+  cover "a cancel that frees an expired Killing slot for another waiter"
+    ( List.exists (fun (_, a) -> a <= r.m.now) r.m.killing
+    && List.exists (fun (w, _) -> w <> id) r.m.waiters ) ;
+  {r with m; rout= out ^ wake_text (M.wake m)}
 
 let s_tick (s : s) =
   let st, t = P.tick s.st s.now in
@@ -395,6 +442,105 @@ let r_close_all (r : r) =
   cover "close_all with entries in close" (r.m.in_close <> []) ;
   {r with m; rout= out}
 
+let s_killing id (s : s) =
+  let e = List.assoc id s.held in
+  let st, tok, wake = P.killing s.st s.now e in
+  { s with
+    st
+  ; held= List.remove_assoc id s.held
+  ; gone= id :: s.gone
+  ; tokens= (P.token_id tok, tok) :: s.tokens
+  ; bell= s.bell || wake
+  ; out= Printf.sprintf "token %d%s" (P.token_id tok) (wake_text wake) }
+
+let r_killing id (r : r) =
+  cover "killing on a closed pool" r.m.closed ;
+  cover "killing while a fiber waits" (r.m.waiters <> []) ;
+  cover "killing of the last free slot" (M.free r.m = 0) ;
+  let m, out = M.killing r.m id in
+  {r with m; rout= out ^ wake_text (M.wake m)}
+
+let s_killed k (s : s) =
+  let st, freed, wake = P.killed s.st s.now (List.assoc k s.tokens) in
+  is_true ~msg:"a token is freed at most one time"
+    (not (freed && List.mem k s.freed)) ;
+  { s with
+    st
+  ; freed= (if freed then k :: s.freed else s.freed)
+  ; bell= s.bell || wake
+  ; out= Printf.sprintf "killed %d %b%s" k freed (wake_text wake) }
+
+let r_killed k (r : r) =
+  let m = r.m in
+  let live = List.assoc_opt k m.killing in
+  cover "killed of a slot in its age limit"
+    (match live with Some a -> a > m.now | None -> false) ;
+  cover "killed of a slot past its age limit that no operation removed"
+    (match live with Some a -> a <= m.now | None -> false) ;
+  cover "killed of a token that the age limit freed"
+    (live = None && not (List.mem k m.freed)) ;
+  cover "killed of a token that killed freed" (List.mem k m.freed) ;
+  cover "killed while a fiber waits" (live <> None && m.waiters <> []) ;
+  let m, out = M.killed m k in
+  {r with m; rout= out ^ wake_text (M.wake m)}
+
+(* The timer is the end of the backoff, and an age limit comes before it. *)
+let cover_age_before_backoff (m : M.t) =
+  cover "an age limit before the end of the backoff"
+    ( match (M.next_timer m, m.backoff_end) with
+    | Some t, Some e ->
+        t = e && List.exists (fun (_, x) -> x > m.now && x < e) m.killing
+    | _ ->
+        false )
+
+(* A failed connect 50 ms before the earliest age limit: the time goes there, a
+   tick starts the connects that it can, and if a connect runs, it fails. The
+   backoff (at least 100 ms) then ends after the age limit. This makes the rare
+   case of the cover above reachable in each run (review C of 1.5a, H1). *)
+let earliest_age slots =
+  List.fold_left
+    (fun m (_, a) -> match m with Some b when b <= a -> m | _ -> Some a)
+    None slots
+
+let r_fail_before_age (r : r) =
+  let m = r.m in
+  let now =
+    match earliest_age m.killing with
+    | Some a ->
+        Int64.sub a (M.ms 50)
+    | None ->
+        m.now
+  in
+  let r = {r with m= {m with now}} in
+  let r = r_tick r in
+  let t1 = r.rout in
+  let r, t2 =
+    if r.m.opening > 0 then
+      let r = r_failed r in
+      (r, r.rout)
+    else (r, "-")
+  in
+  cover_age_before_backoff r.m ;
+  {r with rout= t1 ^ " / " ^ t2}
+
+let s_fail_before_age (s : s) =
+  let now =
+    match earliest_age (s_killing_slots s.st) with
+    | Some a ->
+        ns (Int64.sub a 50_000_000L)
+    | None ->
+        s.now
+  in
+  let s = s_tick {s with now} in
+  let t1 = s.out in
+  let s, t2 =
+    if P.opening s.st > 0 then
+      let s = s_failed s in
+      (s, s.out)
+    else (s, "-")
+  in
+  {s with out= t1 ^ " / " ^ t2}
+
 (* A run of failed connects: up to 9 times, the time goes to the end of the
    backoff, a tick starts connects, and each of them fails. Thus the step of the
    backoff reaches its maximum of 5 s. *)
@@ -466,6 +612,10 @@ type advance =
       (** ns from the end of the life of the top of the idle stack *)
   | To_top_idle of int  (** ns from the idle limit of the top of the stack *)
   | To_backoff of int  (** ns from the end of the backoff *)
+  | To_age of int  (** ns from the age limit of the oldest Killing slot *)
+  | Before_age of int
+      (** ms before the age limit of the newest Killing slot, so that a failed
+          connect can put the end of the backoff after it *)
 
 let advance_text = function
   | Forward n ->
@@ -484,6 +634,10 @@ let advance_text = function
       Printf.sprintf "to the idle limit of the top %+dns" d
   | To_backoff d ->
       Printf.sprintf "to the backoff %+dns" d
+  | To_age d ->
+      Printf.sprintf "to the age limit %+dns" d
+  | Before_age n ->
+      Printf.sprintf "to %dms before the last age limit" n
 
 let advance_gen =
   Gen.with_pp
@@ -497,7 +651,10 @@ let advance_gen =
        ; Gen.map (fun d -> To_idle d) (Gen.int_range (-1) 1)
        ; Gen.map (fun d -> To_top_life d) (Gen.int_range (-1) 1)
        ; Gen.map (fun d -> To_top_idle d) (Gen.int_range (-1) 1)
-       ; Gen.map (fun d -> To_backoff d) (Gen.int_range (-1) 1) ] )
+       ; Gen.map (fun d -> To_backoff d) (Gen.int_range (-1) 1)
+       ; Gen.map (fun d -> To_age d) (Gen.int_range (-1) 1)
+       ; Gen.map (fun d -> To_age d) (Gen.int_range (-1) 1)
+       ; Gen.map (fun n -> Before_age n) (Gen.int_range 1 4000) ] )
 
 let oldest_m (es : M.entry list) =
   match List.sort (fun (a : M.entry) b -> compare a.id b.id) es with
@@ -509,6 +666,19 @@ let oldest_m (es : M.entry list) =
 let r_advance a (r : r) =
   let m = r.m in
   cover "an advance to the timer" (a = To_timer && M.next_timer m <> None) ;
+  cover "the timer at an age limit"
+    ( match M.next_timer m with
+    | Some t ->
+        List.exists (fun (_, x) -> x = t) m.killing && m.backoff_end <> Some t
+    | None ->
+        false ) ;
+  cover_age_before_backoff m ;
+  ( match (a, m.killing) with
+  | To_age d, _ :: _ when d >= 0 ->
+      cover "an advance past an age limit with no waiter" (m.waiters = []) ;
+      cover "an advance past an age limit with a waiter" (m.waiters <> [])
+  | _ ->
+      () ) ;
   let target =
     match a with
     | Forward n ->
@@ -536,6 +706,14 @@ let r_advance a (r : r) =
           (List.nth_opt m.idle 0)
     | To_backoff d ->
         Option.map (fun t -> Int64.add t (Int64.of_int d)) m.backoff_end
+    | To_age d ->
+        Option.map
+          (fun (_, x) -> Int64.add x (Int64.of_int d))
+          (List.nth_opt m.killing 0)
+    | Before_age n ->
+        Option.map
+          (fun (_, x) -> Int64.sub x (M.ms n))
+          (List.nth_opt (List.rev m.killing) 0)
   in
   let now = Option.value ~default:m.now target in
   {r with m= {m with now}; rout= "now " ^ Int64.to_string now}
@@ -583,9 +761,32 @@ let s_advance a (s : s) =
           (List.nth_opt (P.idle s.st) 0)
     | To_backoff d ->
         Option.map (fun t -> add t d) (P.backoff_end s.st)
+    | To_age d ->
+        Option.map
+          (fun (_, x) -> add x d)
+          (List.nth_opt (P.killing_slots s.st) 0)
+    | Before_age n ->
+        Option.map
+          (fun (_, x) -> add x (-n * 1_000_000))
+          (List.nth_opt (List.rev (P.killing_slots s.st)) 0)
   in
   let now = Option.value ~default:s.now target in
   {s with now; out= "now " ^ Int64.to_string (Span.to_ns now)}
+
+(* An age limit, then a cancel of the newest waiter while another waiter stays:
+   the cancel removes the expired Killing slot, and a connect can start for the
+   other waiter (the case of review C of 1.5a, H1). *)
+let r_cancel_after_age id (r : r) =
+  let r = r_advance (To_age 0) r in
+  let t1 = r.rout in
+  let r = r_cancel id r in
+  {r with rout= t1 ^ " / " ^ r.rout}
+
+let s_cancel_after_age id (s : s) =
+  let s = s_advance (To_age 0) s in
+  let t1 = s.out in
+  let s = s_cancel id s in
+  {s with out= t1 ^ " / " ^ s.out}
 
 (* A new pool with [k] idle entries, so that a short case reaches the deep paths
    (old entries at checkout, the polite closes). [k] times: a checkout waits, a
@@ -640,6 +841,13 @@ let waiter = among int pool (fun r -> List.init !r.m.next_waiter Fun.id)
 
 let in_close =
   among int pool (fun r -> List.map (fun (e : M.entry) -> e.id) !r.m.in_close)
+
+let token = among int pool (fun r -> !r.m.issued)
+
+(* The newest waiter in the queue of the model. *)
+let newest =
+  among int pool (fun r ->
+      match List.rev !r.m.waiters with (id, _) :: _ -> [id] | [] -> [] )
 
 (* The size, and the idle entries at the start (0 to the size). *)
 let size_gen =
@@ -699,6 +907,16 @@ let commands =
       (pool ^-> in_close ^-> returns string)
       (fun r id -> on_r (r_done id) r)
       (fun s id -> on_s (s_done id) s)
+  and killing =
+    op "killing"
+      (pool ^-> held ^-> returns string)
+      (fun r id -> on_r (r_killing id) r)
+      (fun s id -> on_s (s_killing id) s)
+  and killed =
+    op "killed"
+      (pool ^-> token ^-> returns string)
+      (fun r k -> on_r (r_killed k) r)
+      (fun s k -> on_s (s_killed k) s)
   and advance =
     op "advance"
       (pool ^-> advance_gen @-> returns string)
@@ -715,6 +933,7 @@ let commands =
   @ List.concat_map
       (fun c -> [c; c; c])
       [checkout; checkin; tick; opened; closed_done; advance]
+  @ [killing; killing; killed; killed]
   @ [ op "cancel_wait"
         (pool ^-> waiter ^-> returns string)
         (fun r id -> on_r (r_cancel id) r)
@@ -739,6 +958,15 @@ let commands =
           && !r.m.opening < 2 )
         (pool ^-> returns string)
         (on_r r_fail_run) (on_s s_fail_run)
+    ; op "an age limit, then a cancel"
+        ~pre:(fun r _ -> !r.m.killing <> [] && List.length !r.m.waiters >= 2)
+        (pool ^-> newest ^-> returns string)
+        (fun r id -> on_r (r_cancel_after_age id) r)
+        (fun s id -> on_s (s_cancel_after_age id) s)
+    ; op "a failed connect before an age limit"
+        ~pre:(fun r -> (not !r.m.closed) && !r.m.killing <> [])
+        (pool ^-> returns string)
+        (on_r r_fail_before_age) (on_s s_fail_before_age)
     ; op "close_all"
         ~pre:(fun r -> !r.steps >= 15)
         (pool ^-> returns string)

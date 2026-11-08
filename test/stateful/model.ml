@@ -8,9 +8,13 @@
 
    The derived values use a method that is not the method of the code, so that a
    wrong rule is not in the two sides: the connects of a tick are the largest
-   count that each limit permits (an enumeration), the timer is the first
+   count that each limit permits (an enumeration), the timer is the smallest
    candidate time at which a tick starts a connect (a search), wake is "a tick
-   now has work or arms a timer", and the checkout filters the stack. *)
+   now has work or arms a timer", and the checkout filters the stack. The free
+   slots at a time [t] count only the Killing slots whose age limit is later
+   than [t] (a filter), thus the derived values do not depend on the removal of
+   the expired slots. Each operation removes them, as the mli says, so that the
+   lists of the two sides agree. *)
 
 type entry =
   { id: int
@@ -36,9 +40,14 @@ type t =
   ; backoff_end: int64 option
   ; step: int64
   ; closed: bool
+  ; killing: (int * int64) list
+        (** The Killing slots: (token, age limit), the oldest first. *)
+  ; issued: int list  (** Each token that killing gave. *)
+  ; freed: int list  (** The tokens that killed freed. *)
   ; next_entry: int
   ; next_waiter: int
-  ; next_conn: int }
+  ; next_conn: int
+  ; next_token: int }
 
 let ms n = Int64.mul (Int64.of_int n) 1_000_000L
 
@@ -59,13 +68,30 @@ let create ~size ~life =
   ; backoff_end= None
   ; step= ms 100
   ; closed= false
+  ; killing= []
+  ; issued= []
+  ; freed= []
   ; next_entry= 0
   ; next_waiter= 0
-  ; next_conn= 0 }
+  ; next_conn= 0
+  ; next_token= 0 }
 
-let free m =
+(* The age limit of a Killing slot: 30 s. *)
+let age = sec 30
+
+(* The Killing slots that hold their slot at [t]. *)
+let live_at m t = List.filter (fun (_, a) -> a > t) m.killing
+
+(* The free slots at [t]. *)
+let free_at m t =
   m.size - List.length m.idle - List.length m.used - m.opening
   - List.length m.to_close - List.length m.in_close
+  - List.length (live_at m t)
+
+let free m = free_at m m.now
+
+(* The rule of each operation: first remove the expired Killing slots. *)
+let expire m = {m with killing= live_at m m.now}
 
 let demand m = max 0 (List.length m.waiters - m.opening)
 
@@ -77,7 +103,7 @@ let starts_at m t =
     (not m.closed)
     && (not (backoff_at m t))
     && m.opening + n <= 2
-    && n <= free m
+    && n <= free_at m t
     && n <= demand m
   in
   List.fold_left
@@ -85,17 +111,24 @@ let starts_at m t =
     0
     (List.init (m.size + 1) Fun.id)
 
-(* The first time later than now at which a tick, with no other operation,
+(* The smallest time later than now at which a tick, with no other operation,
    starts a connect. The connects change with the time only at the end of the
-   backoff, thus it is the one candidate. *)
+   backoff and at the age limits, thus these are the candidates. *)
 let next_timer m =
-  List.find_opt
-    (fun t -> t > m.now && starts_at m t > 0)
-    (Option.to_list m.backoff_end)
+  if starts_at m m.now > 0 then None
+  else
+    List.fold_left
+      (fun best t ->
+        if t > m.now && starts_at m t > 0 then
+          match best with Some b when b <= t -> best | _ -> Some t
+        else best )
+      None
+      (Option.to_list m.backoff_end @ List.map snd m.killing)
 
 (* The work of a tick at now: the connects, the entries to close, and the timer
    of the state after the tick. *)
 let tick_parts m =
+  let m = expire m in
   let n = starts_at m m.now in
   let closing = m.to_close in
   let m =
@@ -115,6 +148,7 @@ let idle_out e t = Int64.sub t e.last_used >= e.idle_limit
 (* The outcome of each operation, as text: the stateful test compares it. *)
 
 let checkout m w =
+  let m = expire m in
   if m.closed then (m, "closed")
   else
     (* The rule of the mli: each old entry moves, the oldest place first in the
@@ -132,12 +166,14 @@ let checkout m w =
         , Printf.sprintf "wait %d" id )
 
 let cancel_wait m id =
+  let m = expire m in
   let found = List.mem_assoc id m.waiters in
   ( {m with waiters= List.filter (fun (i, _) -> i <> id) m.waiters}
   , Printf.sprintf "found %b error %s" found (Option.value ~default:"-" m.error)
   )
 
 let checkin m id ~reusable ~dirty =
+  let m = expire m in
   let e = List.find (fun e -> e.id = id) m.used in
   let used = List.filter (fun e -> e.id <> id) m.used in
   if not reusable then ({m with used}, "freed")
@@ -164,6 +200,7 @@ let tick m =
 let idle_limit w = max (sec 1) (min (sec 30) (sec (max 0 (w - 5))))
 
 let opened m ~wait_timeout ~u =
+  let m = expire m in
   let m = {m with opening= m.opening - 1} in
   let conn = Printf.sprintf "c%d" m.next_conn in
   let m = {m with next_conn= m.next_conn + 1} in
@@ -200,6 +237,7 @@ let opened m ~wait_timeout ~u =
         ({m with idle= e :: m.idle}, "idle")
 
 let open_failed m err =
+  let m = expire m in
   let t = Int64.add m.now m.step in
   let backoff_end =
     match m.backoff_end with Some e -> Some (max e t) | None -> Some t
@@ -211,12 +249,16 @@ let open_failed m err =
     ; step= min (sec 5) (Int64.mul 2L m.step) }
   , "failed" )
 
-let open_aborted m = ({m with opening= m.opening - 1}, "aborted")
+let open_aborted m =
+  let m = expire m in
+  ({m with opening= m.opening - 1}, "aborted")
 
 let closed_done m id =
+  let m = expire m in
   ({m with in_close= List.filter (fun e -> e.id <> id) m.in_close}, "done")
 
 let close_all m =
+  let m = expire m in
   let entries = m.idle @ m.to_close @ m.in_close in
   let out =
     Printf.sprintf "waiters [%s] close [%s]"
@@ -224,3 +266,23 @@ let close_all m =
       (String.concat ";" (List.map (fun e -> string_of_int e.id) entries))
   in
   ({m with closed= true; idle= []; to_close= []; in_close= []; waiters= []}, out)
+
+(* The entry [id] in use goes out (the shell aborted it), and its slot stays
+   until the age limit or killed. *)
+let killing m id =
+  let m = expire m in
+  let tok = m.next_token in
+  ( { m with
+      used= List.filter (fun e -> e.id <> id) m.used
+    ; killing= m.killing @ [(tok, Int64.add m.now age)]
+    ; issued= tok :: m.issued
+    ; next_token= tok + 1 }
+  , Printf.sprintf "token %d" tok )
+
+let killed m tok =
+  let m = expire m in
+  let found = List.mem_assoc tok m.killing in
+  ( { m with
+      killing= List.filter (fun (k, _) -> k <> tok) m.killing
+    ; freed= (if found then tok :: m.freed else m.freed) }
+  , Printf.sprintf "killed %d %b" tok found )
