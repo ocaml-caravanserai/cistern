@@ -51,6 +51,8 @@ let event_text = function
   | Ev.Connect {address; error; _} ->
       Printf.sprintf "connect %s %s" address
         (match error with None -> "ok" | Some e -> error_text e)
+  | (Ev.Kill _ | Ev.Kill_dropped _ | Ev.Kill_off _) as e ->
+      Format.asprintf "%a" Ev.pp e
 
 let q s = Raw.query (Raw.sql s)
 
@@ -647,7 +649,10 @@ let tests =
                   ~on_query:(function
                     | Ev.Query _ ->
                         raise (Fiber.Cancelled Exit)
-                    | Ev.Connect _ ->
+                    | Ev.Connect _
+                    | Ev.Kill _
+                    | Ev.Kill_dropped _
+                    | Ev.Kill_off _ ->
                         failwith "hook" )
                   (D.config ())
                   (fun pool -> result_text (Db.exec pool (q "SELECT 4"))) )
@@ -1173,7 +1178,8 @@ let tests =
                         Pool.Private.state (Option.get !pr)
                       in
                       seen := in_use :: !seen
-                  | Ev.Connect _ ->
+                  | Ev.Connect _ | Ev.Kill _ | Ev.Kill_dropped _ | Ev.Kill_off _
+                    ->
                       () )
                 (D.config ())
                 (fun pool ->
