@@ -10,4 +10,5 @@ let () =
        [ Desc_tests.tests
        ; Error_tests.tests
        ; Relation_tests.tests
+       ; Hostile_relation_tests.tests
        ; Generated_tests.tests ] )

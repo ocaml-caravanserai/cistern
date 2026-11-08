@@ -27,6 +27,7 @@ let () =
          ; Test_model.tests
          ; Test_typed_query.tests
          ; Test_typed_query.nested_tests
+         ; Test_hostile_rel.tests
          ; Test_typed_query.scope_tests
          ; Test_typed_query.include_tests
          ; Test_schema_ops.tests

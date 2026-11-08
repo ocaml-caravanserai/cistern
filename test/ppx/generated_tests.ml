@@ -202,6 +202,10 @@ let tests =
     [ equal_schema "kinds" [Cistern_test_models.Kinds.Kinds.model]
     ; equal_schema "auto_only" [Cistern_test_models.Auto_only.Auto_only.model]
     ; equal_schema "person" [Cistern_test_models.Person.Person.model]
+    ; equal_schema "user_todo"
+        [ Cistern_test_models.User_todo.User.model
+        ; Cistern_test_models.User_todo.Todo.model ]
+    ; equal_schema "tree" [Cistern_test_models.Tree.Node.model]
     ; same_declaration "kinds"
     ; same_declaration "auto_only"
     ; same_declaration "person"
@@ -225,6 +229,68 @@ let tests =
     ; equal_output "kinds"
     ; equal_output "auto_only"
     ; equal_output "person"
+    ; equal_output "user_todo"
+    ; test "user_todo: the code of each relation has the location of its field"
+        (fun () ->
+          let (loc, rf, tds), _ = after_type (items "user_todo") in
+          let binds, _, _ =
+            places (Ppx_cistern.Private.expand ~loc (rf, tds))
+          in
+          List.iter
+            (fun (t : Src.Desc.typ) ->
+              List.iter
+                (fun (r : Src.Desc.relation) ->
+                  let at = Src.place r.loc in
+                  (* The setter, the scope and the value of Rel. *)
+                  equal (list string) [at; at; at] (named r.name binds) )
+                t.relations )
+            (Src.Desc.group ~loc tds) )
+    ; test "user_todo: the values of stages 2 and 3 with their labels"
+        (fun () ->
+          equal string
+            "cistern__default__user__5 _\n\
+             cistern__default__user__9 _\n\
+             id\n\
+             name\n\
+             email\n\
+             nick\n\
+             age\n\
+             active\n\
+             get_by_id _\n\
+             find_by_id _\n\
+             get_by_email _\n\
+             find_by_email _\n\
+             get_by_nick _\n\
+             find_by_nick _\n\
+             all\n\
+             where _\n\
+             update ?name ?email ?nick ?age ?active _\n\
+             delete _\n\
+             draft ~name ~email ?nick ?age ?active _\n\
+             id\n\
+             user_id\n\
+             title\n\
+             done_\n\
+             note\n\
+             get_by_id _\n\
+             find_by_id _\n\
+             filter_by_title _\n\
+             filter_by_user_id _\n\
+             all\n\
+             where _\n\
+             update ?user_id ?title ?done_ ?note _\n\
+             delete _\n\
+             draft ?user_id ~title ?done_ ?note _\n\
+             model\n\
+             create ~name ~email ?nick ?age ?active ?todos _\n\
+             todos _\n\
+             todos\n\
+             model\n\
+             create ?user_id ~title ?done_ ?note _\n\
+             user _\n\
+             user"
+            (headers "user_todo") )
+    ; equal_output "tree"
     ; test "the values of stages 2 and 3 of person and kinds" (fun () ->
           expect (headers "person")
           @@ __POS_OF__
