@@ -3,8 +3,23 @@
    obtain one at https://mozilla.org/MPL/2.0/. *)
 
 (** The events of [?on_query] (DESIGN.md, "Shared state and the query hook"). An
-    event holds no value of a statement, and {!pp} prints no message of a
-    server. The events of [KILL] (phase 1.5) hold no free text: their reasons
+    event holds no message of a server error packet and no value of a statement:
+    - The error of a [Failed] outcome and of a [Connect] event is redacted
+      ({!Error.redact}): it has no message of an error packet, which can hold a
+      value of a row. The kind, the error number and the SQLSTATE stay.
+    - The SQL has [?] in place of each value of {!Raw.v} and of each literal of
+      a typed statement. A literal that the program writes into the text of
+      {!Raw.sql} stays in the event: [Raw.sql] takes only the text of the
+      program ({!Raw.redacted}).
+    - The text of a [Connect] error comes from the client. Two such texts can
+      hold a short text that the server (or a peer in the middle) controls,
+      escaped and cut, which is never a value of a row: the name of an
+      authentication plugin ("unsupported authentication plugin <name>"), and
+      the cause of a TLS failure ("TLS: <cause>"), which can name the subject of
+      the certificate.
+
+    The result of the statement keeps the full error. {!pp} prints no message
+    either. The events of [KILL] (phase 1.5) hold no free text: their reasons
     are variants. *)
 
 type outcome =
@@ -46,7 +61,8 @@ type kill_off =
 type t =
   | Query of {sql: string; duration: Weft.Span.t; outcome: outcome}
       (** [sql] is the redacted SQL. The producer of the event (the client) puts
-          each literal as [?], and puts no other text from a user in [sql]. *)
+          each value of [Raw.v] and each typed literal as [?]. The text of
+          [Raw.sql] stays as the program wrote it. *)
   | Connect of {address: string; duration: Weft.Span.t; error: Error.t option}
       (** [address] is [host:port] or the path of the socket, never the
           password. *)

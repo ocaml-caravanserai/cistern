@@ -14,6 +14,7 @@ open Support
 module Db = Cistern.Db
 module Raw = Cistern.Raw
 module Ev = Cistern_core.Event
+module Tx = Cistern.Tx
 module Span = Weft.Span
 module Time = Weft.Time
 module Fiber = Weft.Fiber
@@ -144,6 +145,78 @@ let deterministic =
               (* The events of a connect of the pool and of the control
                  connection have the same form: at most 4 + 1. *)
               is_true ~msg:"at most 5 connects" (count_connects (events ()) <= 5) ) )
+    ; test "no value of a row in an event: 1062, 1366, 1064 (phase 2a0)"
+        (fun () ->
+          in_weft (fun () ->
+              warm () ;
+              (* The value goes as a literal (Raw.v), so that the redacted SQL
+                 has no copy of it: only the message of the server can hold it.
+                 A 1064 quotes the hex literal. *)
+              let secret = "s3cret-value" in
+              let hex =
+                String.concat ""
+                  (List.map
+                     (fun c -> Printf.sprintf "%02X" (Char.code c))
+                     (List.of_seq (String.to_seq secret)) )
+              in
+              let leaks s = contains s secret || contains s hex in
+              let on_query, events = recorder () in
+              let raw parts = Raw.exec parts in
+              let lit = Raw.v (Cistern_core.Value.Text secret) in
+              let s = Raw.sql and ( ++ ) = Raw.( ++ ) in
+              let insert column =
+                raw
+                  ( s ("INSERT INTO rd (" ^ column ^ ") VALUES (")
+                  ++ lit ++ s ")" )
+              in
+              let text = function Ok _ -> "ok" | Error e -> E.to_string e in
+              let results =
+                Db.with_db ~pool_size:2 ~on_query (config ()) (fun db ->
+                    let run exec =
+                      [ exec (insert "name")
+                      ; exec (insert "n")
+                      ; exec (raw (s "SELEC" ++ lit)) ]
+                    in
+                    ignore (Db.exec db (raw (s "DROP TABLE IF EXISTS rd"))) ;
+                    ignore
+                      (Db.exec db
+                         (raw
+                            (s
+                               "CREATE TABLE rd (id INT AUTO_INCREMENT PRIMARY \
+                                KEY, name VARCHAR(64) UNIQUE, n BIGINT)" ) ) ) ;
+                    ignore (Db.exec db (insert "name")) ;
+                    let a = run (fun st -> text (Db.exec db st)) in
+                    let b =
+                      match
+                        Db.transaction db (fun tx ->
+                            run (fun st -> text (Tx.exec tx st)) )
+                      with
+                      | Ok l ->
+                          l
+                      | Error e ->
+                          [E.to_string e]
+                    in
+                    ignore (Db.exec db (raw (s "DROP TABLE rd"))) ;
+                    a @ b )
+              in
+              (* The results keep the message of the server, with the value. *)
+              equal int 6 (List.length results) ;
+              List.iter (fun r -> is_true ~msg:r (leaks r)) results ;
+              (* No event holds it, also with the full printer of the error. *)
+              List.iter
+                (fun e ->
+                  let t =
+                    Format.asprintf "%a" Ev.pp e
+                    ^
+                    match e with
+                    | Ev.Query {outcome= Ev.Failed err; _}
+                    | Ev.Connect {error= Some err; _} ->
+                        " " ^ E.to_string err
+                    | _ ->
+                        ""
+                  in
+                  is_false ~msg:t (leaks t) )
+                (events ()) ) )
     ; test "the session reset after a raw SET and USE (V5)" (fun () ->
           in_weft (fun () ->
               warm () ;
