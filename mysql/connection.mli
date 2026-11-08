@@ -207,6 +207,16 @@ val sent : t -> bool
     After a cancel in a statement, the pool reads it for the event of the
     statement. *)
 
+val in_flight : t -> bool
+(** [in_flight t] is true if the last command flushed its packet and no whole
+    reply came: no server error, no ERR before the command (R-SEQ0, the server
+    did not read it), and no end of its reply. Thus the server can still run the
+    command, for example after a cancel, a read deadline or the end of the
+    stream. It is true only on a broken connection. A command on a closed or
+    broken connection gives [Connection_lost] with no I/O and keeps it, so that
+    the [KILL] of an earlier command is not lost. The pool asks for a [KILL]
+    only then (the plan of phase 1.5, D1 and N2). *)
+
 val usable : t -> bool
 (** [usable t] is true if [t] is not closed and not broken. The pool checks it
     in at the end of a statement as reusable only then. *)

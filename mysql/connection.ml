@@ -55,6 +55,8 @@ type t =
   ; mutable status: int
   ; mutable last_error: Message.err option
   ; mutable sent: bool
+  ; mutable in_flight: bool
+        (** The last command flushed its packet, and no whole reply came. *)
   ; closed: bool Atomic.t
         (** Set by the first abort or close, on any domain. *)
   ; mutable broken: bool
@@ -570,6 +572,7 @@ let establish config opened =
   ; status
   ; last_error= None
   ; sent= false
+  ; in_flight= false
   ; closed= Atomic.make false
   ; broken= false
   ; busy= Atomic.make false }
@@ -641,7 +644,7 @@ let send t command =
     Writer.flush t.writer
   with
   | () ->
-      ()
+      t.in_flight <- true
   | exception (Flow.Closed | Weft.Net.Error _) ->
       raise (Event Outcome.Write_failed)
   | exception Flow.Timeout ->
@@ -725,15 +728,27 @@ let command ?(always_break = false) ?(statement = false) t kind f =
   with_busy t (fun () ->
       t.last_error <- None ;
       if statement then t.sent <- false ;
+      (* in_flight is true only on a broken connection: each end that leaves it
+         true breaks the connection. Thus a command with I/O starts with it
+         false, and a command on a closed or broken connection, which does no
+         I/O, keeps the flag of an earlier command that can still run (review A
+         of 1.5c1a, N1). *)
       if Atomic.get t.closed || t.broken then Error Error.Connection_lost
       else
         match f () with
         | v ->
+            t.in_flight <- false ;
             v
         | exception Event e ->
+            (* A server error, an ERR before the command (R-SEQ0), and a value
+               that does not decode end the reply: the server does not run the
+               command any more. *)
             ( match e with
             | Outcome.Server_error err ->
-                t.last_error <- Some err
+                t.last_error <- Some err ;
+                t.in_flight <- false
+            | Outcome.Before_command | Outcome.Bad_value _ ->
+                t.in_flight <- false
             | _ ->
                 () ) ;
             let error, state = Outcome.decide t.info.dialect kind e in
@@ -808,7 +823,12 @@ let exec ?kind t raw =
 
 let ok_command ?always_break t commands =
   command ?always_break t Outcome.Not_write (fun () ->
-      List.iter (fun c -> send t c ; ok_reply t) commands ;
+      List.iter
+        (fun c ->
+          send t c ;
+          ok_reply t ;
+          t.in_flight <- false )
+        commands ;
       Ok () )
 
 type kill_result = Killed | Gone | Not_owner
@@ -866,6 +886,8 @@ end
 let sent t = t.sent
 
 let usable t = not (Atomic.get t.closed || t.broken)
+
+let in_flight t = t.in_flight
 
 let set_deadline t d =
   Flow.set_read_deadline t.flow d ;
