@@ -10,7 +10,8 @@ module Event = Cistern_core.Event
 type scope =
   { emit: sql:string -> t0:Clock.mono -> Event.outcome -> unit
   ; time_left: unit -> bool
-  ; after_ok: unit -> (unit, Error.t) result }
+  ; after_ok: unit -> (unit, Error.t) result
+  ; error: emit:(Event.outcome -> unit) -> Error.t -> Error.t }
 
 type ctx = {conn: Connection.t; mutable sent: bool; scope: scope option}
 
@@ -47,7 +48,7 @@ let command ctx ~redacted ~rows f =
           | Error e ->
               emit (Event.Failed e) ; Error e )
         | Error e ->
-            emit (Event.Failed e) ; Error e
+            Error (s.error ~emit e)
         | exception (Fiber.Cancelled _ as ex) ->
             (* The flag of this command only: the event of one command tells if
                its bytes went out. *)

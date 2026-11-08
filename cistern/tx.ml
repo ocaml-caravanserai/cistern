@@ -131,81 +131,6 @@ let command tx ~strict sql =
         event (Event.Cancelled {sent}) ;
         raise ex )
 
-let exec ?timeout tx stmt =
-  check tx "exec" ;
-  if (Stmt.Private.meta stmt).atomic then
-    invalid_arg "Tx.exec: an atomic statement runs in a Tx from phase 4b2" ;
-  match (tx.failed, Stmt.Private.pure_value stmt) with
-  | Some f, _ ->
-      Error f.error
-  | None, Some v ->
-      Ok (v ())
-  | None, None -> (
-      let meta = Stmt.Private.meta stmt in
-      let word = Option.map Raw.first_word meta.raw in
-      ( match word with
-      | Some w when R.refused w ->
-          invalid_arg
-            "Tx.exec: a raw statement that a Tx refuses (DESIGN.md, \
-             \"Transactions\")"
-      | _ ->
-          () ) ;
-      let dialect = (Connection.info tx.c).dialect in
-      let t0 = Time.now Clock.Mono in
-      let event =
-        emit tx.pool ~sql:(String.concat "; " (meta.redacted dialect)) ~t0
-      in
-      match meta.text with
-      | Some (Error message) ->
-          let e = Error.Invalid_value {code= None; message} in
-          event (Event.Failed e) ; Error e
-      | _ -> (
-          let deadline =
-            match timeout with
-            | Some s ->
-                let d = Pool.add_span (Pool.now tx.pool) s in
-                Span.of_ns (Int64.min (Span.to_ns d) (Span.to_ns tx.deadline))
-            | None ->
-                tx.deadline
-          in
-          if not (Pool.time_left tx.pool ~deadline) then (
-            (* C-M4: the margin of an earlier statement deadline fails only the
-               statement. *)
-            if Span.compare deadline tx.deadline >= 0 then
-              fail tx ~at:deadline Error.Timeout ;
-            event (Event.Failed Error.Timeout) ;
-            Error Error.Timeout )
-          else
-            let dml = match word with Some w -> R.dml w | None -> true in
-            if meta.raw <> None then tx.raw_ran <- true ;
-            if not dml then tx.only_dml <- false ;
-            (* No wait between the margin check and the statement. *)
-            Connection.set_deadline tx.c (Pool.mono tx.pool deadline) ;
-            let ctx = Exec.make tx.c in
-            match Stmt.Private.run stmt ctx with
-            | Ok ran ->
-                if in_trans tx.c then (
-                  event (Event.Done {rows= ran.rows}) ;
-                  (* The value comes after the event, as in Db.exec. *)
-                  Ok (ran.finish ()) )
-                else committed_in tx ~event
-            | Error e ->
-                command_error tx ~deadline ~strict:false ~event e
-            | exception (Fiber.Cancelled _ as ex) ->
-                let sent = Exec.sent ctx in
-                cancelled tx
-                  ( if sent && not dml then Error.Outcome_unknown `Statement
-                    else Error.Connection_lost ) ;
-                event (Event.Cancelled {sent}) ;
-                raise ex ) )
-
-let exec_exn ?timeout tx stmt =
-  match exec ?timeout tx stmt with
-  | Ok v ->
-      v
-  | Error e ->
-      raise (Error.Cistern_error e)
-
 let state tx =
   match tx.failed with
   | None ->
@@ -256,8 +181,9 @@ let pending_cancel () =
   | exception (Fiber.Cancelled _ as ex) ->
       Some ex
 
-let savepoint tx g =
-  check tx "savepoint" ;
+(* The body of Tx.savepoint, also for an atomic statement in a Tx (phase 4b2,
+   E6): one counter, the same rules. *)
+let in_savepoint tx g =
   match tx.failed with
   | Some f ->
       Error f.error
@@ -291,6 +217,139 @@ let savepoint tx g =
               match outcome with Got v -> Ok v | _ -> assert false )
             | Error e ->
                 Error e ) ) )
+
+let savepoint tx g = check tx "savepoint" ; in_savepoint tx g
+
+(* An atomic statement in a Tx (phase 4b2, E6): the savepoint code of
+   Tx.savepoint around its commands. Each command checks the margin of the
+   statement deadline, emits its own event, and its error goes through the rules
+   of Tx.exec (command_error): an error after which the server keeps the
+   transaction gives ROLLBACK TO SAVEPOINT, and the Tx continues; an error of
+   the class Fails (1213, 1020, a broken connection) fails the Tx, with no
+   ROLLBACK TO SAVEPOINT. A cancel between SAVEPOINT and RELEASE fails the Tx,
+   and its end aborts the connection. *)
+let atomic_in tx ~deadline stmt =
+  let scope =
+    { Exec.emit= (fun ~sql ~t0 outcome -> emit tx.pool ~sql ~t0 outcome)
+    ; time_left=
+        (fun () ->
+          Pool.time_left tx.pool ~deadline
+          ||
+          (* C-M4: the margin of an earlier statement deadline fails only the
+             statement. *)
+          ( if Span.compare deadline tx.deadline >= 0 then
+              fail tx ~at:deadline Error.Timeout ;
+            false ) )
+    ; after_ok=
+        (fun () ->
+          if in_trans tx.c then Ok ()
+          else (
+            fail tx ~at:tx.deadline Error.Implicit_commit ;
+            Error Error.Implicit_commit ) )
+    ; error=
+        (fun ~emit e ->
+          Result.get_error
+            (command_error tx ~deadline ~strict:false ~event:emit e) ) }
+  in
+  match
+    in_savepoint tx (fun tx ->
+        (* No wait between the margin check of the first command and the
+           command. *)
+        Connection.set_deadline tx.c (Pool.mono tx.pool deadline) ;
+        match Stmt.Private.run stmt (Exec.make ~scope tx.c) with
+        | Ok ran ->
+            ran
+        | Error e ->
+            raise (Error.Cistern_error e) )
+  with
+  | Ok ran ->
+      Ok (ran.finish ())
+  | Error e ->
+      Error e
+  | exception (Fiber.Cancelled _ as ex) ->
+      (* In a command, or between two commands: the Tx fails. A cancel in a
+         command broke the connection, and the end aborts it. Between two
+         commands the connection stays usable: the cancel goes up, and the end
+         of Db.transaction aborts the connection; if the callback catches the
+         cancel, the end sends ROLLBACK, and the first error Connection_lost
+         tells only "not committed" (the connection is healthy). The commands of
+         an atomic statement are not raw, thus DML. *)
+      cancelled tx Error.Connection_lost ;
+      raise ex
+
+let exec ?timeout tx stmt =
+  check tx "exec" ;
+  match (tx.failed, Stmt.Private.pure_value stmt) with
+  | Some f, _ ->
+      Error f.error
+  | None, Some v ->
+      Ok (v ())
+  | None, None -> (
+      let meta = Stmt.Private.meta stmt in
+      let word = Option.map Raw.first_word meta.raw in
+      ( match word with
+      | Some w when R.refused w ->
+          invalid_arg
+            "Tx.exec: a raw statement that a Tx refuses (DESIGN.md, \
+             \"Transactions\")"
+      | _ ->
+          () ) ;
+      let dialect = (Connection.info tx.c).dialect in
+      let t0 = Time.now Clock.Mono in
+      let event =
+        emit tx.pool ~sql:(String.concat "; " (meta.redacted dialect)) ~t0
+      in
+      match meta.text with
+      | Some (Error message) ->
+          let e = Error.Invalid_value {code= None; message} in
+          event (Event.Failed e) ; Error e
+      | _ -> (
+          let deadline =
+            match timeout with
+            | Some s ->
+                let d = Pool.add_span (Pool.now tx.pool) s in
+                Span.of_ns (Int64.min (Span.to_ns d) (Span.to_ns tx.deadline))
+            | None ->
+                tx.deadline
+          in
+          if meta.atomic then atomic_in tx ~deadline stmt
+          else if not (Pool.time_left tx.pool ~deadline) then (
+            (* C-M4: the margin of an earlier statement deadline fails only the
+               statement. *)
+            if Span.compare deadline tx.deadline >= 0 then
+              fail tx ~at:deadline Error.Timeout ;
+            event (Event.Failed Error.Timeout) ;
+            Error Error.Timeout )
+          else
+            let dml = match word with Some w -> R.dml w | None -> true in
+            if meta.raw <> None then tx.raw_ran <- true ;
+            if not dml then tx.only_dml <- false ;
+            (* No wait between the margin check and the statement. *)
+            Connection.set_deadline tx.c (Pool.mono tx.pool deadline) ;
+            let ctx = Exec.make tx.c in
+            match Stmt.Private.run stmt ctx with
+            | Ok ran ->
+                if in_trans tx.c then (
+                  event (Event.Done {rows= ran.rows}) ;
+                  (* The value comes after the event, as in Db.exec. *)
+                  Ok (ran.finish ()) )
+                else committed_in tx ~event
+            | Error e ->
+                command_error tx ~deadline ~strict:false ~event e
+            | exception (Fiber.Cancelled _ as ex) ->
+                let sent = Exec.sent ctx in
+                cancelled tx
+                  ( if sent && not dml then Error.Outcome_unknown `Statement
+                    else Error.Connection_lost ) ;
+                event (Event.Cancelled {sent}) ;
+                raise ex ) )
+
+let exec_exn ?timeout tx stmt =
+  match exec ?timeout tx stmt with
+  | Ok v ->
+      v
+  | Error e ->
+      raise (Error.Cistern_error e)
 
 (* COMMIT or ROLLBACK, in a shield. The flow deadline is the remaining time of
    the transaction, at least 5 s and at most 30 s, so that the sent rule holds.
@@ -525,7 +584,7 @@ let atomic ~timeout pool stmt =
                     The callback then raises it, as the first error of the
                     Tx. *)
                  if in_trans tx.c then Ok () else Error Error.Implicit_commit )
-           }
+           ; error= (fun ~emit e -> emit (Event.Failed e) ; e) }
          in
          (* The flow deadline of the connection is the transaction deadline:
             with_conn set it at the checkout. *)

@@ -262,6 +262,30 @@ let deterministic =
                  in autocommit mode: its row stays. *)
               equal string "ok" (ok_text (Db.exec db (x (ins 4)))) ;
               equal string "1,2,4" (ids "at") ) )
+    ; test
+        "an atomic statement in a Tx: a savepoint, ROLLBACK TO after a child, \
+         the Tx continues" (fun () ->
+          with_table ~pool_size:1 "sa" (fun db events ->
+              let ins id =
+                Printf.sprintf "INSERT INTO sa (id) VALUES (%d)" id
+              in
+              let r =
+                Db.transaction db (fun tx ->
+                    insert tx "sa" 1 ;
+                    let a = ok_text (Tx.exec tx (atomic [ins 2; ins 3])) in
+                    (* The second command fails: the savepoint undoes the first,
+                       and the Tx continues. *)
+                    let b = ok_text (Tx.exec tx (atomic [ins 4; ins 1])) in
+                    insert tx "sa" 5 ;
+                    a ^ " " ^ b )
+              in
+              equal string "ok ok Constraint_violation Unique" (tx_text r) ;
+              equal string "1,2,3,5" (ids "sa") ;
+              equal int 1 (events_of events "SAVEPOINT cistern_sp_1") ;
+              equal int 1 (events_of events "RELEASE SAVEPOINT cistern_sp_1") ;
+              equal int 1
+                (events_of events "ROLLBACK TO SAVEPOINT cistern_sp_2") ;
+              equal int 1 (events_of events ("atomic: " ^ ins 4)) ) )
     ; test "COMMIT of two writes, ROLLBACK after Cistern_error" (fun () ->
           with_table "cr" (fun db events ->
               let r =

@@ -1341,6 +1341,258 @@ let tests =
           (* The closed pool comes first, as in Db.exec. *)
           equal string "Db.t used after with_db" !r ) ]
 
+(* Atomic statements in a Tx (phase 4b2, the plan of phase 4, E6): the savepoint
+   code of Tx.savepoint around their commands. *)
+let atomic_in_tx =
+  let a ?around cmds = T.atomic ?around cmds in
+  let ok = function
+    | Ok n ->
+        "Ok " ^ string_of_int n
+    | Error e ->
+        T.error_text e
+  in
+  let has_prefix p = List.exists (String.starts_with ~prefix:p) in
+  group "atomic statements in a Tx"
+    [ test "the commands in a savepoint, each with its event" (fun () ->
+          let r, inner, cmds, _, events =
+            run_tx (fun _ note tx ->
+                step note (Tx.exec tx (x "UPDATE p")) ;
+                note (ok (Tx.exec tx (a ["ADD a"; "ADD b"]))) )
+          in
+          equal string "Ok" r ;
+          equal string "Ok / Ok 2" inner ;
+          equal (list string)
+            [ "START TRANSACTION"
+            ; "UPDATE p"
+            ; "SAVEPOINT cistern_sp_1"
+            ; "ADD a"
+            ; "ADD b"
+            ; "RELEASE SAVEPOINT cistern_sp_1"
+            ; "COMMIT" ]
+            cmds ;
+          equal (list string)
+            [ "query \"START TRANSACTION\" done 0"
+            ; "query \"UPDATE p\" done 1"
+            ; "query \"SAVEPOINT cistern_sp_1\" done 0"
+            ; "query \"atomic: ADD a\" done 1"
+            ; "query \"atomic: ADD b\" done 1"
+            ; "query \"RELEASE SAVEPOINT cistern_sp_1\" done 0"
+            ; "query \"COMMIT\" done 0" ]
+            events )
+    ; cases
+        "an error of a child that keeps the transaction: ROLLBACK TO \
+         SAVEPOINT, the Tx continues"
+        ~id:(fun (c, _) -> c)
+        [ ("FAIL 1406", "Invalid_value 1406")
+        ; ("FAIL 1062", "Constraint_violation Unique") ]
+        (fun (cmd, expected) ->
+          let r, inner, cmds, connects, events =
+            run_tx (fun _ note tx ->
+                step note (Tx.exec tx (x "UPDATE p")) ;
+                note (ok (Tx.exec tx (a ["ADD a"; cmd]))) ;
+                step note (Tx.exec tx (x "UPDATE q")) )
+          in
+          equal string "Ok" r ;
+          equal string ("Ok / " ^ expected ^ " / Ok") inner ;
+          equal (list string)
+            [ "START TRANSACTION"
+            ; "UPDATE p"
+            ; "SAVEPOINT cistern_sp_1"
+            ; "ADD a"
+            ; cmd
+            ; "ROLLBACK TO SAVEPOINT cistern_sp_1"
+            ; "UPDATE q"
+            ; "COMMIT" ]
+            cmds ;
+          equal int 1 connects ;
+          is_true
+            (List.mem
+               (Printf.sprintf "query \"atomic: %s\" failed %s" cmd expected)
+               events ) )
+    ; cases
+        "an error of a child of the class Fails: the Tx fails, no ROLLBACK TO \
+         SAVEPOINT"
+        ~id:(fun (c, _, _) -> c)
+        [ ("DEADLOCK", "Retryable deadlock", "8.4.6")
+        ; ("SNAPSHOT", "Retryable rolled back", "11.8.8-MariaDB")
+        ; ("CREATE t", "Implicit_commit", "8.4.6") ]
+        (fun (cmd, expected, version) ->
+          let r, inner, cmds, _, _ =
+            run_tx
+              ~setup:(fun db -> db.faults.version <- version)
+              (fun _ note tx ->
+                note (ok (Tx.exec tx (a ["ADD a"; cmd]))) ;
+                step note (Tx.exec tx (x "UPDATE q")) )
+          in
+          equal string expected r ;
+          equal string (expected ^ " / " ^ expected) inner ;
+          is_false (has_prefix "ROLLBACK TO" cmds) ;
+          is_false (List.mem "UPDATE q" cmds) )
+    ; test "a lost reply of a child: Connection_lost, the Tx fails" (fun () ->
+          let r, inner, cmds, _, events =
+            run_tx
+              ~setup:(fun db ->
+                db.faults.script <-
+                  (fun sql -> if sql = "ADD b" then Some D.No_reply else None) )
+              (fun _ note tx ->
+                note (ok (Tx.exec tx (a ["ADD a"; "ADD b"]))) ;
+                step note (Tx.exec tx (x "UPDATE q")) )
+          in
+          equal string "Connection_lost" r ;
+          (* As Tx.exec: the statement and the next give the first error. *)
+          equal string "Outcome_unknown statement / Outcome_unknown statement"
+            inner ;
+          equal (list string)
+            ["START TRANSACTION"; "SAVEPOINT cistern_sp_1"; "ADD a"; "ADD b"]
+            cmds ;
+          (* The connection broke: the end sends no ROLLBACK. *)
+          equal (list string) [] (end_events events) )
+    ; test "two atomic statements and a Tx.savepoint: one counter" (fun () ->
+          let _, _, cmds, _, _ =
+            run_tx (fun _ note tx ->
+                note (ok (Tx.exec tx (a ["ADD a"]))) ;
+                step note
+                  (Tx.savepoint tx (fun tx -> Tx.exec_exn tx (x "UPDATE s"))) ;
+                note (ok (Tx.exec tx (a ["ADD b"]))) )
+          in
+          equal (list string)
+            [ "SAVEPOINT cistern_sp_1"
+            ; "SAVEPOINT cistern_sp_2"
+            ; "SAVEPOINT cistern_sp_3" ]
+            (List.filter (String.starts_with ~prefix:"SAVEPOINT") cmds) )
+    ; test "a failed RELEASE SAVEPOINT: the Tx fails" (fun () ->
+          (* FORGET drops the savepoints, thus RELEASE gives 1305. *)
+          let r, inner, cmds, _, _ =
+            run_tx (fun _ note tx ->
+                note (ok (Tx.exec tx (a ["ADD a"; "FORGET"]))) ;
+                step note (Tx.exec tx (x "UPDATE q")) )
+          in
+          equal string "Driver 1305 28000" r ;
+          equal string "Driver 1305 28000 / Driver 1305 28000" inner ;
+          is_true (List.mem "RELEASE SAVEPOINT cistern_sp_1" cmds) ;
+          is_false (List.mem "UPDATE q" cmds) )
+    ; test "the margin of an earlier statement deadline: the Tx continues"
+        (fun () ->
+          let r, inner, cmds, _, _ =
+            run_tx (fun _ note tx ->
+                note
+                  (ok
+                     (Tx.exec ~timeout:(Span.ms 120) tx
+                        (a ["SLEEP 80"; "ADD b"]) ) ) ;
+                step note (Tx.exec tx (x "UPDATE q")) )
+          in
+          equal string "Ok" r ;
+          equal string "Timeout / Ok" inner ;
+          equal (list string)
+            [ "START TRANSACTION"
+            ; "SAVEPOINT cistern_sp_1"
+            ; "SLEEP 80"
+            ; "ROLLBACK TO SAVEPOINT cistern_sp_1"
+            ; "UPDATE q"
+            ; "COMMIT" ]
+            cmds )
+    ; test "the margin of the Tx deadline: the Tx fails, no ROLLBACK TO"
+        (fun () ->
+          let r, inner, cmds, _, events =
+            run_tx ~timeout:(Span.ms 120) (fun _ note tx ->
+                note (ok (Tx.exec tx (a ["SLEEP 80"; "ADD b"]))) ;
+                step note (Tx.exec tx (x "UPDATE q")) )
+          in
+          equal string "Timeout" r ;
+          equal string "Timeout / Timeout" inner ;
+          (* No try of ROLLBACK TO: also no event of one (its margin would stop
+             it before the server). *)
+          is_false (has_prefix "query \"ROLLBACK TO" events) ;
+          is_false (List.mem "ADD b" cmds) )
+    ; test "the Tx deadline in a command: Timeout, no savepoint command"
+        (fun () ->
+          (* The timer of the Tx cancels the command: the cancel stores Timeout,
+             because the deadline passed (the review of 4b2, M1). *)
+          let r, _, cmds, _, events =
+            run_tx ~timeout:(Span.ms 120) (fun _ note tx ->
+                note (ok (Tx.exec tx (a ["ADD a"; "SLEEP 500"]))) )
+          in
+          equal string "Timeout" r ;
+          is_true
+            (List.mem "query \"atomic: SLEEP 500\" cancelled sent=true" events) ;
+          is_false (has_prefix "ROLLBACK" cmds) ;
+          is_false (has_prefix "RELEASE" cmds) ;
+          equal (list string) [] (end_events events) )
+    ; test
+        "a value with no literal: Invalid_value, no savepoint, the Tx goes on"
+        (fun () ->
+          let r, inner, cmds, _, events =
+            run_tx (fun _ note tx ->
+                note
+                  (ok
+                     (Tx.exec tx
+                        (T.atomic ~text:(Error "a NaN is not a SQL value")
+                           ["ADD a"] ) ) ) ;
+                step note (Tx.exec tx (x "UPDATE q")) )
+          in
+          equal string "Ok" r ;
+          equal string "Invalid_value / Ok" inner ;
+          equal (list string) ["START TRANSACTION"; "UPDATE q"; "COMMIT"] cmds ;
+          is_true
+            (List.mem "query \"atomic: ADD a\" failed Invalid_value" events) )
+    ; test "an atomic statement keeps the entry clean: no reset after the Tx"
+        (fun () ->
+          let resets, _ =
+            T.with_pool ~size:1 (fun _ db pool ->
+                ignore (Db.exec pool (T.clean ())) ;
+                ignore
+                  (Db.transaction pool (fun tx ->
+                       Tx.exec tx (a ["ADD a"; "ADD b"]) ) ) ;
+                let before = db.resets in
+                ignore (Db.exec pool (T.clean ())) ;
+                db.resets - before )
+          in
+          equal int 0 resets )
+    ; test "the flow deadline of a command is the statement deadline" (fun () ->
+          let r, inner, cmds, _, _ =
+            run_tx (fun _ note tx ->
+                note (ok (Tx.exec ~timeout:(Span.ms 100) tx (a ["SLEEP 500"]))) )
+          in
+          equal string "Timeout" r ;
+          equal string "Outcome_unknown statement" inner ;
+          is_false (has_prefix "RELEASE" cmds) )
+    ; cases "a cancel between SAVEPOINT and RELEASE: the Tx fails"
+        ~id:(fun (n, _, _, _) -> n)
+        [ ("in a command", ["SLEEP 30"; "ADD b"], [], fun _ f -> f ())
+        ; ( "between two commands"
+          , ["ADD a"; "ADD b"]
+          , ["query \"ROLLBACK\" done 0"]
+          , fun c f ->
+              if c = "ADD b" then (
+                Fiber.shield (fun () -> Time.sleep Mono (Span.ms 50)) ;
+                Fiber.check_cancel () ) ;
+              f () ) ]
+        (fun (_, steps, ends, around) ->
+          let r, inner, cmds, connects, events =
+            run_tx (fun _ note tx ->
+                ( match
+                    Fiber.with_timeout Mono (Span.ms 20) (fun () ->
+                        Tx.exec tx (a ~around steps) )
+                  with
+                | r ->
+                    note (ok r)
+                | exception Fiber.Timeout ->
+                    note "cancelled" ) ;
+                (* The Tx does not continue. *)
+                step note (Tx.exec tx (x "UPDATE q")) )
+          in
+          equal string "Connection_lost" r ;
+          equal string "cancelled / Connection_lost" inner ;
+          is_false (List.mem "UPDATE q" cmds) ;
+          is_false (has_prefix "ROLLBACK TO" cmds) ;
+          is_false (has_prefix "RELEASE" cmds) ;
+          is_false (List.mem "ADD b" cmds) ;
+          (* In a command: the connection broke, and the end sends no ROLLBACK.
+             Between two commands: the callback caught the cancel, and the end
+             sends ROLLBACK on the usable connection. *)
+          ignore connects ;
+          equal (list string) ends (end_events events) ) ]
+
 (* The storm of Db.transaction and Db.exec (the plan of phase 1.3, 4.2, and the
    assertions of review C2). [fibers] fibers on 4 virtual domains and a pool of
    8, in three waves. Half of them run Db.exec, half run Db.transaction with 1
@@ -1453,10 +1705,23 @@ let tx_storm ?(tls = false) ?(kill = false) ~fibers ~seed ~seam () =
                                          (x
                                             (Printf.sprintf "%s t%d_%d" word i k) ) )
                                   in
-                                  (* One statement of 3 in a savepoint, and half
-                                     of these scopes end with a Cistern_error
-                                     (ROLLBACK TO). *)
-                                  ( match Random.State.int rs 6 with
+                                  (* Phase 4b2: one step of 10 is an atomic
+                                     statement of two commands (E6), whose
+                                     second command can be a deadlock. Of the
+                                     other steps, one statement of 3 in a
+                                     savepoint, and half of these scopes end
+                                     with a Cistern_error (ROLLBACK TO). *)
+                                  ( match
+                                      if Random.State.int rs 10 = 0 then -1
+                                      else Random.State.int rs 6
+                                    with
+                                  | -1 ->
+                                      ignore
+                                        (Tx.exec tx
+                                           (T.atomic
+                                              [ Printf.sprintf "ATOM t%d_%d" i k
+                                              ; Printf.sprintf "%s t%d_%d_b"
+                                                  word i k ] ) )
                                   | 0 ->
                                       ignore
                                         (Tx.savepoint tx (fun _ -> statement ()))
@@ -1522,7 +1787,10 @@ let tx_storm ?(tls = false) ?(kill = false) ~fibers ~seed ~seam () =
 
 let count p l = List.length (List.filter p l)
 
-let check_tx_storm ?(min_commits = 50) ~fibers
+(* The events of the commands of atomic statements, a sum over the storms. *)
+let atomic_events = ref 0
+
+let check_tx_storm ?(min_commits = 50) ?(atomics_each = true) ~fibers
     (outcomes, commits, set, cmds, events, calls) =
   equal ~msg:"one outcome for each fiber" int fibers (List.length outcomes) ;
   List.iter
@@ -1539,6 +1807,14 @@ let check_tx_storm ?(min_commits = 50) ~fibers
     String.starts_with ~prefix:"UPDATE t" s
     || String.starts_with ~prefix:"UPDATE e" s
     || String.starts_with ~prefix:"DEADLOCK t" s
+    || String.starts_with ~prefix:"ATOM t" s
+  in
+  (* The SQL of the event of a command: the commands of an atomic statement
+     (phase 4b2) have the text "atomic: <command>". *)
+  let event_of c =
+    if String.starts_with ~prefix:"ATOM t" c || String.ends_with ~suffix:"_b" c
+    then "atomic: " ^ c
+    else c
   in
   let event_sql e =
     (* "query \"<sql>\" <outcome>" *)
@@ -1549,13 +1825,17 @@ let check_tx_storm ?(min_commits = 50) ~fibers
         e
   in
   let sqls = List.map event_sql events in
+  let atomics = count (String.starts_with ~prefix:"atomic: ATOM t") sqls in
+  atomic_events := !atomic_events + atomics ;
+  if atomics_each then
+    is_true ~msg:"the storm ran atomic statements" (atomics > 0) ;
   List.iter
     (fun c ->
       if unique c then
         equal
           ~msg:("one event for the command " ^ c)
           int 1
-          (count (( = ) c) sqls) )
+          (count (( = ) (event_of c)) sqls) )
     cmds ;
   (* A command that the fake server did not read has an event too: the margin
      stopped it (Timeout), a cancel cut it before it went (sent=false), or the
@@ -1643,13 +1923,17 @@ let kill_tx_storm_test ?tls ?(race = false) ~fibers ~seeds ~min_kills
   @@ fun () ->
   Pool.Private.reset_counters () ;
   let records = ref [] in
+  atomic_events := 0 ;
   for seed = 0 to seeds - 1 do
     let before = (Pool.Private.counters ()).kill_requests in
     let r, k = tx_storm ?tls ~kill:true ~fibers ~seed ~seam:(seed >= 2) () in
-    check_tx_storm ~min_commits ~fibers r ;
+    (* With KILL few transactions get to an atomic statement: the check is on
+       the sum over the seeds. *)
+    check_tx_storm ~min_commits ~atomics_each:false ~fibers r ;
     T.check_kill ~seed ~min_kills {k with requests= k.requests - before} ;
     records := k :: !records
   done ;
+  is_true ~msg:"the storms ran atomic statements" (!atomic_events > 0) ;
   T.check_race ~race !records
 
 let storm_tests =
