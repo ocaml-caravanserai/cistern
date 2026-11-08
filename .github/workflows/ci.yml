@@ -72,6 +72,13 @@ jobs:
       - name: Doc
         if: ${{ steps.nix.outcome == 'success' && !cancelled() && runner.os == 'Linux' }}
         run: nix develop -c make doc
+      # The pins of cistern.opam.template agree with flake.lock (phase 5d).
+      - name: Pins
+        if: ${{ steps.nix.outcome == 'success' && !cancelled() && runner.os == 'Linux' }}
+        run: make check-pins
+      - name: opam lint
+        if: ${{ steps.nix.outcome == 'success' && !cancelled() && runner.os == 'Linux' }}
+        run: nix develop -c opam lint cistern.opam ppx_cistern.opam
       - name: Format of flake.nix
         if: ${{ steps.nix.outcome == 'success' && !cancelled() && runner.os == 'Linux' }}
         run: nix fmt -- --check flake.nix
