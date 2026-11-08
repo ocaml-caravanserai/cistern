@@ -2,12 +2,22 @@
 
 (name cistern)
 
+(version 0.1.0)
+
 (generate_opam_files true)
 
 (source
  (github ocaml-caravanserai/cistern))
 
 (license MPL-2.0)
+
+(authors "Bikal Gurung <gbikal@gmail.com>")
+
+(maintainers "Bikal Gurung <gbikal@gmail.com>")
+
+(homepage "https://github.com/ocaml-caravanserai/cistern")
+
+(bug_reports "https://github.com/ocaml-caravanserai/cistern/issues")
 
 (package
  (name cistern)

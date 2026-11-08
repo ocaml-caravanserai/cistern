@@ -54,7 +54,7 @@
         "aarch64-darwin"
       ];
 
-      version = "0.1.0-dev";
+      version = "0.1.0";
 
       meta = lib: {
         homepage = "https://github.com/ocaml-caravanserai/cistern";
@@ -299,6 +299,8 @@
               # Dev tools.
               ocamlPackages.ocaml-lsp
               ocamlPackages.odoc
+              # opam lint of the opam files (phase 5d).
+              pkgs.opam
             ];
           };
         }

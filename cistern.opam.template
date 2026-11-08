@@ -1,0 +1,6 @@
+pin-depends: [
+  ["weft.dev" "git+https://github.com/ocaml-caravanserai/weft#8520b5fdd6a6fd3c91dbb27caf19861dc140e4c3"]
+  ["weft-tls.dev" "git+https://github.com/ocaml-caravanserai/weft#8520b5fdd6a6fd3c91dbb27caf19861dc140e4c3"]
+  ["windtrap.dev" "git+https://github.com/ocaml-caravanserai/windtrap#a851bdaad59fedbf86b3117aab502865ccc2b18c"]
+  ["ppx_windtrap.dev" "git+https://github.com/ocaml-caravanserai/windtrap#a851bdaad59fedbf86b3117aab502865ccc2b18c"]
+]

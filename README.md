@@ -18,13 +18,11 @@ Cistern needs OCaml 5.5, and weft and weft-tls from their git repository (they a
 
 With Nix, add the flake `github:ocaml-caravanserai/cistern` as an input. Its overlay gives the packages `cistern` and `ppx_cistern`.
 
-With opam, pin weft and weft-tls at the commit of weft in the `flake.lock` of the Cistern commit that you pin. For the main branch of today:
+With opam, pin `cistern` and `ppx_cistern`. The `pin-depends` of `cistern.opam` pin weft and weft-tls (and windtrap for the tests) at the commits of the `flake.lock` of the same Cistern commit, and opam asks you to accept these pins. Pin a commit or a tag of Cistern, not a branch that moves:
 
 ```sh
-opam pin add weft git+https://github.com/ocaml-caravanserai/weft#8520b5fdd6a6fd3c91dbb27caf19861dc140e4c3
-opam pin add weft-tls git+https://github.com/ocaml-caravanserai/weft#8520b5fdd6a6fd3c91dbb27caf19861dc140e4c3
-opam pin add cistern git+https://github.com/ocaml-caravanserai/cistern
-opam pin add ppx_cistern git+https://github.com/ocaml-caravanserai/cistern
+opam pin add cistern git+https://github.com/ocaml-caravanserai/cistern#<commit>
+opam pin add ppx_cistern git+https://github.com/ocaml-caravanserai/cistern#<commit>
 ```
 
 In dune, use the libraries `cistern`, `weft.os` and `mirage-crypto-rng.unix`, and `(preprocess (pps ppx_cistern))`.

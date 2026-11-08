@@ -11,6 +11,7 @@ All the dependencies come from `flake.nix`. Use `nix develop`, then `dune build`
 - `make mutate`: the mutation gate.
 - `make check-scope` and `make check-ocaml55`.
 - `make doc`: the odoc of the packages, with each warning of odoc as an error.
+- `make check-pins` and `opam lint cistern.opam ppx_cistern.opam`: the `pin-depends` of `cistern.opam.template` agree with `flake.lock`, and the opam files pass the lint. After `nix flake update weft` (or windtrap), put the new commits in `cistern.opam.template`.
 - The integration suite on the three servers, for a change of the library (the next section).
 
 `dune runtest` also compares README.md with the regions of `examples/` (`test/readme`). After a change of an example, run `dune promote` to update README.md. Each OCaml block of README.md (a fence with the language `ocaml` or `ml`, in any case) has a marker `<!-- example: <name> -->` that names its region, or the marker `<!-- no-check -->`. The rule refuses a fence in another language than `sh`, `nix`, `dune` and `text`, a fence that is not at column 0 (in a list item or a blockquote), an indented code block, a `<pre>` block, and CRLF line ends. These rules are stricter than Markdown: indent a nested list with 2 spaces, put no paragraph with 4 spaces of indent in a list item, and do not write the text `<pre` in README.md.
