@@ -26,6 +26,14 @@ let peer_text ~limit s =
     if n > limit then Buffer.add_string b "..." ;
     Buffer.contents b
 
+let peer_text_ends ~half s =
+  let n = String.length s in
+  if n <= 2 * half then peer_text ~limit:n s
+  else
+    let head = peer_text ~limit:half (String.sub s 0 half)
+    and tail = peer_text ~limit:half (String.sub s (n - half) half) in
+    head ^ "..." ^ tail
+
 let cursor payload = {payload; pos= 0}
 
 let remaining c = String.length c.payload - c.pos

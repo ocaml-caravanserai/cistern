@@ -8,6 +8,8 @@ type t = Pool.t
 
 let with_db ?(pool_size = 10) ?(max_lifetime = Span.s 1800)
     ?(checkout_timeout = Span.s 30) ?on_query ?random config f =
+  if Cistern_mysql.Config.needs_tls config then
+    Cistern_mysql.Connection.check_rng "Db.with_db" ;
   let pool =
     Pool.create ?random ?on_query ~pool_size ~max_lifetime ~checkout_timeout
       config

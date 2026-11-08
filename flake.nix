@@ -22,16 +22,18 @@
   # Another flake can use Cistern in three ways:
   #
   # - In its own OCaml scope. This uses the compiler of that scope. The scope
-  #   must also have weft (weft.lib.package):
+  #   must also have weft and weft-tls (weft.lib.package and
+  #   weft.lib.tlsPackage):
   #
   #     ocamlPackages = pkgs.ocaml-ng.ocamlPackages_5_5.overrideScope
   #       (final: prev: {
   #         weft = final.callPackage weft.lib.package { };
+  #         weft-tls = final.callPackage weft.lib.tlsPackage { };
   #         cistern = final.callPackage cistern.lib.package { };
   #         ppx_cistern = final.callPackage cistern.lib.ppxPackage { };
   #       });
   #
-  # - With the overlay, which adds weft, cistern and ppx_cistern to
+  # - With the overlay, which adds weft, weft-tls, cistern and ppx_cistern to
   #   ocaml-ng.ocamlPackages_5_5.
   #
   # - As cistern.packages.${system}.cistern and
@@ -93,10 +95,12 @@
           weft,
           ptime,
           digestif,
+          weft-tls,
           tls,
           x509,
           domain-name,
           ipaddr,
+          mirage-crypto-rng,
         }:
         buildDunePackage {
           pname = "cistern";
@@ -107,10 +111,12 @@
             weft
             ptime
             digestif
+            weft-tls
             tls
             x509
             domain-name
             ipaddr
+            mirage-crypto-rng
           ];
           doCheck = false;
           meta = meta lib // {
@@ -148,6 +154,7 @@
         pkgs.ocaml-ng.ocamlPackages_5_5.overrideScope (
           final: _: {
             weft = final.callPackage weft.lib.package { };
+            weft-tls = final.callPackage weft.lib.tlsPackage { };
             windtrap = final.callPackage windtrap.lib.windtrap { };
             ppx_windtrap = final.callPackage windtrap.lib.ppx_windtrap { };
             cistern = final.callPackage package { };
@@ -161,7 +168,6 @@
         ocamlPackages.windtrap
         ocamlPackages.ppx_windtrap
         ocamlPackages.mirage-crypto-ec
-        ocamlPackages.mirage-crypto-rng
         ocamlPackages.fmt
       ];
 

@@ -67,7 +67,10 @@ type faults =
   ; mutable begin_no_trans: bool
         (** START TRANSACTION gives an OK with IN_TRANS clear. *)
   ; mutable begin_err: int option  (** START TRANSACTION gives an ERR. *)
-  ; mutable ping_close: bool  (** COM_PING closes the connection. *) }
+  ; mutable ping_close: bool  (** COM_PING closes the connection. *)
+  ; mutable tls: Tls.Config.server option
+        (** After an SSL request, the connection goes on over TLS with this
+            configuration (phase 1.4). *) }
 
 type t =
   { faults: faults
@@ -96,7 +99,8 @@ let no_faults () =
   ; rollback_err= None
   ; begin_no_trans= false
   ; begin_err= None
-  ; ping_close= false }
+  ; ping_close= false
+  ; tls= None }
 
 (* An INT column with the binary set. *)
 let int_column name =
@@ -338,19 +342,40 @@ let serve db flow =
       handshake_done := true ;
       db.handshaking <- db.handshaking - 1 )
   in
-  let r = Reader.create flow in
+  let tcp = flow in
+  let flow = ref tcp and r = ref (Reader.create tcp) in
   Fun.protect
     ~finally:(fun () ->
       finish_handshake () ;
-      Flow.close flow ;
+      Flow.close !flow ;
+      Flow.close tcp ;
       db.open_now <- db.open_now - 1 )
     (fun () ->
       match
         if db.faults.refuse then raise Stop ;
         if db.faults.hang_greeting then sync never ;
-        send flow 0 (F.greeting ()) ;
-        ignore (read_packet r) ;
-        send flow 2 (F.ok ()) ;
+        send !flow 0 (F.greeting ()) ;
+        let first = read_packet !r in
+        (* An SSL request: 32 bytes, with CLIENT_SSL. The bytes of the
+           ClientHello that the reader holds go to the handshake. *)
+        let seq =
+          match db.faults.tls with
+          | Some config
+            when String.length first = 32 && Char.code first.[1] land 0x08 <> 0
+            ->
+              let held = Reader.buffered !r in
+              let start = Reader.sub_string !r 0 held in
+              Reader.consume !r held ;
+              let tls, _ = Weft_tls.server config (Flow.prepend start tcp) in
+              flow := tls ;
+              r := Reader.create tls ;
+              ignore (read_packet !r) ;
+              3
+          | _ ->
+              2
+        in
+        let flow = !flow and r = !r in
+        send flow seq (F.ok ()) ;
         ignore (read_packet r) ;
         sends flow 1 (F.result_set (session db)) ;
         ignore (read_packet r) ;

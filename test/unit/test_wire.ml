@@ -141,4 +141,16 @@ let tests =
             ^ String.concat "" (List.init 20 (fun _ -> "evil\\x0a\\x1b XY "))
             ^ "\"..." ) ]
         (fun (_, limit, s, expected) ->
-          equal string expected (W.peer_text ~limit s) ) ]
+          equal string expected (W.peer_text ~limit s) )
+    ; cases "peer_text_ends"
+        ~id:(fun (n, _, _, _) -> n)
+        [ ("at the limit: as peer_text", 3, "abcdef", "abcdef")
+        ; ("at the limit with a newline", 3, "ab\ncd", "\"ab\\x0acd\"")
+        ; ("one byte more: the head and the tail", 3, "abcdefg", "abc...efg")
+        ; ( "control bytes in the two parts"
+          , 3
+          , "\n\x1bxyz-----uv\x00"
+          , "\"\\x0a\\x1bx\"...\"uv\\x00\"" )
+        ; ("halves of 2", 2, "abcdefgh", "ab...gh") ]
+        (fun (_, half, s, expected) ->
+          equal string expected (W.peer_text_ends ~half s) ) ]

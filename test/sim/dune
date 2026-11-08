@@ -15,6 +15,11 @@
   weft
   weft.flow
   weft.sim
+  weft-tls
+  tls
+  x509
+  cistern_certgen
+  mirage-crypto-rng
   ptime
   windtrap)
  (deps

@@ -8,10 +8,12 @@
   digestif
   weft
   weft.flow
+  weft-tls
   tls
   x509
   domain-name
   ipaddr
-  ptime)
+  ptime
+  mirage-crypto-rng)
  (instrumentation
   (backend ppx_windtrap.mutate)))

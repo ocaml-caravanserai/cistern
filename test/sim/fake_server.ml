@@ -106,6 +106,11 @@ type step =
   | Read_bytes of int
       (** Read at least this number of bytes, with no packet: [raw] keeps them.
       *)
+  | Start_tls of Tls.Config.server
+      (** The TLS handshake of a server (phase 1.4). The steps after it run on
+          the TLS flow, and [raw] then keeps the plaintext. The bytes of the
+          ClientHello that the server read with the last packet go to the
+          handshake. A failed handshake ends the script. *)
 
 (* The packets that the server read, and each byte that it got: [raw] from [pos]
    is the part of a packet that it did not read. *)
@@ -147,22 +152,24 @@ let base = ref 0
 let client_fds sim = Weft_sim.open_fds sim - !base - !server_sockets
 
 let play server flow script =
-  let rec go = function
+  (* The flow of the steps: the TCP flow, then the TLS flow. *)
+  let current = ref flow in
+  let rec go flow = function
     | [] ->
         (* Read up to the end of the stream, so that the client can close. *)
-        read_packet server flow ; go []
+        read_packet server flow ; go flow []
     | Send (seq, p) :: rest ->
         Flow.write_string flow (frame seq p) ;
-        go rest
+        go flow rest
     | Sends (seq, ps) :: rest ->
         Flow.write_string flow
           (String.concat "" (List.mapi (fun i p -> frame (seq + i) p) ps)) ;
-        go rest
+        go flow rest
     | Raw bytes :: rest ->
         Flow.write_string flow bytes ;
-        go rest
+        go flow rest
     | Recv :: rest ->
-        read_packet server flow ; go rest
+        read_packet server flow ; go flow rest
     | Close :: _ ->
         ()
     | Reset :: _ ->
@@ -171,18 +178,27 @@ let play server flow script =
         sync never
     | Wait_ms ms :: rest ->
         Time.sleep Mono (Span.ms ms) ;
-        go rest
+        go flow rest
     | Read_bytes n :: rest ->
-        fill server flow n ; go rest
+        fill server flow n ; go flow rest
+    | Start_tls config :: rest ->
+        let held = Buffer.length server.raw - server.pos in
+        let start = Buffer.sub server.raw server.pos held in
+        Buffer.truncate server.raw server.pos ;
+        let tls, _ = Weft_tls.server config (Flow.prepend start flow) in
+        current := tls ;
+        go tls rest
   in
   incr server_sockets ;
   Fun.protect
-    ~finally:(fun () -> Flow.close flow ; decr server_sockets)
+    ~finally:(fun () ->
+      Flow.close !current ; Flow.close flow ; decr server_sockets )
     (fun () ->
-      match go script with
+      match go flow script with
       | () ->
           ()
-      | exception (End | Flow.Closed | Net.Error _) ->
+      | exception (End | Flow.Closed | Net.Error _ | Weft_tls.Handshake_error _)
+        ->
           () )
 
 (* [run_raw ?listen ?dns ?extra ?short_io script client]: a simulation with a

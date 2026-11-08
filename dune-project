@@ -28,6 +28,8 @@
    (>= 1.0.0))
   domain-name
   ipaddr
+  weft-tls
+  mirage-crypto-rng
   (windtrap
    (and
     :with-test
@@ -37,7 +39,6 @@
     :with-test
     (>= 0.3.0)))
   (mirage-crypto-ec :with-test)
-  (mirage-crypto-rng :with-test)
   (fmt :with-test)))
 
 (package
