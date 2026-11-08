@@ -70,26 +70,6 @@ let tests =
         {|type t = { id : int64; [@key] f : 'a. 'a -> 'a } [@@deriving cistern]|}
       @@ __POS_OF__
            {| line 1, characters 34-46: [@@deriving cistern] the field "f" of the type "t" has a polymorphic type |}
-    ; row "a type of the group"
-        {|type t = { id : int64; [@key] u : u }
-and u = { id : int64 [@key] } [@@deriving cistern]|}
-      @@ __POS_OF__
-           {| line 1, characters 34-35: [@@deriving cistern] the field "u" of the type "t": relations come in phase 4 |}
-    ; row "an option of a type of the group"
-        {|type t = { id : int64; [@key] u : u option }
-and u = { id : int64 [@key] } [@@deriving cistern]|}
-      @@ __POS_OF__
-           {| line 1, characters 34-42: [@@deriving cistern] the field "u" of the type "t": relations come in phase 4 |}
-    ; row "a Deferred.t field"
-        {|type t = { id : int64; [@key] us : u list Deferred.t }
-and u = { id : int64 [@key] } [@@deriving cistern]|}
-      @@ __POS_OF__
-           {| line 1, characters 35-52: [@@deriving cistern] the field "us" of the type "t": relations come in phase 4 |}
-    ; row "a Cistern.Deferred.t field"
-        {|type t = { id : int64; [@key] us : u list Cistern.Deferred.t }
-and u = { id : int64 [@key] } [@@deriving cistern]|}
-      @@ __POS_OF__
-           {| line 1, characters 35-60: [@@deriving cistern] the field "us" of the type "t": relations come in phase 4 |}
     ; row "a mutable field"
         {|type t = { id : int64; [@key] mutable n : int } [@@deriving cistern]|}
       @@ __POS_OF__
@@ -130,14 +110,6 @@ and u = { id : int64 [@key] } [@@deriving cistern]|}
         {|type cistern__t = { id : int64 [@key] } [@@deriving cistern]|}
       @@ __POS_OF__
            {| line 1, characters 5-15: [@@deriving cistern] the type name "cistern__t" starts with "cistern__", the prefix of the generated names |}
-    ; row "[@has_many]"
-        {|type t = { id : int64; [@key] us : int [@has_many] } [@@deriving cistern]|}
-      @@ __POS_OF__
-           {| line 1, characters 41-49: [@@deriving cistern] [@has_many] on the field "us" of the type "t": relations come in phase 4 |}
-    ; row "[@belongs_to]"
-        {|type t = { id : int64; [@key] u : int [@belongs_to { key = u_id }] } [@@deriving cistern]|}
-      @@ __POS_OF__
-           {| line 1, characters 40-50: [@@deriving cistern] [@belongs_to] on the field "u" of the type "t": relations come in phase 4 |}
     ; row "an uppercase letter and no [@@table]"
         {|type userAccount = { id : int64 [@key] } [@@deriving cistern]|}
       @@ __POS_OF__

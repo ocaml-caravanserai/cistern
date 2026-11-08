@@ -357,7 +357,20 @@ let item3 g (t : Desc.typ) =
   module_item ~loc (model_module t)
     (pmod_constraint ~loc (pmod_structure ~loc body) sig_)
 
+(* Phase 4f parses the relations, and phase 4g generates their code: until then
+   a group with a relation gets an error at its first relation field. *)
+let no_relation (g : Desc.typ list) =
+  match List.concat_map (fun (t : Desc.typ) -> t.relations) g with
+  | [] ->
+      ()
+  | (r : Desc.relation) :: _ ->
+      Location.raise_errorf ~loc:r.loc "%s"
+        ( "[@@deriving cistern] the relation field "
+        ^ Cistern_names.quote r.name
+        ^ ": the generated code of relations comes in phase 4g" )
+
 let stage1 g =
+  no_relation g ;
   let loc = (List.hd g : Desc.typ).loc in
   item0 ~loc g @ [item1 ~loc g; item2 ~loc g] @ List.map (item3 g) g
 
