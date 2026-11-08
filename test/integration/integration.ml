@@ -9,7 +9,9 @@
    On MySQL, a TCP connection with ssl-mode=DISABLED can use only the fast path
    of caching_sha2_password, thus each TCP test first warms the cache with a
    connect on the socket with allow-cleartext=socket. Then the tests do not
-   depend on their order. *)
+   depend on their order. From phase 1.4, the TCP tests use TLS (on_tls:
+   VERIFY_IDENTITY with the test CA), and the tests of the clear-text rule keep
+   ssl-mode=DISABLED (on_tcp). *)
 
 open Windtrap
 open Support
@@ -28,7 +30,7 @@ let query_tests =
                       equal string (types_expected ())
                         (rows_text (Conn.query c (Raw.sql select_types))) ;
                       exec_ok c "DROP TABLE tt" ) )
-                [on_socket ~clear:true (); on_tcp ()] ) )
+                [on_socket ~clear:true (); on_tls ()] ) )
     ; test "last_insert_id, the found rows and status" (fun () ->
           in_weft (fun () ->
               warm () ;
@@ -201,6 +203,10 @@ let tests =
               warm () ;
               equal string (expected_session ()) (session (on_tcp ())) ;
               equal string "connected" (connect_ping (on_tcp ())) ) )
+    ; test "connect on TCP with TLS (VERIFY_IDENTITY)" (fun () ->
+          in_weft (fun () ->
+              equal string (expected_session ()) (session (on_tls ())) ;
+              equal string "connected" (connect_ping (on_tls ())) ) )
     ; test "the admin route: root on the socket with no password" (fun () ->
           in_weft (fun () ->
               equal string "connected"
@@ -214,12 +220,19 @@ let tests =
                    asks for the full path: the gate refuses. *)
                 equal string "Connect authentication: server error 1045"
                   (connect_ping (on_socket ~password:"wrong" ~clear:true ())) ;
-                equal string gate (connect_ping (on_tcp ~password:"wrong" ())) )
+                equal string gate (connect_ping (on_tcp ~password:"wrong" ())) ;
+                (* Over TLS with VERIFY_IDENTITY, the full path sends the wrong
+                   password, and the server refuses it. *)
+                flush_privileges () ;
+                equal string "Connect authentication: server error 1045"
+                  (connect_ping (on_tls ~password:"wrong" ())) )
               else (
                 equal string "Connect authentication: server error 1045"
                   (connect_ping (on_socket ~password:"wrong" ())) ;
                 equal string "Connect authentication: server error 1045"
-                  (connect_ping (on_tcp ~password:"wrong" ())) ) ) )
+                  (connect_ping (on_tcp ~password:"wrong" ())) ;
+                equal string "Connect authentication: server error 1045"
+                  (connect_ping (on_tls ~password:"wrong" ())) ) ) )
     ; test "an unknown database" (fun () ->
           in_weft (fun () ->
               warm () ;
@@ -228,7 +241,7 @@ let tests =
               equal string "Connect authentication: server error 1044"
                 (connect_ping (on_socket ~database:"nowhere" ~clear:true ())) ;
               equal string "Connect authentication: server error 1044"
-                (connect_ping (on_tcp ~database:"nowhere" ())) ) )
+                (connect_ping (on_tls ~database:"nowhere" ())) ) )
     ; test "a socket path that does not exist" (fun () ->
           in_weft (fun () ->
               (* A network error of the connect, not a DNS error. *)
@@ -261,7 +274,7 @@ let tests =
                       equal (list string)
                         ["Connection_lost"; "Connection_lost"; "Connection_lost"]
                         pings )
-                [on_socket ~clear:true (); on_tcp ()] ) ) ]
+                [on_socket ~clear:true (); on_tls ()] ) ) ]
   ::
   ( if mysql then
       [ group "caching_sha2_password on mysql84"
@@ -276,16 +289,18 @@ let tests =
     else [] )
 
 (* The group of tests: CISTERN_GROUP is deterministic (the default), timing or
-   shutdown (DESIGN.md, "CI jobs"). *)
+   shutdown (DESIGN.md, "CI jobs"). TLS takes its randomness from the default
+   generator (Db.with_db). *)
 let () =
+  Mirage_crypto_rng_unix.use_default () ;
   let group =
     match Sys.getenv_opt "CISTERN_GROUP" with
     | None | Some "" | Some "deterministic" ->
         (* The Db tests first: they count the sessions of the test user. *)
         (Db_tests.deterministic :: Tx_tests.deterministic :: tests)
-        @ [query_tests; Claims.deterministic]
+        @ [query_tests; Tls_tests.deterministic; Claims.deterministic]
     | Some "timing" ->
-        [Db_tests.timing; Tx_tests.timing; Claims.timing]
+        [Db_tests.timing; Tx_tests.timing; Tls_tests.timing; Claims.timing]
     | Some "shutdown" ->
         [Claims.shutdown]
     | Some g ->
