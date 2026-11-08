@@ -12,7 +12,8 @@ module Private = struct
     ; sql: Cistern_core.Dialect.t -> string list
     ; text: (string, string) result option
     ; for_update: bool
-    ; atomic: bool }
+    ; atomic: bool
+    ; multi: bool }
 
   type 'a t =
     | Stmt :
@@ -36,7 +37,8 @@ module Private = struct
     ; sql= (fun _ -> [])
     ; text= None
     ; for_update= false
-    ; atomic= false }
+    ; atomic= false
+    ; multi= false }
 
   let meta = function Stmt s -> s.meta | Pure _ -> no_command
 

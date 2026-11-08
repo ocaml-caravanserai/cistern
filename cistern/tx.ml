@@ -228,29 +228,34 @@ let savepoint tx g = check tx "savepoint" ; in_savepoint tx g
    the class Fails (1213, 1020, a broken connection) fails the Tx, with no
    ROLLBACK TO SAVEPOINT. A cancel between SAVEPOINT and RELEASE fails the Tx,
    and its end aborts the connection. *)
+(* The scope of a statement of several commands in a Tx (an atomic statement,
+   or a query with include_): each command checks the margin of the statement
+   deadline, emits its own event, checks IN_TRANS after an OK, and its error
+   goes through the rules of Tx.exec (command_error). *)
+let scope_in tx ~deadline =
+  { Exec.emit= (fun ~sql ~t0 outcome -> emit tx.pool ~sql ~t0 outcome)
+  ; time_left=
+      (fun () ->
+        Pool.time_left tx.pool ~deadline
+        ||
+        (* C-M4: the margin of an earlier statement deadline fails only the
+           statement. *)
+        ( if Span.compare deadline tx.deadline >= 0 then
+            fail tx ~at:deadline Error.Timeout ;
+          false ) )
+  ; after_ok=
+      (fun () ->
+        if in_trans tx.c then Ok ()
+        else (
+          fail tx ~at:tx.deadline Error.Implicit_commit ;
+          Error Error.Implicit_commit ) )
+  ; error=
+      (fun ~emit e ->
+        Result.get_error
+          (command_error tx ~deadline ~strict:false ~event:emit e) ) }
+
 let atomic_in tx ~deadline stmt =
-  let scope =
-    { Exec.emit= (fun ~sql ~t0 outcome -> emit tx.pool ~sql ~t0 outcome)
-    ; time_left=
-        (fun () ->
-          Pool.time_left tx.pool ~deadline
-          ||
-          (* C-M4: the margin of an earlier statement deadline fails only the
-             statement. *)
-          ( if Span.compare deadline tx.deadline >= 0 then
-              fail tx ~at:deadline Error.Timeout ;
-            false ) )
-    ; after_ok=
-        (fun () ->
-          if in_trans tx.c then Ok ()
-          else (
-            fail tx ~at:tx.deadline Error.Implicit_commit ;
-            Error Error.Implicit_commit ) )
-    ; error=
-        (fun ~emit e ->
-          Result.get_error
-            (command_error tx ~deadline ~strict:false ~event:emit e) ) }
-  in
+  let scope = scope_in tx ~deadline in
   match
     in_savepoint tx (fun tx ->
         (* No wait between the margin check of the first command and the
@@ -326,8 +331,18 @@ let exec ?timeout tx stmt =
             if not dml then tx.only_dml <- false ;
             (* No wait between the margin check and the statement. *)
             Connection.set_deadline tx.c (Pool.mono tx.pool deadline) ;
-            let ctx = Exec.make tx.c in
+            (* A statement of several commands (multi, phase 4d): the events of
+               its commands, with no joined event. *)
+            let ctx =
+              if meta.multi then Exec.make ~scope:(scope_in tx ~deadline) tx.c
+              else Exec.make tx.c
+            in
+            let event = if meta.multi then ignore else event in
             match Stmt.Private.run stmt ctx with
+            | Ok ran when meta.multi ->
+                Ok (ran.finish ())
+            | Error e when meta.multi ->
+                Error e
             | Ok ran ->
                 if in_trans tx.c then (
                   event (Event.Done {rows= ran.rows}) ;

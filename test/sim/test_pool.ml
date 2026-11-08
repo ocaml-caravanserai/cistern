@@ -122,7 +122,8 @@ let custom ?(raw = true) run =
     ; sql= (fun _ -> ["CUSTOM"])
     ; text= Some (Ok "CUSTOM")
     ; for_update= false
-    ; atomic= false }
+    ; atomic= false
+    ; multi= false }
     ~run
     ~rows:(fun _ -> 0)
     ~finish:Fun.id
@@ -157,7 +158,8 @@ let atomic ?(around = fun _ f -> f ()) ?text cmds =
     ; sql= (fun _ -> cmds)
     ; text
     ; for_update= false
-    ; atomic= true }
+    ; atomic= true
+    ; multi= false }
     ~run:(fun ctx ->
       List.fold_left
         (fun acc c ->
@@ -210,7 +212,8 @@ let deaf ~hold =
     ; sql= (fun _ -> ["DEAF"])
     ; text= None
     ; for_update= false
-    ; atomic= false }
+    ; atomic= false
+    ; multi= false }
     ~run:(fun ctx ->
       match Cistern.Private.Exec.exec ctx (Raw.sql "DEAF") with
       | Error e ->

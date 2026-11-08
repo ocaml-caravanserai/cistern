@@ -150,7 +150,8 @@ let read r =
     ; sql= redacted
     ; text= None
     ; for_update= false
-    ; atomic= false }
+    ; atomic= false
+    ; multi= false }
   in
   Stmt.Private.make meta
     ~run:(fun ctx ->
