@@ -8,22 +8,44 @@
 
 type ctx
 
-val make : Cistern_mysql.Connection.t -> ctx
+(** The scope of a statement with one event for each command (phase 4b1, the
+    plan of phase 4, E7): the emitter of the scope, and the margin check before
+    each command. *)
+type scope =
+  { emit: sql:string -> t0:Weft.Clock.mono -> Cistern_core.Event.outcome -> unit
+        (** One [Query] event with its redacted SQL, duration and outcome. *)
+  ; time_left: unit -> bool
+        (** The margin of the deadline: [false] gives [Timeout], with no byte
+            sent. *)
+  ; after_ok: unit -> (unit, Cistern_core.Error.t) result
+        (** The check after the OK of a command: an error fails the command (for
+            example [Implicit_commit] if the server ended the transaction). *)
+  }
+
+val make : ?scope:scope -> Cistern_mysql.Connection.t -> ctx
+(** With [scope], each command checks the margin first, then emits its own event
+    ({!scope}). The [sent] flag of a [Cancelled] event of a command is of that
+    command only. With no scope, the caller emits one event for the statement.
+*)
 
 val query :
      ?kind:Cistern_mysql.Outcome.command
+  -> ?redacted:string
   -> ctx
   -> Cistern_core.Raw.t
   -> (Cistern_core.Raw.result, Cistern_core.Error.t) result
+(** [redacted] is the SQL of the event of the command in a scope. *)
 
 val exec :
      ?kind:Cistern_mysql.Outcome.command
+  -> ?redacted:string
   -> ctx
   -> Cistern_core.Raw.t
   -> (Cistern_core.Exec_result.t, Cistern_core.Error.t) result
 
 val rows :
      ?kind:Cistern_mysql.Outcome.command
+  -> ?redacted:string
   -> ctx
   -> Cistern_core.Raw.t
   -> (string option array -> ('a, string) result)

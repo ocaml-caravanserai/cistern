@@ -149,7 +149,8 @@ let read r =
     ; raw= None
     ; sql= redacted
     ; text= None
-    ; for_update= false }
+    ; for_update= false
+    ; atomic= false }
   in
   Stmt.Private.make meta
     ~run:(fun ctx ->

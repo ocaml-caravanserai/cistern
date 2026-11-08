@@ -35,7 +35,12 @@ module Private : sig
               checkout. *)
     ; for_update: bool
           (** A read with [FOR UPDATE]: [Db.exec] raises [Invalid_argument]
-              before any event, and [Tx.exec] runs it. {!map} keeps it. *) }
+              before any event, and [Tx.exec] runs it. {!map} keeps it. *)
+    ; atomic: bool
+          (** A statement of several commands that must all commit or all roll
+              back (phase 4b1, the plan of phase 4, E4): [Db.exec] runs it
+              through the transaction of [Db.transaction], with one event for
+              each command. {!map} keeps it. *) }
 
   val make :
        meta

@@ -26,7 +26,20 @@ let with_db ?(pool_size = 10) ?(max_lifetime = Span.s 1800)
   | exception e ->
       Pool.shutdown pool ; raise e
 
-let exec ?(timeout = Span.s 30) db s = Pool.exec db ~timeout s
+(* An atomic statement runs through the transaction of Db.transaction (phase
+   4b1), after the checks of misuse of Db.exec. *)
+let exec ?(timeout = Span.s 30) db s =
+  let meta = Stmt.Private.meta s in
+  match meta.text with
+  | Some (Error _) ->
+      (* Pool.exec gives Invalid_value before the checkout, with one event: also
+         for an atomic statement, with no transaction. *)
+      Pool.exec db ~timeout s
+  | _ when meta.atomic ->
+      (* The misuse checks of Db.transaction, in its order. *)
+      Tx.Private.atomic ~timeout db s
+  | _ ->
+      Pool.exec db ~timeout s
 
 let push_schema ?timeout db models = Schema_ops.push_schema ?timeout db models
 

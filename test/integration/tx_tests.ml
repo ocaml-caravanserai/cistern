@@ -216,10 +216,53 @@ let with_waiting_commit ?(timeout = Span.s 30) ?(body = fun f -> f ()) db during
               during c (Db_tests.int_text id) ) ) ) ;
       Weft.Promise.await p )
 
+(* An atomic statement of the tests (phase 4b1): two raw INSERT of [table], each
+   a command with its own event ("atomic: <sql>"). *)
+let atomic sqls =
+  let redacted s = "atomic: " ^ s in
+  Cistern.Stmt.Private.make
+    { redacted= (fun _ -> List.map redacted sqls)
+    ; kind= Cistern.Stmt.Private.Write
+    ; raw= None
+    ; sql= (fun _ -> sqls)
+    ; text= None
+    ; for_update= false
+    ; atomic= true }
+    ~run:(fun ctx ->
+      List.fold_left
+        (fun acc s ->
+          Result.bind acc (fun () ->
+              Result.map ignore
+                (Cistern.Private.Exec.exec ~redacted:(redacted s) ctx
+                   (Raw.sql s) ) ) )
+        (Ok ()) sqls )
+    ~rows:(fun () -> 0)
+    ~finish:Fun.id
+
 let deterministic =
   group
     ("Db.transaction on " ^ server)
-    [ test "COMMIT of two writes, ROLLBACK after Cistern_error" (fun () ->
+    [ test "an atomic statement in Db.exec: COMMIT, and ROLLBACK after a child"
+        (fun () ->
+          with_table ~pool_size:1 "at" (fun db events ->
+              let ins id =
+                Printf.sprintf "INSERT INTO at (id) VALUES (%d)" id
+              in
+              equal string "ok" (ok_text (Db.exec db (atomic [ins 1; ins 2]))) ;
+              equal string "1,2" (ids "at") ;
+              (* The second command fails: the first row goes too. *)
+              equal string "Constraint_violation Unique"
+                (ok_text (Db.exec db (atomic [ins 3; ins 1]))) ;
+              equal string "1,2" (ids "at") ;
+              equal int 2 (events_of events "START TRANSACTION") ;
+              equal int 1 (events_of events "COMMIT") ;
+              equal int 1 (events_of events "ROLLBACK") ;
+              equal int 1 (events_of events ("atomic: " ^ ins 3)) ;
+              (* The next statement on the same connection (a pool of one) runs
+                 in autocommit mode: its row stays. *)
+              equal string "ok" (ok_text (Db.exec db (x (ins 4)))) ;
+              equal string "1,2,4" (ids "at") ) )
+    ; test "COMMIT of two writes, ROLLBACK after Cistern_error" (fun () ->
           with_table "cr" (fun db events ->
               let r =
                 Db.transaction db (fun tx ->

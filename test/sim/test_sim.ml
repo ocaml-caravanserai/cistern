@@ -31,5 +31,6 @@ let () =
          ; Test_query.pool_tests
          ; Test_pool.tests
          ; Test_tx.tests
+         ; Test_atomic.tests
          ; Test_tx.storm_tests ]
        @ slow ) )
