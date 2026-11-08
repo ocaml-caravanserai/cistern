@@ -57,10 +57,23 @@ val pp_summary : Format.formatter -> t -> unit
 
 val pp : Format.formatter -> t -> unit
 (** [pp] prints the text of {!pp_summary}, then [": "] and the message for the
-    constructors with a message. For example
+    constructors with a message that is not empty. For example
     [Constraint_violation Unique: Duplicate entry 'x' for key 'email']. The
     message can hold a value of a row: do not send this text to a log if the
     values are confidential. *)
+
+val redact : t -> t
+(** [redact e] is [e] with each message of a server error packet removed (an
+    empty message): the messages of [Constraint_violation], [Invalid_value] and
+    [Driver], which can hold a value of a row. The kind, the error number and
+    the SQLSTATE stay. [redact] also empties a message of [Invalid_value] that
+    the client made (for example of {!Literal.add} or of the size check): it
+    holds no value, but one rule for each constructor is safer. The messages of
+    [Connect] and [Decode] come from the client and hold no value of a row, thus
+    they stay. A [Connect] text can hold the name of an authentication plugin or
+    the cause of a TLS failure, escaped and cut ({!Event}). The events of
+    [on_query] hold redacted errors (DESIGN.md, "Shared state and the query
+    hook"). *)
 
 val to_string : t -> string
 (** [to_string e] is the text of {!pp}. It contains the message of the server,

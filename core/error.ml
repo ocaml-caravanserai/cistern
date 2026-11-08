@@ -158,7 +158,34 @@ let message = function
 
 let pp ppf e =
   pp_summary ppf e ;
-  Option.iter (Format.fprintf ppf ": %s") (message e)
+  match message e with
+  | Some m when m <> "" ->
+      Format.fprintf ppf ": %s" m
+  | Some _ | None ->
+      ()
+
+(* The messages of the server can hold a value of a row (for example the value
+   of a 1062). The messages of Connect and Decode come from the client, with no
+   value of a row. *)
+let redact = function
+  | Constraint_violation c ->
+      Constraint_violation {c with message= ""}
+  | Invalid_value v ->
+      Invalid_value {v with message= ""}
+  | Driver d ->
+      Driver {d with message= ""}
+  | ( Not_found
+    | Retryable _
+    | Statement_timeout
+    | Timeout
+    | Pool_exhausted
+    | Outcome_unknown _
+    | Implicit_commit
+    | Connection_lost
+    | Read_only
+    | Connect _
+    | Decode _ ) as e ->
+      e
 
 let to_string e = Format.asprintf "%a" pp e
 

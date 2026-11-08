@@ -129,6 +129,37 @@ let tests =
         ~id:(fun (n, _, _, _) -> n)
         rows
         (fun (_, e, _, f) -> equal string f (full (e ())))
+    ; cases "redact"
+        ~id:(fun (n, _, _, _) -> n)
+        rows
+        (fun (_, e, s, f) ->
+          let e = e () in
+          let r = Error.redact e in
+          (* The messages of the server go; those of the client stay. *)
+          match e with
+          | Error.Connect _ | Error.Decode _ ->
+              equal string f (full r)
+          | _ ->
+              equal string s (full r) ;
+              equal string s (summary r) ;
+              not_contains ~sub:"SECRET" (full r) )
+    ; test "redact keeps the kind, the code and the SQLSTATE" (fun () ->
+          is_true
+            ( Error.redact
+                (Error.Driver {code= 1064; sqlstate= "42000"; message= secret})
+            = Error.Driver {code= 1064; sqlstate= "42000"; message= ""} ) ;
+          is_true
+            ( Error.redact
+                (Error.Invalid_value {code= Some 1366; message= secret})
+            = Error.Invalid_value {code= Some 1366; message= ""} ) ;
+          is_true
+            ( Error.redact
+                (Error.Constraint_violation {kind= Foreign_key; message= secret})
+            = Error.Constraint_violation {kind= Foreign_key; message= ""} ) )
+    ; test "pp prints no colon for an empty message" (fun () ->
+          equal string "Driver 1064 42000"
+            (full (Error.Driver {code= 1064; sqlstate= "42000"; message= ""})) ;
+          equal string "Connect" (full (Error.Connect "")) )
     ; test "to_string is the text of pp" (fun () ->
           let e = Error.Driver {code= 1064; sqlstate= "42000"; message= "m"} in
           equal string "Driver 1064 42000: m" (Error.to_string e) )

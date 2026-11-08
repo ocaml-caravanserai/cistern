@@ -5,9 +5,10 @@
 (* A fake server of many connections, for the tests of the pool. Each connection
    gets the handshake, then a small interpreter of test SQL. "SELECT n" gives
    one INT column and one row with n. "SLEEP ms" gives an OK after ms
-   milliseconds. "FAIL code" gives an ERR with the code. "BEGIN" gives an OK
-   with SERVER_STATUS_IN_TRANS. "INSERT" gives an OK with 2 affected rows and
-   the insert id 7. "DEAF" gives an OK, then the server sends the OK of the next
+   milliseconds. "FAIL code" gives an ERR with the code, and "FAILV code" an ERR
+   whose message quotes a value (secret@example.com). "BEGIN" gives an OK with
+   SERVER_STATUS_IN_TRANS. "INSERT" gives an OK with 2 affected rows and the
+   insert id 7. "DEAF" gives an OK, then the server sends the OK of the next
    command without a read of it, and reads nothing for 3 s: a test fills the
    receive buffer of the server with that next command. Another text gives an OK
    with 1 affected row.
@@ -306,6 +307,9 @@ let reply db tx flow sql =
       send flow 1 (F.ok ~status:(status tx) ())
   | "FAIL", Some code ->
       send flow 1 (F.err code "fail")
+  | "FAILV", Some code ->
+      (* A message that quotes a value of a row, as a 1062 does. *)
+      send flow 1 (F.err code "Duplicate entry 'secret@example.com' for key")
   | ("BEGIN" | "START"), _ -> (
     match db.faults.begin_err with
     | Some code ->

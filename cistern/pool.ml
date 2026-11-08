@@ -243,7 +243,22 @@ let discard t (e : conn P.entry) =
   abort t e.conn ;
   checkin t e ~reusable:false ~dirty:e.dirty
 
-let emit t ev = try t.on_query ev with _ -> ()
+(* An event holds no message of a server error packet (the plan of phase 2,
+   D23): its error is redacted. The result of the statement keeps the full
+   error. *)
+let redact_event = function
+  | Event.Query ({outcome= Event.Failed e; _} as q) ->
+      Event.Query {q with outcome= Event.Failed (Error.redact e)}
+  | Event.Connect ({error= Some e; _} as c) ->
+      Event.Connect {c with error= Some (Error.redact e)}
+  | ( Event.Query _
+    | Event.Connect _
+    | Event.Kill _
+    | Event.Kill_dropped _
+    | Event.Kill_off _ ) as ev ->
+      ev
+
+let emit t ev = try t.on_query (redact_event ev) with _ -> ()
 
 let dropped t kid reason =
   Atomic.incr Private.kill_dropped ;
