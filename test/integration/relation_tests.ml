@@ -10,7 +10,7 @@
 
 open Windtrap
 open Support
-open Cistern_test_models
+open Cistern_test_models_ppx
 module Db = Cistern.Db
 module Tx = Cistern.Tx
 module Raw = Cistern.Raw
@@ -520,4 +520,194 @@ let deterministic =
                         () ) )
               in
               equal string "Constraint_violation Foreign_key"
-                (text (Db.exec db (User.delete u))) ) ) ]
+                (text (Db.exec db (User.delete u))) ) )
+    ; test "the hostile relation group: its SQL names, each relation" (fun () ->
+          let module H = Hostile_rel in
+          in_weft (fun () ->
+              warm () ;
+              Db.with_db ~pool_size:1 (Db_tests.config ()) (fun db ->
+                  let drop =
+                    "DROP TABLE IF EXISTS `order by`, `where`, `gm`, `group`, \
+                     `select`, `gt`"
+                  in
+                  let raw s = ignore (Db.exec_exn db (Raw.exec (Raw.sql s))) in
+                  let models =
+                    [ H.Ga.model
+                    ; H.Gb.model
+                    ; H.Gk.model
+                    ; H.Gn.model
+                    ; H.Gt.model
+                    ; H.Gm.model ]
+                  in
+                  raw drop ;
+                  Fun.protect
+                    ~finally:(fun () -> raw drop)
+                    (fun () ->
+                      Db.push_schema db models ;
+                      is_true (Db.check_schema db models = Ok ()) ;
+                      (* The nested create of each has_many: the child gets the
+                         key of its parent in the column of the right key. *)
+                      let a =
+                        get
+                          (Db.exec db
+                             (H.Ga.create ~fields:1
+                                ~c:[H.Gk.draft ~c:"k1" (); H.Gk.draft ~c:"k2" ()]
+                                () ) )
+                      in
+                      (* A first gb, so that the key of b (2) is not the key of
+                         a (1): a grouping by the column of another key gives
+                         other children (the review of 4h, M1). *)
+                      ignore (get (Db.exec db (H.Gb.create ()))) ;
+                      let b =
+                        get
+                          (Db.exec db
+                             (H.Gb.create
+                                ~r:[H.Gk.draft ~a_id:a.id ~c:"k3" ()]
+                                () ) )
+                      in
+                      let root =
+                        get
+                          (Db.exec db
+                             (H.Gn.create ~r:[H.Gn.draft (); H.Gn.draft ()] ()) )
+                      in
+                      let ks = loaded a.c in
+                      equal (list int64) [a.id; a.id]
+                        (List.map (fun (k : H.gk) -> k.a_id) ks) ;
+                      is_true
+                        (List.for_all (fun (k : H.gk) -> k.b_id = None) ks) ;
+                      equal
+                        (list (option int64))
+                        [Some b.bk]
+                        (List.map (fun (k : H.gk) -> k.b_id) (loaded b.r)) ;
+                      equal
+                        (list (option int64))
+                        [Some root.id; Some root.id]
+                        (List.map (fun (n : H.gn) -> n.up) (loaded root.r)) ;
+                      (* The scopes: a has k1, k2 and k3 (the child of b). *)
+                      equal int 3
+                        (List.length
+                           (get (Db.exec db (Query.to_list (H.Ga.c a)))) ) ;
+                      equal int 1
+                        (List.length
+                           (get (Db.exec db (Query.to_list (H.Gb.r b)))) ) ;
+                      let k3 = List.hd (loaded b.r) in
+                      equal int64 a.id (get (Db.exec db (H.Gk.fields k3))).id ;
+                      equal (option int64) (Some b.bk)
+                        (Option.map
+                           (fun (x : H.gb) -> x.bk)
+                           (get (Db.exec db (H.Gk.decode k3))) ) ;
+                      is_true
+                        (get (Db.exec db (H.Gk.decode (List.hd ks))) = None) ;
+                      is_true (get (Db.exec db (H.Gn.k root)) = None) ;
+                      let child = List.hd (loaded root.r) in
+                      equal int64 root.id
+                        (Option.get (get (Db.exec db (H.Gn.k child)))).id ;
+                      equal int 2
+                        (List.length
+                           (get (Db.exec db (Query.to_list (H.Gn.r root)))) ) ;
+                      (* Each Rel with include_. *)
+                      let ga =
+                        get
+                          (Db.exec db
+                             ( H.Ga.all |> Query.include_ H.Ga.Rel.c
+                             |> Query.to_list ) )
+                      in
+                      equal (list int) [3]
+                        (List.map
+                           (fun (x : H.ga) -> List.length (loaded x.c))
+                           ga ) ;
+                      let gb =
+                        get
+                          (Db.exec db
+                             ( H.Gb.all |> Query.include_ H.Gb.Rel.r
+                             |> Query.order_by H.Gb.Q.bk `Asc
+                             |> Query.to_list ) )
+                      in
+                      equal int64 2L b.bk ;
+                      equal (list int) [0; 1]
+                        (List.map
+                           (fun (x : H.gb) -> List.length (loaded x.r))
+                           gb ) ;
+                      let gk =
+                        get
+                          (Db.exec db
+                             ( H.Gk.all
+                             |> Query.include_ H.Gk.Rel.fields
+                             |> Query.include_ H.Gk.Rel.decode
+                             |> Query.order_by H.Gk.Q.id `Asc
+                             |> Query.to_list ) )
+                      in
+                      equal (list string)
+                        ["k1 a none"; "k2 a none"; "k3 a b"]
+                        (List.map
+                           (fun (x : H.gk) ->
+                             Printf.sprintf "%s %s %s" x.c
+                               ( match x.fields with
+                               | Loaded p when p.id = a.id ->
+                                   "a"
+                               | _ ->
+                                   "?" )
+                               ( match x.decode with
+                               | Loaded None ->
+                                   "none"
+                               | Loaded (Some p) when p.bk = b.bk ->
+                                   "b"
+                               | _ ->
+                                   "?" ) )
+                           gk ) ;
+                      let gn =
+                        get
+                          (Db.exec db
+                             ( H.Gn.all |> Query.include_ H.Gn.Rel.k
+                             |> Query.include_ H.Gn.Rel.r
+                             |> Query.order_by H.Gn.Q.id `Asc
+                             |> Query.to_list ) )
+                      in
+                      equal (list string)
+                        ["none 2"; "root 0"; "root 0"]
+                        (List.map
+                           (fun (x : H.gn) ->
+                             Printf.sprintf "%s %d"
+                               ( match x.k with
+                               | Loaded None ->
+                                   "none"
+                               | Loaded (Some p) when p.id = root.id ->
+                                   "root"
+                               | _ ->
+                                   "?" )
+                               (List.length (loaded x.r)) )
+                           gn ) ;
+                      (* A parent with a key that is not [@auto]: the children
+                         get the key of the draft, in a column whose foreign key
+                         name has the hash (the review of 4h, L1, L2). *)
+                      let team =
+                        get
+                          (Db.exec db
+                             (H.Gt.create ~code:"T1"
+                                ~members:[H.Gm.draft (); H.Gm.draft ()]
+                                () ) )
+                      in
+                      equal (list string) ["T1"; "T1"]
+                        (List.map
+                           (fun (m : H.gm) -> m.t_code)
+                           (loaded team.members) ) ;
+                      equal (list string) ["T1"; "T1"]
+                        (List.map
+                           (fun (m : H.gm) -> m.t_code)
+                           (get
+                              (Db.exec db (Query.to_list (H.Gt.members team))) ) ) ;
+                      let teams =
+                        get
+                          (Db.exec db
+                             ( H.Gt.all
+                             |> Query.include_ H.Gt.Rel.members
+                             |> Query.to_list ) )
+                      in
+                      equal (list int) [2]
+                        (List.map
+                           (fun (x : H.gt) -> List.length (loaded x.members))
+                           teams ) ;
+                      (* The foreign key refuses a member of no team. *)
+                      equal string "Constraint_violation Foreign_key"
+                        (text (Db.exec db (H.Gm.create ~t_code:"T9" ()))) ) ) ) )
+    ]

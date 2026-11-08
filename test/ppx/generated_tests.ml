@@ -219,6 +219,16 @@ let tests =
     ; (let open Cistern_test_models_ppx.Hostile in
        equal_schema ~dir:"../model_ppx/" "hostile"
          [T.model; S.model; F.model; D.model; M.model; U.model] )
+    ; same_declaration "user_todo"
+    ; same_declaration "tree"
+    ; (let open Cistern_test_models_ppx in
+       equal_schema ~dir:"../model_ppx/" "user_todo"
+         [User_todo.User.model; User_todo.Todo.model] )
+    ; (let open Cistern_test_models_ppx in
+       equal_schema ~dir:"../model_ppx/" "tree" [Tree.Node.model] )
+    ; (let open Cistern_test_models_ppx.Hostile_rel in
+       equal_schema ~dir:"../model_ppx/" "hostile_rel"
+         [Ga.model; Gb.model; Gk.model; Gn.model; Gt.model; Gm.model] )
     ; (let open Cistern_test_models_ppx.Two_groups in
        equal_schema ~dir:"../model_ppx/" "two_groups" [Note.model] )
     ; (let open Ppx_driver_check.Hostile in

@@ -11,7 +11,6 @@
 
 open Windtrap
 open Support
-open Cistern_test_models
 open Cistern_test_models_ppx
 module Db = Cistern.Db
 module Tx = Cistern.Tx

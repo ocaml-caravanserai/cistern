@@ -7,6 +7,7 @@
 
 open Windtrap
 open Cistern_test_models
+open Cistern_test_models_ppx
 module Deferred = Cistern.Deferred
 module Relation = Cistern.Private.Relation
 module U = User_todo.Cistern_model__user
