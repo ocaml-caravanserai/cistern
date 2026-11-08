@@ -101,8 +101,8 @@ let tests =
             (result unit (list string))
             (Ok ())
             (Schema.check
-               [ User_todo.Cistern_fields__user.User.schema
-               ; User_todo.Cistern_fields__user.Todo.schema
+               [ User_todo.Cistern_fields__user.User.Schema.cistern__model
+               ; User_todo.Cistern_fields__user.Todo.Schema.cistern__model
                ; Kinds.Cistern_fields__kinds.Kinds.Schema.cistern__model
                ; Auto_only.Cistern_fields__auto_only.Auto_only.Schema
                  .cistern__model

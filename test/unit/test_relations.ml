@@ -374,8 +374,21 @@ let nested =
               (Some 2L)
           in
           is_true (u.todos = Deferred.Unloaded) ;
-          let t = User_todo.Cistern_model__todo.of_draft milk (Some 1L) in
-          equal string "Unloaded" (state t) )
+          let t =
+            User_todo.Cistern_model__todo.of_draft
+              (Todo.draft ~user_id:2L ~title:"Milk" ())
+              (Some 1L)
+          in
+          equal string "Unloaded" (state t) ;
+          equal int64 2L t.user_id ;
+          (* A draft with no key: the INSERT gives Not_null before of_draft,
+             thus of_draft raises. *)
+          is_true
+            ( match User_todo.Cistern_model__todo.of_draft milk (Some 1L) with
+            | _ ->
+                false
+            | exception Invalid_argument _ ->
+                true ) )
     ; test "the setters of the relation fields set Loaded" (fun () ->
           let u =
             User_todo.Cistern_fields__user.Set_user.todos ann_row [todo Unloaded]

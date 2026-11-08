@@ -54,6 +54,29 @@ val reset : ('k -> Value.t) -> 'k -> 'k -> 'r Deferred.t -> 'r Deferred.t
     of the key field calls it, thus [Field.set] and [update] of the key do the
     same. *)
 
+val group : ('a -> 'b) -> 'a option -> 'b option
+(** [group f l] is [f] of the list of a [?<has_many>] label of [create], if the
+    caller gave one (phase 4g). *)
+
+val parent : ('c -> 'p -> 'c) -> ('c -> 'c) -> 'c -> 'p option -> 'c
+(** [parent set unload c p] is the setter of a belongs_to with a key that is not
+    nullable, for [Relation.belongs_to] (phase 4g; the notes of the review of
+    4a): [set c x] for [Some x], and [unload c] (the relation [Unloaded]) for
+    [None]. *)
+
+val somes : 'a option list -> 'a list
+(** [somes l] is the values of [l], in order: the groups of children of [create]
+    for the [?<has_many>] labels that the caller gave (phase 4g). *)
+
+val draft_key : 'k option -> 'k
+(** [draft_key k] is the key of a belongs_to in [of_draft] of a child model
+    whose key is not nullable (phase 4g, E13): the draft holds it as an option.
+    [Model.create] calls [of_draft] after the [INSERT], and an [INSERT] with no
+    key gives [Not_null] first. For a parent with children and a key that is not
+    [[@auto]], [Model.create] calls [of_draft] before, to take the key of the
+    parent from the draft: then a draft with no key gives [Invalid_value] before
+    the checkout. [draft_key None] raises [Invalid_argument]. *)
+
 val auto : 'k option -> 'k
 (** [auto k] is the key from the server in [of_draft] of a model with an
     [[@auto]] key. [Model.create] always gives [Some]. [auto None] raises

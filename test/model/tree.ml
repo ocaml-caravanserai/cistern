@@ -2,163 +2,185 @@
    v. 2.0. If a copy of the MPL was not distributed with this file, You can
    obtain one at https://mozilla.org/MPL/2.0/. *)
 
-(* A tree, written by hand in the three stages of DESIGN.md, "Generated code"
-   (phase 4c2): a self relation with a nullable key. The source is this group:
-
-   {[ type node = { id : int64; [@key] [@auto] name : string; parent_id : int64
-   option; parent : node option Deferred.t; [@belongs_to { key = parent_id;
-   references = id }] children : node list Deferred.t; [@has_many] } ]}
-
-   Each call of the library goes through Cistern.Private. *)
+(* A tree, written by hand (phase 4c2): a self relation with a nullable key.
+   Phase 4g wrote the items after the declaration again from the generator: they
+   have the form of the ppx (see kinds.ml). *)
 
 type node =
-  { id: int64
+  { id: int64 [@key] [@auto]
   ; name: string
   ; parent_id: int64 option
   ; parent: node option Cistern.Deferred.t
-  ; children: node list Cistern.Deferred.t }
+        [@belongs_to {key= parent_id; references= id}]
+  ; children: node list Cistern.Deferred.t [@has_many] }
 
-(* Stage 1: the schema, the fields and the setters of the relation fields. *)
+module Cistern__private__node = Cistern.Private
+[@@ocaml.warning "-23-27-30-32-34-37-40-41-42-60-69"]
+
 module Cistern_fields__node = struct
-  module S = Cistern.Private.Schema
-  module F = Cistern.Private.Field
-  module D = Cistern.Private.Decoder
-  module E = Cistern.Private.Encode
-
   module Node = struct
-    let s_id : S.field =
-      { name= "id"
-      ; column= "id"
-      ; scalar= Int64
-      ; nullable= false
-      ; key= true
-      ; auto= true
-      ; unique= false
-      ; index= false }
+    module Schema = struct
+      let id =
+        { Cistern__private__node.Schema.name= "id"
+        ; column= "id"
+        ; scalar= Cistern__private__node.Schema.Int64
+        ; nullable= false
+        ; key= true
+        ; auto= true
+        ; unique= false
+        ; index= false }
 
-    let s_name : S.field =
-      { s_id with
-        name= "name"
-      ; column= "name"
-      ; scalar= String
-      ; key= false
-      ; auto= false }
+      let name =
+        { Cistern__private__node.Schema.name= "name"
+        ; column= "name"
+        ; scalar= Cistern__private__node.Schema.String
+        ; nullable= false
+        ; key= false
+        ; auto= false
+        ; unique= false
+        ; index= false }
 
-    let s_parent_id : S.field =
-      { s_id with
-        name= "parent_id"
-      ; column= "parent_id"
-      ; nullable= true
-      ; key= false
-      ; auto= false }
+      let parent_id =
+        { Cistern__private__node.Schema.name= "parent_id"
+        ; column= "parent_id"
+        ; scalar= Cistern__private__node.Schema.Int64
+        ; nullable= true
+        ; key= false
+        ; auto= false
+        ; unique= false
+        ; index= false }
 
-    let schema : S.model =
-      { name= "node"
-      ; table= "node"
-      ; fields= [s_id; s_name; s_parent_id]
-      ; relations=
-          [ Belongs_to
-              { name= "parent"
-              ; target= "node"
-              ; key= "parent_id"
-              ; references= "id" }
-          ; Has_many {name= "children"; target= "node"} ] }
+      let cistern__model =
+        { Cistern__private__node.Schema.name= "node"
+        ; table= "node"
+        ; fields= [id; name; parent_id]
+        ; relations=
+            [ Cistern__private__node.Schema.Belongs_to
+                { name= "parent"
+                ; target= "node"
+                ; key= "parent_id"
+                ; references= "id" }
+            ; Cistern__private__node.Schema.Has_many
+                {name= "children"; target= "node"} ] }
+    end
 
-    let id : (node, int64) F.t =
-      F.make ~model:schema ~field:s_id ~encode:E.int64 ~decode:D.int64
-        ~get:(fun (r : node) -> r.id)
-        ~set:(fun (r : node) v -> {r with id= v})
+    let id =
+      Cistern__private__node.Field.make ~model:Schema.cistern__model
+        ~field:Schema.id ~encode:Cistern__private__node.Encode.int64
+        ~decode:Cistern__private__node.Decoder.int64
+        ~get:(fun (cistern__r : node) -> cistern__r.id)
+        ~set:(fun (cistern__r : node) cistern__v ->
+          {cistern__r with id= cistern__v} )
 
-    let name : (node, string) F.t =
-      F.make ~model:schema ~field:s_name ~encode:E.text ~decode:D.string
-        ~get:(fun (r : node) -> r.name)
-        ~set:(fun (r : node) v -> {r with name= v})
+    let name =
+      Cistern__private__node.Field.make ~model:Schema.cistern__model
+        ~field:Schema.name ~encode:Cistern__private__node.Encode.text
+        ~decode:Cistern__private__node.Decoder.string
+        ~get:(fun (cistern__r : node) -> cistern__r.name)
+        ~set:(fun (cistern__r : node) cistern__v ->
+          {cistern__r with name= cistern__v} )
 
-    (* The nullable key of the Belongs_to: a new key resets parent (E9). *)
-    let parent_id : (node, int64 option) F.t =
-      F.make ~model:schema ~field:s_parent_id ~encode:(E.opt E.int64)
-        ~decode:(D.option D.int64)
-        ~get:(fun (r : node) -> r.parent_id)
-        ~set:(fun (r : node) v ->
-          { r with
-            parent_id= v
-          ; parent= E.reset (E.opt E.int64) r.parent_id v r.parent } )
+    let parent_id =
+      Cistern__private__node.Field.make ~model:Schema.cistern__model
+        ~field:Schema.parent_id
+        ~encode:
+          (Cistern__private__node.Encode.opt Cistern__private__node.Encode.int64)
+        ~decode:
+          (Cistern__private__node.Decoder.option
+             Cistern__private__node.Decoder.int64 )
+        ~get:(fun (cistern__r : node) -> cistern__r.parent_id)
+        ~set:(fun (cistern__r : node) cistern__v ->
+          { cistern__r with
+            parent_id= cistern__v
+          ; parent=
+              Cistern__private__node.Encode.reset
+                (Cistern__private__node.Encode.opt
+                   Cistern__private__node.Encode.int64 )
+                cistern__r.parent_id cistern__v cistern__r.parent } )
   end
 
   module Set_node = struct
-    let parent (cistern__r : node) v =
-      {cistern__r with parent= Cistern.Deferred.Loaded v}
+    let parent (cistern__r : node) cistern__v =
+      {cistern__r with parent= Cistern__private__node.Deferred.Loaded cistern__v}
 
-    let children (cistern__r : node) v =
-      {cistern__r with children= Cistern.Deferred.Loaded v}
+    let children (cistern__r : node) cistern__v =
+      { cistern__r with
+        children= Cistern__private__node.Deferred.Loaded cistern__v }
   end
 end
+[@@ocaml.warning "-23-27-30-32-34-37-40-41-42-60-69"]
 
-(* Stage 1: the draft. The nullable key is the key type in the draft (no option
-   option, E13). *)
 module Cistern_drafts__node = struct
-  module Fl = Cistern_fields__node
-
   type node = {name: string; parent_id: int64 option}
 
-  let encode_node (d : node) =
-    let module N = Fl.Node in
-    [ (Fl.F.column N.name, Fl.F.encode N.name d.name)
-    ; (Fl.F.column N.parent_id, Fl.F.encode N.parent_id d.parent_id) ]
+  let encode_node (cistern__d : node) =
+    [ ( Cistern__private__node.Field.column Cistern_fields__node.Node.name
+      , Cistern__private__node.Field.encode Cistern_fields__node.Node.name
+          cistern__d.name )
+    ; ( Cistern__private__node.Field.column Cistern_fields__node.Node.parent_id
+      , Cistern__private__node.Field.encode Cistern_fields__node.Node.parent_id
+          cistern__d.parent_id ) ]
 
   module Set_node = struct
-    let parent_id (d : node) k = {d with parent_id= Some k}
+    let parent_id (cistern__d : node) cistern__k =
+      {cistern__d with parent_id= Cistern__private__node.Encode.some cistern__k}
   end
 end
+[@@ocaml.warning "-23-27-30-32-34-37-40-41-42-60-69"]
 
-(* Stage 1: the model module. *)
 module Cistern_model__node :
   Cistern.MODEL
     with type t = node
      and type key = int64
      and type draft = Cistern_drafts__node.node = struct
-  module Fl = Cistern_fields__node.Node
-  module D = Cistern.Private.Decoder
-  module F = Cistern.Private.Field
-
-  type t = node
+  type nonrec t = node
 
   type key = int64
 
   type draft = Cistern_drafts__node.node
 
-  let schema = Fl.schema
+  let schema = Cistern_fields__node.Node.Schema.cistern__model
 
-  let key = Fl.id
+  let key = Cistern_fields__node.Node.id
 
-  let fields = F.[Any Fl.id; Any Fl.name; Any Fl.parent_id]
+  let fields =
+    [ Cistern__private__node.Field.Any Cistern_fields__node.Node.id
+    ; Cistern__private__node.Field.Any Cistern_fields__node.Node.name
+    ; Cistern__private__node.Field.Any Cistern_fields__node.Node.parent_id ]
 
-  let decode c : t =
-    let id = D.next c (F.decode Fl.id) in
-    let name = D.next c (F.decode Fl.name) in
-    let parent_id = D.next c (F.decode Fl.parent_id) in
-    { id
-    ; name
-    ; parent_id
-    ; parent= Cistern.Deferred.Unloaded
-    ; children= Cistern.Deferred.Unloaded }
+  let decode cistern__c : t =
+    let cistern__0 =
+      Cistern__private__node.Decoder.next cistern__c
+        (Cistern__private__node.Field.decode Cistern_fields__node.Node.id)
+    in
+    let cistern__1 =
+      Cistern__private__node.Decoder.next cistern__c
+        (Cistern__private__node.Field.decode Cistern_fields__node.Node.name)
+    in
+    let cistern__2 =
+      Cistern__private__node.Decoder.next cistern__c
+        (Cistern__private__node.Field.decode Cistern_fields__node.Node.parent_id)
+    in
+    { id= cistern__0
+    ; name= cistern__1
+    ; parent_id= cistern__2
+    ; parent= Cistern__private__node.Deferred.Unloaded
+    ; children= Cistern__private__node.Deferred.Unloaded }
 
   let encode_draft = Cistern_drafts__node.encode_node
 
-  let of_draft (d : draft) k : t =
-    { id= Cistern.Private.Encode.auto k
-    ; name= d.name
-    ; parent_id= d.parent_id
-    ; parent= Cistern.Deferred.Unloaded
-    ; children= Cistern.Deferred.Unloaded }
+  let of_draft (cistern__d : draft) cistern__k : t =
+    { id= Cistern__private__node.Encode.auto cistern__k
+    ; name= cistern__d.name
+    ; parent_id= cistern__d.parent_id
+    ; parent= Cistern__private__node.Deferred.Unloaded
+    ; children= Cistern__private__node.Deferred.Unloaded }
 end
+[@@ocaml.warning "-23-27-30-32-34-37-40-41-42-60-69"]
 
-(* Stage 2: the namespace module. *)
 module Cistern_gen__node = struct
-  module M = Cistern.Private.Model
-
   module Node = struct
-    type t = node
+    type nonrec t = node
 
     module Q = struct
       let id = Cistern_fields__node.Node.id
@@ -167,22 +189,43 @@ module Cistern_gen__node = struct
 
       let parent_id = Cistern_fields__node.Node.parent_id
 
-      include Cistern.Private.Expr.Ops
+      include Cistern__private__node.Expr.Ops
     end
 
-    let get_by_id k = M.get (module Cistern_model__node) k
+    let get_by_id cistern__k =
+      Cistern__private__node.Model.get (module Cistern_model__node) cistern__k
 
-    let all = M.all (module Cistern_model__node)
+    let find_by_id cistern__k =
+      Cistern__private__node.Model.find (module Cistern_model__node) cistern__k
 
-    let where e = M.where (module Cistern_model__node) e
+    let filter_by_parent_id cistern__v =
+      Cistern__private__node.Model.where
+        (module Cistern_model__node)
+        (Cistern__private__node.Expr.Ops.( ==. ) Q.parent_id cistern__v)
 
-    let filter_by_parent_id v = where Q.(parent_id ==. v)
+    let all = Cistern__private__node.Model.all (module Cistern_model__node)
+
+    let where cistern__e =
+      Cistern__private__node.Model.where (module Cistern_model__node) cistern__e
+
+    let update ?name ?parent_id cistern__r =
+      Cistern__private__node.Model.update
+        (module Cistern_model__node)
+        (Cistern__private__node.Encode.updates
+           [ Cistern__private__node.Encode.set Q.name name
+           ; Cistern__private__node.Encode.set Q.parent_id parent_id ] )
+        cistern__r
+
+    let delete cistern__r =
+      Cistern__private__node.Model.delete
+        (module Cistern_model__node)
+        cistern__r
 
     let draft ~name ?parent_id () : Cistern_drafts__node.node = {name; parent_id}
   end
 end
+[@@ocaml.warning "-23-27-30-32-34-37-40-41-42-60-69"]
 
-(* Stage 3: create with children, model, the scopes (E11) and Rel (E2). *)
 module Node = struct
   include Cistern_gen__node.Node
   module Drafts = Cistern_drafts__node
@@ -191,45 +234,47 @@ module Node = struct
 
   let model : (module Cistern.MODEL) = (module Cistern_model__node)
 
-  (* A group only for a ?children that the caller gave (the rule of 4c1). *)
   let create ~name ?parent_id ?children () =
-    Cistern.Private.Model.create
+    Cistern__private__node.Model.create
       (module Cistern_model__node)
       ~children:
-        ( match children with
-        | None ->
-            []
-        | Some cistern__ds ->
-            [ Cistern.Private.Model.child
-                (module Cistern_model__node)
-                ~fk:Drafts.Set_node.parent_id
-                ~set:Cistern_fields__node.Set_node.children cistern__ds ] )
-      (draft ~name ?parent_id ())
+        (Cistern__private__node.Encode.somes
+           [ Cistern__private__node.Encode.group
+               (Cistern__private__node.Model.child
+                  (module Cistern_model__node)
+                  ~fk:Cistern_drafts__node.Set_node.parent_id
+                  ~set:Cistern_fields__node.Set_node.children )
+               children ] )
+      (Cistern_gen__node.Node.draft ~name ?parent_id ())
 
-  (* The scope of the has_many: the key of the child is nullable, thus the
-     filter takes Some of the key. *)
-  let children (cistern__r : node) =
-    where Q.(parent_id ==. Cistern.Private.Encode.some cistern__r.id)
-
-  (* The scope of the nullable belongs_to: None gives a pure None. *)
-  let parent (cistern__r : node) =
-    Cistern.Private.Model.get_parent
+  let parent (cistern__r : Cistern_gen__node.Node.t) =
+    Cistern__private__node.Model.get_parent
       (module Cistern_model__node)
       cistern__r.parent_id
 
+  let children (cistern__r : Cistern_gen__node.Node.t) =
+    Cistern__private__node.Model.where
+      (module Cistern_model__node)
+      (Cistern__private__node.Expr.Ops.( ==. )
+         Cistern_fields__node.Node.parent_id
+         (Cistern__private__node.Encode.some cistern__r.id) )
+
   module Rel = struct
-    let parent : (node, node) Cistern.Relation.t =
-      Cistern.Private.Relation.belongs_to ~name:"parent"
+    let parent =
+      Cistern__private__node.Relation.belongs_to ~name:"parent"
         (module Cistern_model__node)
         (module Cistern_model__node)
-        ~key:(fun (cistern__r : node) -> cistern__r.parent_id)
+        ~key:(fun (cistern__r : Cistern_gen__node.Node.t) ->
+          cistern__r.parent_id )
         ~set:Cistern_fields__node.Set_node.parent
 
-    let children : (node, node) Cistern.Relation.t =
-      Cistern.Private.Relation.has_many ~name:"children"
+    let children =
+      Cistern__private__node.Relation.has_many ~name:"children"
         (module Cistern_model__node)
         (module Cistern_model__node)
-        ~key:(fun (cistern__r : node) -> cistern__r.parent_id)
+        ~key:(fun (cistern__r : Cistern_gen__node.Node.t) ->
+          cistern__r.parent_id )
         ~set:Cistern_fields__node.Set_node.children
   end
 end
+[@@ocaml.warning "-23-27-30-32-34-37-40-41-42-60-69"]

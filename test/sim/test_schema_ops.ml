@@ -19,8 +19,8 @@ let with_pool = Test_pool.with_pool
 let models = [User_todo.User.model; User_todo.Todo.model]
 
 let schemas =
-  [ User_todo.Cistern_fields__user.User.schema
-  ; User_todo.Cistern_fields__user.Todo.schema ]
+  [ User_todo.Cistern_fields__user.User.Schema.cistern__model
+  ; User_todo.Cistern_fields__user.Todo.Schema.cistern__model ]
 
 let ddl = List.map (Ddl.create_table Mysql schemas) schemas
 

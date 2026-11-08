@@ -337,11 +337,10 @@ and u = { id : int64 [@key] } [@@deriving cistern]|}
          \"t.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccctdimd\" \
          are equal with no regard to ASCII case (a constraint name is unique \
          in the database)"
-    ; row "an accepted group: the generated code comes in 4g"
+    ; row "an accepted group: no error"
         {|type t = { id : int64; [@key] us : u list Deferred.t [@has_many] }
 and u = { id : int64; [@key] t_id : int64; t : t Deferred.t [@belongs_to { key = t_id; references = id }] } [@@deriving cistern]|}
-        "line 1, characters 30-32: [@@deriving cistern] the relation field \
-         \"us\": the generated code of relations comes in phase 4g"
+        "no error"
     ; test "accepted: the group of DESIGN.md" (fun () ->
           let src =
             {|type user = {
@@ -443,4 +442,32 @@ and c = {
             \  id column id: int key\n\
             \  p_id column pid: int\n\
             \  p: belongs_to p key p_id references id"
-            (Src.schema src) ) ]
+            (Src.schema src) )
+    ; test "a [@unique] or [@index] key of a belongs_to: no second filter_by"
+        (fun () ->
+          let text src =
+            let loc, rf, tds = Src.group src in
+            Ppxlib.Pprintast.string_of_structure
+              (Ppx_cistern.Private.expand ~loc (rf, tds))
+          in
+          let count sub s =
+            let n = String.length sub in
+            let rec go i acc =
+              if i + n > String.length s then acc
+              else if String.sub s i n = sub then go (i + 1) (acc + 1)
+              else go (i + 1) acc
+            in
+            go 0 0
+          in
+          let group attr =
+            Printf.sprintf
+              {|type t = { id : int64; [@key] us : u list Deferred.t [@has_many] }
+and u = { id : int64; [@key] t_id : int64; %s t : t Deferred.t [@belongs_to { key = t_id; references = id }] } [@@deriving cistern]|}
+              attr
+          in
+          (* The key acts as [@index]: one filter_by_t_id. *)
+          equal int 1 (count "let filter_by_t_id" (text (group ""))) ;
+          equal int 1 (count "let filter_by_t_id" (text (group "[@index]"))) ;
+          (* A [@unique] key has get_by_t_id, and no filter_by_t_id. *)
+          equal int 0 (count "let filter_by_t_id" (text (group "[@unique]"))) ;
+          equal int 1 (count "let get_by_t_id" (text (group "[@unique]"))) ) ]

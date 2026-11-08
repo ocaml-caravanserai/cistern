@@ -33,6 +33,18 @@ let updates l = List.filter_map Fun.id l
 let reset encode old k rel =
   if Value.equal (encode old) (encode k) then rel else Deferred.Unloaded
 
+let group f l = Option.map f l
+
+let parent set unload c = function Some p -> set c p | None -> unload c
+
+let somes l = List.filter_map Fun.id l
+
+let draft_key = function
+  | Some k ->
+      k
+  | None ->
+      invalid_arg "Cistern: of_draft of a belongs_to key with no key"
+
 let auto = function
   | Some k ->
       k

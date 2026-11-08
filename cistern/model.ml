@@ -176,13 +176,21 @@ let nested :
         invalid_arg ("Model.create: the [@auto] key: " ^ m)
   in
   let k1, k2 =
-    if has_auto M.schema then (sample "1", sample "2")
+    if has_auto M.schema then (Ok (sample "1"), Ok (sample "2"))
     else
-      let k = Field.get M.key (M.of_draft d None) in
-      (k, k)
+      (* A key that is not [@auto] comes from the draft through of_draft, which
+         raises for a draft with no key of a belongs_to that is not nullable
+         (Encode.draft_key): Invalid_value before the checkout (the review of
+         4g, L3). *)
+      match Field.get M.key (M.of_draft d None) with
+      | k ->
+          (Ok k, Ok k)
+      | exception Invalid_argument m ->
+          (Error m, Error m)
   in
-  let first = child_inserts cs k1 in
-  let shown = List.map2 placeholder first (child_inserts cs k2) in
+  let inserts = function Ok k -> child_inserts cs k | Error m -> [Error m] in
+  let first = inserts k1 in
+  let shown = List.map2 placeholder first (inserts k2) in
   let text f dialect = function
     | Ok a ->
         f dialect a

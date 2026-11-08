@@ -14,6 +14,7 @@
   cistern.sql
   cistern_test_models
   cistern_test_models_ppx
+  ppx_driver_check
   cistern.mysql
   weft
   weft.flow
