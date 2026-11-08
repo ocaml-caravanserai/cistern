@@ -12,7 +12,27 @@
 
 type t
 
-(** The values of the session, from the greeting and from round trip 1. *)
+(** The identity of a server (DESIGN.md, "Session"): with the exact start time,
+    (identity, [CONNECTION_ID()]) names one session. The start time is in
+    seconds. *)
+type identity =
+  | Mysql_server of {uuid: string; start: int64}  (** [@@server_uuid]. *)
+  | Mariadb_server of
+      { server_uid: string
+      ; hostname: string
+      ; port: int
+      ; server_id: int64
+      ; start: int64 }
+
+(** The result of round trip 3. *)
+type identity_check =
+  | Unchecked  (** [kill=false]: round trip 3 did not run. *)
+  | Checked of identity  (** All the checks passed: [KILL] can use it. *)
+  | Refused of Cistern_core.Event.kill_off
+      (** A check failed: [KILL] goes off for the pool, with this reason. *)
+
+(** The values of the session, from the greeting and from round trips 1 and 3.
+*)
 type info =
   { thread_id: int  (** The thread id of the greeting (4 bytes). *)
   ; connection_id: int64  (** [CONNECTION_ID()]. *)
@@ -24,11 +44,12 @@ type info =
   ; server_id: int64
   ; wait_timeout: int
   ; innodb_rollback_on_timeout: bool
-  ; max_allowed_packet: int }
+  ; max_allowed_packet: int
+  ; identity: identity_check }
 
 val connect : Config.t -> (t, Cistern_core.Error.t) result
-(** [connect config] opens a connection, authenticates, and runs the first two
-    round trips of the session:
+(** [connect config] opens a connection, authenticates, and runs the round trips
+    of the session:
     + [SELECT CONNECTION_ID(), @@version, @@version_comment, @@hostname, @@port,
        @@server_id, @@wait_timeout, @@innodb_rollback_on_timeout,
        @@max_allowed_packet]. The dialect comes from [@@version] and
@@ -37,6 +58,21 @@ val connect : Config.t -> (t, Cistern_core.Error.t) result
        '+00:00', sql_mode = '<the complete mode>', autocommit = 1,
        completion_type = 'NO_CHAIN'], so that a [COMMIT] never chains a new
       transaction and never ends the session.
+    + Only with [kill=true] (DESIGN.md, "Session"): one [SELECT] of
+      [CONNECTION_ID()], the identity of the server ([@@server_uuid] on MySQL;
+      [@@server_uid], [@@hostname], [@@port] and [@@server_id] on MariaDB), its
+      exact start time ([UNIX_TIMESTAMP()] minus the uptime), and three counts:
+      the rows of [information_schema.USER_PRIVILEGES] of the grantee of
+      [CURRENT_USER()], the rows of [SUPER] and of the admin privilege
+      ([CONNECTION_ADMIN], or [CONNECTION ADMIN] on MariaDB) among them, and the
+      enabled roles ([COUNT(ROLE_NAME)] of [information_schema.ENABLED_ROLES]).
+      The result is [info.identity]. A server error or a row that does not
+      decode gives [Refused `Identity_failed]; then, in this order: a
+      [CONNECTION_ID()] that is not the one of round trip 1, or whose low 32
+      bits are not the thread id of the greeting, gives [`Proxy]; no row of the
+      grantee gives [`Grantee_unknown]; a direct grant of [SUPER] or of the
+      admin privilege gives [`Privileged]; an enabled role gives [`Role]. None
+      of these fails the connect.
 
     The rules:
     - A configuration that needs TLS raises [Invalid_argument] if no default
@@ -55,8 +91,8 @@ val connect : Config.t -> (t, Cistern_core.Error.t) result
       in order. An IP address and [localhost] (127.0.0.1) go straight to the
       connect.
     - One timeout of 10 s covers the read of the CA file, the resolve, the
-      connect, the greeting, the TLS handshake, the authentication and the two
-      round trips.
+      connect, the greeting, the TLS handshake, the authentication and the round
+      trips.
     - The server must have [CLIENT_PROTOCOL_41], [CLIENT_SECURE_CONNECTION],
       [CLIENT_PLUGIN_AUTH], [CLIENT_DEPRECATE_EOF] and [CLIENT_CONNECT_WITH_DB].
     - The authentication: [mysql_native_password], or the fast path of
@@ -136,6 +172,16 @@ val exec :
   -> (Cistern_core.Exec_result.t, Cistern_core.Error.t) result
 (** [exec t r] runs [r] as {!query} does, ignores the rows, and gives the counts
     of the last OK packet. *)
+
+type kill_result =
+  | Killed  (** An OK. *)
+  | Gone  (** 1094: no such session. The query is already gone. *)
+  | Not_owner  (** 1095: the session is of another user. *)
+
+val kill : t -> int64 -> (kill_result, Cistern_core.Error.t) result
+(** [kill t id] sends [KILL CONNECTION id], with the whole 64-bit id. It is not
+    a write: the rules of the commands apply, and another server error gives
+    [Error]. *)
 
 val ping : t -> (unit, Cistern_core.Error.t) result
 (** [ping t] sends [COM_PING]. *)

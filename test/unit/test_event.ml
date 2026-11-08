@@ -41,6 +41,37 @@ let rows =
   ; ( "a failed connect"
     , (fun () -> connect (Some (Connect secret)))
     , "connect 10000000ns db.example.com:3306 failed Connect" ) ]
+  @ List.map
+      (fun (o, text) ->
+        ( "a kill " ^ text
+        , (fun () ->
+            Event.Kill {connection_id= 42L; duration= Weft.Span.ms 2; outcome= o} )
+        , "kill 2000000ns 42 " ^ text ) )
+      [(`Killed, "killed"); (`Gone, "gone")]
+  @ List.map
+      (fun (r, text) ->
+        ( "a dropped kill " ^ text
+        , (fun () -> Event.Kill_dropped {connection_id= 4294967296L; reason= r})
+        , "kill dropped 4294967296 " ^ text ) )
+      [ (`Queue_full, "queue_full")
+      ; (`Duplicate, "duplicate")
+      ; (`Other_server, "other_server")
+      ; (`Failed, "failed")
+      ; (`Not_owner, "not_owner")
+      ; (`Off, "off")
+      ; (`Drain_timeout, "drain_timeout")
+      ; (`Closed, "closed") ]
+  @ List.map
+      (fun (r, text) ->
+        ( "kill off " ^ text
+        , (fun () -> Event.Kill_off {reason= r})
+        , "kill off " ^ text ) )
+      [ (`Identity_failed, "identity_failed")
+      ; (`Proxy, "proxy")
+      ; (`Privileged, "privileged")
+      ; (`Role, "role")
+      ; (`Grantee_unknown, "grantee_unknown")
+      ; (`Not_owner, "not_owner") ]
 
 (* Each error with a message, in a query and in a connect. *)
 let errors =

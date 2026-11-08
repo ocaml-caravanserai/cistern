@@ -51,6 +51,8 @@ let event_text = function
   | Ev.Connect {address; error; _} ->
       Printf.sprintf "connect %s %s" address
         (match error with None -> "ok" | Some e -> error_text e)
+  | (Ev.Kill _ | Ev.Kill_dropped _ | Ev.Kill_off _) as e ->
+      Format.asprintf "%a" Ev.pp e
 
 let q s = Raw.query (Raw.sql s)
 
@@ -177,12 +179,18 @@ let deaf ~hold =
    max_lifetime and 4031 faults. Each fiber starts at a random time in one of
    three waves and records one outcome. Then, when the pool is quiet, 8 fibers
    must each get a connection at once. It gives the outcomes, sorted. *)
+(* Connection_lost: the server of the idle fault (4031 after 25 ms) can send
+   its 4031 between the stale check of a connection and the read of the
+   statement, on another virtual domain at the same time. The ERR has the
+   sequence id 0 (rule R-SEQ0): the statement did not run. Round trip 3 of PR
+   1.5b changed the schedule, and seed 3 of the slow storm reaches it. *)
 let permitted =
   [ "ok"
   ; "cancelled"
   ; "Timeout"
   ; "Pool_exhausted"
   ; "Outcome_unknown statement"
+  ; "Connection_lost"
   ; "Constraint_violation Unique" ]
 
 let storm ~fibers ~seed ~seam =
@@ -647,7 +655,10 @@ let tests =
                   ~on_query:(function
                     | Ev.Query _ ->
                         raise (Fiber.Cancelled Exit)
-                    | Ev.Connect _ ->
+                    | Ev.Connect _
+                    | Ev.Kill _
+                    | Ev.Kill_dropped _
+                    | Ev.Kill_off _ ->
                         failwith "hook" )
                   (D.config ())
                   (fun pool -> result_text (Db.exec pool (q "SELECT 4"))) )
@@ -1173,7 +1184,8 @@ let tests =
                         Pool.Private.state (Option.get !pr)
                       in
                       seen := in_use :: !seen
-                  | Ev.Connect _ ->
+                  | Ev.Connect _ | Ev.Kill _ | Ev.Kill_dropped _ | Ev.Kill_off _
+                    ->
                       () )
                 (D.config ())
                 (fun pool ->

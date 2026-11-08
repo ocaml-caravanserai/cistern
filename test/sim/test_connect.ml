@@ -18,13 +18,13 @@ let password = "secret-pw"
 
 let tcp ?(host = "10.0.0.1") ?(password = password) () =
   Result.get_ok
-    (C.make ~tls:C.No_tls
+    (C.make ~kill:false ~tls:C.No_tls
        ~address:(C.Tcp {host; port= 3306})
        ~user:"u" ~password ~database:"db" () )
 
 let sock ?(clear = false) ?(path = "/s") () =
   Result.get_ok
-    (C.make
+    (C.make ~kill:false
        ~address:(C.Socket {path; allow_cleartext= clear})
        ~user:"u" ~password ~database:"db" () )
 

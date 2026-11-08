@@ -24,6 +24,13 @@
    and "CLOSE" (an OK, then the server closes). The fault [commit] changes the
    reply to COMMIT.
 
+   Phase 1.5: the greeting thread id and CONNECTION_ID() of each connection are
+   its number (the first is 1). The server answers the identity SELECT of round
+   trip 3 (MySQL form) after round trip 2, outside the commands and the log,
+   with the fault [identity]. "KILL CONNECTION n" ends the connection n (its
+   flow closes, as a real KILL), and gives an OK, 1094 for no such connection,
+   or the code of the fault [kill_err].
+
    COM_PING, COM_INIT_DB and COM_RESET_CONNECTION give an OK, COM_QUIT ends the
    connection. The faults are mutable, so that a test can change them in its
    run. The server counts the connections, the handshakes in progress, the
@@ -46,6 +53,17 @@ type commit_fault =
       (** After this many ms, an ERR with this code (as [Commit_err]). *)
   | Commit_in_trans  (** The commit, and an OK with IN_TRANS (a chain). *)
   | Commit_seq0  (** 4031 with the id 0 before the read of COMMIT, the end. *)
+
+(** The reply to the identity SELECT of round trip 3. *)
+type identity_fault =
+  | Identity_ok  (** The id, the uuid, the start, and the counts 1, 0, 0. *)
+  | Identity_err  (** An ERR (1142). *)
+  | Identity_bad_row  (** A start time that does not decode. *)
+  | Identity_other_id  (** Another CONNECTION_ID() (a multiplexing proxy). *)
+  | Identity_greeting  (** The greeting has another thread id. *)
+  | Identity_no_grantee  (** 0 rows of the grantee. *)
+  | Identity_privileged  (** 1 row of SUPER or CONNECTION_ADMIN. *)
+  | Identity_role  (** 1 enabled role. *)
 
 type faults =
   { mutable refuse: bool  (** Accept, then close at once. *)
@@ -70,7 +88,10 @@ type faults =
   ; mutable ping_close: bool  (** COM_PING closes the connection. *)
   ; mutable tls: Tls.Config.server option
         (** After an SSL request, the connection goes on over TLS with this
-            configuration (phase 1.4). *) }
+            configuration (phase 1.4). *)
+  ; mutable identity: identity_fault
+  ; mutable server_uuid: string  (** The [@@server_uuid] of round trip 3. *)
+  ; mutable kill_err: int option  (** KILL CONNECTION gives an ERR. *) }
 
 type t =
   { faults: faults
@@ -83,6 +104,10 @@ type t =
   ; mutable commands: int
   ; mutable resets: int
   ; mutable quits: int
+  ; mutable identities: int  (** The identity SELECTs of round trip 3. *)
+  ; mutable killed: int  (** The connections that KILL ended. *)
+  ; sessions: (int, Flow.t) Hashtbl.t
+        (** The open connections after the handshake, by number. *)
   ; mutable log: string list  (** The commands, the newest first. *) }
 
 let no_faults () =
@@ -101,7 +126,10 @@ let no_faults () =
   ; begin_no_trans= false
   ; begin_err= None
   ; ping_close= false
-  ; tls= None }
+  ; tls= None
+  ; identity= Identity_ok
+  ; server_uuid= "5c607771-db0a-11f1-86e8-e86538021fcd"
+  ; kill_err= None }
 
 (* An INT column with the binary set. *)
 let int_column name =
@@ -122,10 +150,49 @@ let sends flow seq ps =
   Flow.write_string flow
     (String.concat "" (List.mapi (fun i p -> F.frame (seq + i) p) ps))
 
-let session db =
+(* The start time of the server, in seconds. *)
+let start = "1794097300"
+
+let identity_sql =
+  "SELECT CONNECTION_ID(), @@server_uuid, UNIX_TIMESTAMP() - (SELECT \
+   VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = \
+   'Uptime'), "
+
+(* The reply to round trip 3 of the connection [n]. *)
+let identity db flow n =
+  db.identities <- db.identities + 1 ;
+  let values ?(id = n) ?(start = start) ?(grantee = "1") ?(admin = "0")
+      ?(roles = "0") () =
+    F.result_set
+      [ Some (string_of_int id)
+      ; Some db.faults.server_uuid
+      ; Some start
+      ; Some grantee
+      ; Some admin
+      ; Some roles ]
+  in
+  match db.faults.identity with
+  | Identity_ok | Identity_greeting ->
+      sends flow 1 (values ())
+  | Identity_err ->
+      send flow 1 (F.err 1142 "denied")
+  | Identity_bad_row ->
+      sends flow 1 (values ~start:"x" ())
+  | Identity_other_id ->
+      sends flow 1 (values ~id:(n + 1000) ())
+  | Identity_no_grantee ->
+      sends flow 1 (values ~grantee:"0" ())
+  | Identity_privileged ->
+      sends flow 1 (values ~admin:"1" ())
+  | Identity_role ->
+      sends flow 1 (values ~roles:"1" ())
+
+let session db n =
   List.mapi
     (fun i v ->
       match i with
+      | 0 ->
+          Some (string_of_int n)
       | 6 ->
           Some (string_of_int db.faults.wait_timeout)
       | 7 ->
@@ -175,6 +242,22 @@ let commit db tx flow =
   | Some Commit_seq0 ->
       send flow 0 (F.err 4031 "idle") ;
       raise Stop
+
+(* KILL CONNECTION n: the flow of the connection n closes, as the server ends a
+   killed session with no packet (claim C30). *)
+let kill db flow n =
+  match db.faults.kill_err with
+  | Some code ->
+      send flow 1 (F.err code "kill")
+  | None -> (
+    match Hashtbl.find_opt db.sessions n with
+    | Some victim ->
+        Hashtbl.remove db.sessions n ;
+        db.killed <- db.killed + 1 ;
+        Flow.close victim ;
+        send flow 1 (F.ok ())
+    | None ->
+        send flow 1 (F.err 1094 "unknown thread") )
 
 let reply db tx flow sql =
   let word, rest =
@@ -269,6 +352,12 @@ let reply db tx flow sql =
   | "DDLFAIL", _ ->
       end_tx tx ;
       send flow 1 (F.err 1050 "exists")
+  | "KILL", _ when String.starts_with ~prefix:"CONNECTION " rest -> (
+    match int_of (String.sub rest 11 (String.length rest - 11)) with
+    | Some n ->
+        kill db flow n
+    | None ->
+        send flow 1 (F.err 1064 "syntax") )
   | "INFILE", _ ->
       send flow 1 "\xfbfile"
   | "FORGET", _ ->
@@ -289,19 +378,22 @@ let reply db tx flow sql =
   | _ ->
       ok tx flow
 
-let command db tx flow r =
-  let p =
-    match db.faults.idle_4031_ms with
-    | Some ms -> (
-      match Fiber.with_timeout Mono (Span.ms ms) (fun () -> read_packet r) with
-      | p ->
-          p
-      | exception Fiber.Timeout ->
-          send flow 0 (F.err 4031 "idle") ;
-          raise Stop )
-    | None ->
-        read_packet r
-  in
+(* The next command packet. With the fault [idle_4031_ms], an idle connection
+   gets 4031 and the end. *)
+let next_packet db flow r =
+  match db.faults.idle_4031_ms with
+  | Some ms -> (
+    match Fiber.with_timeout Mono (Span.ms ms) (fun () -> read_packet r) with
+    | p ->
+        p
+    | exception Fiber.Timeout ->
+        send flow 0 (F.err 4031 "idle") ;
+        raise Stop )
+  | None ->
+      read_packet r
+
+let command ?first db tx flow r =
+  let p = match first with Some p -> p | None -> next_packet db flow r in
   db.commands <- db.commands + 1 ;
   if db.faults.latency_ms > 0 then
     Time.sleep Mono (Span.ms db.faults.latency_ms) ;
@@ -333,6 +425,7 @@ let command db tx flow r =
 
 let serve db flow =
   db.connects <- db.connects + 1 ;
+  let number = db.connects in
   db.open_now <- db.open_now + 1 ;
   db.open_max <- Int.max db.open_max db.open_now ;
   db.handshaking <- db.handshaking + 1 ;
@@ -348,6 +441,7 @@ let serve db flow =
   Fun.protect
     ~finally:(fun () ->
       finish_handshake () ;
+      Hashtbl.remove db.sessions number ;
       Flow.close !flow ;
       Flow.close tcp ;
       db.open_now <- db.open_now - 1 )
@@ -355,7 +449,14 @@ let serve db flow =
       match
         if db.faults.refuse then raise Stop ;
         if db.faults.hang_greeting then sync never ;
-        send !flow 0 (F.greeting ()) ;
+        let thread =
+          match db.faults.identity with
+          | Identity_greeting ->
+              number + 1000
+          | _ ->
+              number
+        in
+        send !flow 0 (F.greeting ~thread ()) ;
         let first = read_packet !r in
         (* An SSL request: 32 bytes, with CLIENT_SSL. The bytes of the
            ClientHello that the reader holds go to the handshake. *)
@@ -379,14 +480,28 @@ let serve db flow =
         let flow = !flow and r = !r in
         send flow seq (F.ok ()) ;
         ignore (read_packet r) ;
-        sends flow 1 (F.result_set (session db)) ;
+        sends flow 1 (F.result_set (session db number)) ;
         ignore (read_packet r) ;
         send flow 1 (F.ok ()) ;
         finish_handshake () ;
+        Hashtbl.replace db.sessions number flow ;
+        (* Round trip 3 comes only with kill=true: another first packet is the
+           first command. *)
+        let p = next_packet db flow r in
+        let first =
+          if
+            p.[0] = '\x03'
+            && String.starts_with ~prefix:identity_sql
+                 (String.sub p 1 (String.length p - 1))
+          then ( identity db flow number ; None )
+          else Some p
+        in
+        let first = ref first in
         let n = ref 0 in
         let tx = {open_= false; savepoints= []} in
         while true do
-          command db tx flow r ;
+          command ?first:!first db tx flow r ;
+          first := None ;
           incr n ;
           match db.faults.reset_after with
           | Some k when !n >= k ->
@@ -426,6 +541,9 @@ let run ?(domains = 1) ?(seed = 0) f =
         ; commands= 0
         ; resets= 0
         ; quits= 0
+        ; identities= 0
+        ; killed= 0
+        ; sessions= Hashtbl.create 8
         ; log= [] }
       in
       let listener =

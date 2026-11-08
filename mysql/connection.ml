@@ -11,6 +11,20 @@ module Decoder = Cistern_core.Decoder
 module Raw = Cistern_core.Raw
 module Exec_result = Cistern_core.Exec_result
 
+type identity =
+  | Mysql_server of {uuid: string; start: int64}
+  | Mariadb_server of
+      { server_uid: string
+      ; hostname: string
+      ; port: int
+      ; server_id: int64
+      ; start: int64 }
+
+type identity_check =
+  | Unchecked
+  | Checked of identity
+  | Refused of Cistern_core.Event.kill_off
+
 type info =
   { thread_id: int
   ; connection_id: int64
@@ -22,7 +36,8 @@ type info =
   ; server_id: int64
   ; wait_timeout: int
   ; innodb_rollback_on_timeout: bool
-  ; max_allowed_packet: int }
+  ; max_allowed_packet: int
+  ; identity: identity_check }
 
 (* The transport of an open connection. [verified]: the TLS session passed a
    check that the clear-text rule trusts (Tls_setup). *)
@@ -261,7 +276,85 @@ let set_query dialect =
      'STRICT_ALL_TABLES,NO_BACKSLASH_ESCAPES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION', \
      autocommit = 1, completion_type = 'NO_CHAIN'"
 
-let session r w ~thread_id =
+(* The grantee of the user, ['user'@'host'], from CURRENT_USER(): the host is
+   the text after the last @, and the user the text before that @, because a
+   user name can have @ (the plan of phase 1.5, 3.4). *)
+let grantee () =
+  "CONCAT('''', LEFT(CURRENT_USER(), CHAR_LENGTH(CURRENT_USER()) - \
+   CHAR_LENGTH(SUBSTRING_INDEX(CURRENT_USER(), '@', -1)) - 1), '''@''', \
+   SUBSTRING_INDEX(CURRENT_USER(), '@', -1), '''')"
+
+(* Round trip 3 (the plan of phase 1.5, 3.4): one statement on one session with
+   CONNECTION_ID(), the identity of the server, its exact start time, and the
+   counts of the privilege check. *)
+let identity_query dialect =
+  let server, admin, uptime =
+    match dialect with
+    | Dialect.Mysql ->
+        ( "@@server_uuid"
+        , "CONNECTION_ADMIN"
+        , "SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE \
+           VARIABLE_NAME = 'Uptime'" )
+    | Dialect.Mariadb ->
+        ( "@@server_uid, @@hostname, @@port, @@server_id"
+        , "CONNECTION ADMIN"
+        , "SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS WHERE \
+           VARIABLE_NAME = 'UPTIME'" )
+  in
+  let privileges =
+    "SELECT COUNT(*) FROM information_schema.USER_PRIVILEGES WHERE GRANTEE = "
+    ^ grantee ()
+  in
+  "SELECT CONNECTION_ID(), " ^ server ^ ", UNIX_TIMESTAMP() - (" ^ uptime
+  ^ "), (" ^ privileges ^ "), (" ^ privileges
+  ^ " AND PRIVILEGE_TYPE IN ('SUPER', '" ^ admin
+  ^ "')), (SELECT COUNT(ROLE_NAME) FROM information_schema.ENABLED_ROLES)"
+
+(* The checks of round trip 3, in this order: the ids first (with another
+   session, the other values are of that session), then the privileges. *)
+let identity_of dialect ~thread_id ~connection_id reply =
+  match reply with
+  | Resultset.Rows {rows= [row]; _} -> (
+      let decoded =
+        Decoder.run
+          (fun c ->
+            let id = Decoder.next c Decoder.int64 in
+            let server =
+              match dialect with
+              | Dialect.Mysql ->
+                  let uuid = Decoder.next c Decoder.string in
+                  fun start -> Mysql_server {uuid; start}
+              | Dialect.Mariadb ->
+                  let server_uid = Decoder.next c Decoder.string in
+                  let hostname = Decoder.next c Decoder.string in
+                  let port = Decoder.next c Decoder.int in
+                  let server_id = Decoder.next c Decoder.int64 in
+                  fun start ->
+                    Mariadb_server {server_uid; hostname; port; server_id; start}
+            in
+            let start = Decoder.next c Decoder.int64 in
+            let grantee = Decoder.next c Decoder.int in
+            let admin = Decoder.next c Decoder.int in
+            let roles = Decoder.next c Decoder.int in
+            (id, server start, grantee, admin, roles) )
+          row
+      in
+      match decoded with
+      | Error _ ->
+          Refused `Identity_failed
+      | Ok (id, identity, grantee, admin, roles) ->
+          if
+            id <> connection_id
+            || Int64.logand id 0xFFFF_FFFFL <> Int64.of_int thread_id
+          then Refused `Proxy
+          else if grantee = 0 then Refused `Grantee_unknown
+          else if admin > 0 then Refused `Privileged
+          else if roles > 0 then Refused `Role
+          else Checked identity )
+  | _ ->
+      Refused `Identity_failed
+
+let session r w ~kill ~thread_id =
   let info =
     match round_trip r w "round trip 1" (session_query ()) with
     | Resultset.Rows {rows= [row]; _} -> (
@@ -315,7 +408,8 @@ let session r w ~thread_id =
               ; server_id
               ; wait_timeout
               ; innodb_rollback_on_timeout
-              ; max_allowed_packet } ) )
+              ; max_allowed_packet
+              ; identity= Unchecked } ) )
     | Err_packet e ->
         fail "round trip 1: server error %d" e.code
     | _ ->
@@ -323,7 +417,16 @@ let session r w ~thread_id =
   in
   match round_trip r w "round trip 2" (set_query info.dialect) with
   | Resultset.Ok_packet ok ->
-      (info, ok.status)
+      if kill then
+        let reply =
+          round_trip r w "round trip 3" (identity_query info.dialect)
+        in
+        ( { info with
+            identity=
+              identity_of info.dialect ~thread_id
+                ~connection_id:info.connection_id reply }
+        , ok.status )
+      else (info, ok.status)
   | Err_packet e ->
       fail "round trip 2: server error %d" e.code
   | _ ->
@@ -456,7 +559,9 @@ let establish config opened =
         , 2 )
   in
   authenticate config ~transport ~capabilities ~seq reader writer g ;
-  let info, status = session reader writer ~thread_id:g.thread_id in
+  let info, status =
+    session reader writer ~kill:(Config.kill config) ~thread_id:g.thread_id
+  in
   { config
   ; flow
   ; reader
@@ -705,6 +810,24 @@ let ok_command ?always_break t commands =
   command ?always_break t Outcome.Not_write (fun () ->
       List.iter (fun c -> send t c ; ok_reply t) commands ;
       Ok () )
+
+type kill_result = Killed | Gone | Not_owner
+
+let kill t id =
+  match
+    exec ~kind:Outcome.Not_write t
+      (Raw.sql (Printf.sprintf "KILL CONNECTION %Ld" id))
+  with
+  | Ok _ ->
+      Ok Killed
+  | Error e -> (
+    match t.last_error with
+    | Some {code= 1094; _} ->
+        Ok Gone
+    | Some {code= 1095; _} ->
+        Ok Not_owner
+    | _ ->
+        Error e )
 
 let ping t = ok_command t [Ping]
 
