@@ -3,7 +3,9 @@
    obtain one at https://mozilla.org/MPL/2.0/. *)
 
 (** Cistern: an ORM for MySQL and MariaDB on weft (DESIGN.md, "Core user
-    types"). This module gives the types of the user. *)
+    types"). This module gives the types of the user. The page
+    {{!page-index}Cistern} gives the order of reading, the servers, the session
+    and the operations. *)
 
 module Db = Db
 module Stmt = Stmt
@@ -85,7 +87,8 @@ module type MODEL = Cistern_core.Model_intf.MODEL
 (** The exception of the [_exn] functions. It is [Error.Cistern_error]. *)
 exception Cistern_error of Error.t
 
-(** The parts inside the library, for its tests. They can change in each
+(** The parts inside the library, for the generated code of [ppx_cistern] and
+    for the tests. Do not use them in a program: they can change in each
     version. *)
 module Private : sig
   module Pool = Pool

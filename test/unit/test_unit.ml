@@ -8,6 +8,7 @@ let () =
   exit
     (Windtrap.run "unit"
        [ Test_decimal.tests
+       ; Test_limits.tests
        ; Test_value.tests
        ; Test_literal.tests
        ; Test_raw.tests

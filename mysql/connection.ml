@@ -598,8 +598,8 @@ let connect config =
   let close_opened () = Option.iter Flow.close !opened in
   let failed m = close_opened () ; Error (Error.Connect m) in
   match
-    Weft.Fiber.with_timeout Weft.Clock.Mono (Weft.Span.s 10) (fun () ->
-        establish config opened )
+    Weft.Fiber.with_timeout Weft.Clock.Mono Cistern_core.Limits.connect_timeout
+      (fun () -> establish config opened )
   with
   | t ->
       Ok t

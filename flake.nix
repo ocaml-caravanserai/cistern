@@ -252,6 +252,8 @@
                 ./ppx_cistern.opam
                 ./ppx
                 ./test
+                # The limits rows of test/unit read doc/limits.mld.
+                ./doc
               ]
               ++ libraryDirs
             );

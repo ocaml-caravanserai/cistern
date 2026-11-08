@@ -1,0 +1,82 @@
+{0 Security notes}
+
+This page gives the facts of version 1 that concern security. Each fact names
+the tests that show it. DESIGN.md ("Authentication", "Session" and
+"Verification of claims") has the details.
+
+{1 TLS}
+
+- The [ssl-mode] of the URL has the names of MySQL: [DISABLED], [REQUIRED],
+  [VERIFY_CA] and [VERIFY_IDENTITY]. [VERIFY_CA] and [VERIFY_IDENTITY] need
+  [ssl-ca] or [ssl-fingerprint=sha256:...] (a pinned certificate).
+  Tests: [test/unit/test_config.ml], [test/unit/test_tls_setup.ml].
+- [REQUIRED] with no pin encrypts, but it does not check the server. It gives
+  no protection against an attacker in the middle. Use [VERIFY_IDENTITY], or
+  a pin.
+- [DISABLED] over TCP sends the two scrambles of the authentication as clear
+  text. A passive listener can then attack the password offline. Use TLS over
+  TCP, or a Unix socket.
+- Version 1 has no TLS on a Unix socket.
+- TLS needs a random generator. Call [Mirage_crypto_rng_unix.use_default ()]
+  before {!Cistern.Db.with_db}. If not, {!Cistern.Db.with_db} raises
+  [Invalid_argument] with this text, before any fiber starts.
+  Tests: [test/sim/test_tls.ml], [test/integration/tls_tests.ml].
+
+{1 The password}
+
+- The full path of [caching_sha2_password] sends the password as clear text.
+  Cistern sends it only to a server with a verified name, to a server with a
+  pinned certificate, or on a Unix socket with the opt-in
+  [allow-cleartext=socket]. Else the connect gives [Connect].
+  Tests: [test/sim/test_connect.ml] ("sha2 full path on a socket with the
+  opt-in"), [test/sim/test_tls.ml], [test/integration/integration.ml] ("the
+  full path, the gate and the fast path").
+- {!Cistern.Config.t} is abstract, so that no generic printer shows the
+  password. {!Cistern.Config.pp} hides it. No error message of
+  {!Cistern.Config.of_url} has a part of the URL. No value can have a control
+  character.
+  Tests: [test/unit/test_config.ml] ("pp hides the password", and the rows of
+  [of_url]).
+- The events of {!Cistern.Event} give the address of a connect, never the
+  password.
+
+{1 The values of rows}
+
+- The SQL of an event is redacted: it has [?] in place of each value.
+  {!Cistern.Error.redact} removes the message of a server error, because the
+  message can hold a value of a row. The events hold redacted errors.
+  Tests: [test/unit/test_raw.ml] ("redacted"), [test/unit/test_error.ml],
+  [test/expect/prop_redacted.ml], [test/prop/prop_raw.ml].
+- {!Cistern.Error.pp} and {!Cistern.Error.to_string} print the message of the
+  server. Do not send their text to a log if the values are confidential. Use
+  {!Cistern.Error.pp_summary} for logs.
+
+{1 Raw SQL}
+
+- {!Cistern.Raw} makes a statement from fragments:
+  [Raw.sql "..." ++ Raw.v value]. A value is a literal of the client (a string
+  and bytes go as hex). The SQL that Cistern makes puts each identifier in
+  backquotes, with each backquote doubled. [Raw] has no function for
+  identifiers: do not put a name or a value from a user in the text of
+  [Raw.sql].
+  Tests: [test/unit/test_literal.ml], [test/unit/test_raw.ml],
+  [test/prop/prop_raw.ml].
+- A raw [LOCK TABLES] or [GET_LOCK] stays on the connection until the next
+  checkout resets the session.
+
+{1 The cancel with KILL}
+
+- Cistern sends [KILL CONNECTION] only after an exact check of the identity
+  of the server, and only for a session of the same user. A user with a
+  direct grant of [SUPER] (or the admin grant), or a session with an enabled
+  role, turns [KILL] off ([Kill_off]). Thus a pool never kills a session of
+  another user. The {{!page-index.operations}operations section} has the
+  rules.
+  Tests: [test/sim/test_identity.ml], [test/sim/test_kill.ml],
+  [test/integration/kill_tests.ml], claims C32 and C33 of DESIGN.md.
+
+{1 The test servers}
+
+The test servers of the repository ([make db-up]) have a root with no
+password on the Unix socket, and a fixed password for the test user. They are
+only for the tests.

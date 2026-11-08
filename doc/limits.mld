@@ -1,0 +1,77 @@
+{0 Limits and defaults}
+
+This page gives the numbers of version 1. DESIGN.md ("Limits and defaults")
+has the same table, with the reasons. A unit row
+([test/unit/test_limits.ml]) compares each row that has a name in the first
+column with the value in the code ([Cistern_core.Limits]).
+
+{1 The pool and the deadlines}
+
+{t
+  | Name | Value | What it is |
+  |---|---|---|
+  | [pool_size] | 10 | The default [?pool_size] of {!Cistern.Db.with_db}. |
+  | [checkout_timeout] | 30 s | The default [?checkout_timeout] of {!Cistern.Db.with_db}. It gives [Pool_exhausted]. A checkout in [exec] waits until the earlier of this limit and the deadline of [exec]. |
+  | [exec_timeout] | 30 s | The default [?timeout] of {!Cistern.Db.exec}. It gives [Timeout] or [Outcome_unknown]. |
+  | [transaction_timeout] | 30 s | The default [?timeout] of {!Cistern.Db.transaction}, for the whole transaction. [Tx.exec] with no [?timeout] uses the deadline of the transaction. |
+  | [margin] | 50 ms | A statement with less remaining time is not sent (not for [COMMIT] and [ROLLBACK]). |
+  | [end_min] | 5 s | The least deadline of [COMMIT] and [ROLLBACK]. Their deadline is the remaining time, in the range [end_min] to [end_max]. |
+  | [end_max] | 30 s | The greatest deadline of [COMMIT] and [ROLLBACK]. |
+  | [commit_guard] | 1 s | The outer limit of [COMMIT] and [ROLLBACK] is their deadline and this span: only a guard. |
+}
+
+{1 The connections}
+
+{t
+  | Name | Value | What it is |
+  |---|---|---|
+  | [max_lifetime] | 30 min | The default [?max_lifetime] of {!Cistern.Db.with_db}. |
+  | [jitter] | 15 % | The lifetime of each connection is [max_lifetime], more or less this part of it. |
+  | [idle_max] | 30 s | An idle connection older than the idle limit is closed at checkout. The idle limit is the smaller of [idle_max] and [@@wait_timeout] minus [idle_offset], at least [idle_min]. |
+  | [idle_offset] | 5 s | See [idle_max]. |
+  | [idle_min] | 1 s | See [idle_max]. With [wait_timeout = 1], the limit equals the timeout of the server, and a check of the socket finds a close. |
+  | [connect_timeout] | 10 s | The limit of one connect, for the pool and for the control connection. |
+  | [concurrent_connects] | 2 | The connects that one pool runs at the same time. |
+  | [backoff_first] | 100 ms | The first wait after a failed connect, or after a failed try of the killer. The wait doubles after each failure. |
+  | [backoff_max] | 5 s | The greatest wait after failed connects, or after failed tries of the killer. |
+}
+
+{1 The cancel with KILL}
+
+{t
+  | Name | Value | What it is |
+  |---|---|---|
+  | [kill_limit] | 2 s | The limit of one [KILL]. |
+  | [killing_age] | 30 s | The age limit of a [Killing] slot. Then the slot is free. |
+  | [drain_limit] | 15 s | The limit of the kill drain at the end of {!Cistern.Db.with_db}. |
+  | [close_limit] | 2 s | The limit of the polite closes of the connections at the end of {!Cistern.Db.with_db}. |
+}
+
+These numbers come from the others:
+
+- The kill queue has [pool_size] entries.
+- One pool has at most [pool_size] + 1 sessions on the server: the control
+  connection of the killer is outside the slots. Each
+  {!Cistern.Db.push_schema} that runs adds one more session for
+  its time.
+- The longest wait of an outer cancel of {!Cistern.Db.with_db} is about 52 s:
+  a [COMMIT] (30 s, with a guard 1 s later), a try of the killer (2 s), the
+  drain (15 s, and at most 2 s more), and the closes (2 s).
+
+{1 Statements and names}
+
+{t
+  | Name | Value | What it is |
+  |---|---|---|
+  | [in_keys] | 1000 | The keys in one [IN (...)] of {!Cistern.Query.include_}. More keys give more queries. |
+  | [identifier_length] | 64 | The characters of a name of a table, a column, an index or a constraint. |
+}
+
+- The statement size: the SQL text of one statement is less than the smaller
+  of [0xFFFFFF] bytes and [@@max_allowed_packet] (read at connect), minus
+  2 bytes. The client does a check of the length before it sends. A string
+  goes as a hex literal, thus one value can have at most about 8 MiB.
+- The row size: each packet of a reply has at most [0xFFFFFE] bytes. A
+  longer packet gives [Decode], and the connection breaks.
+- {!Cistern.Query.include_} has no limit of rows: it holds all the rows of the
+  main query and of each relation in memory. Use a limit on the main query.

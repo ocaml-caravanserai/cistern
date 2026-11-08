@@ -6,8 +6,10 @@ module Span = Weft.Span
 
 type t = Pool.t
 
-let with_db ?(pool_size = 10) ?(max_lifetime = Span.s 1800)
-    ?(checkout_timeout = Span.s 30) ?on_query ?random config f =
+let with_db ?(pool_size = Cistern_core.Limits.pool_size)
+    ?(max_lifetime = Cistern_core.Limits.max_lifetime)
+    ?(checkout_timeout = Cistern_core.Limits.checkout_timeout) ?on_query ?random
+    config f =
   if Cistern_mysql.Config.needs_tls config then
     Cistern_mysql.Connection.check_rng "Db.with_db" ;
   let pool =
@@ -28,7 +30,7 @@ let with_db ?(pool_size = 10) ?(max_lifetime = Span.s 1800)
 
 (* An atomic statement runs through the transaction of Db.transaction (phase
    4b1), after the checks of misuse of Db.exec. *)
-let exec ?(timeout = Span.s 30) db s =
+let exec ?(timeout = Cistern_core.Limits.exec_timeout) db s =
   let meta = Stmt.Private.meta s in
   match meta.text with
   | Some (Error _) ->
@@ -46,7 +48,7 @@ let push_schema ?timeout db models = Schema_ops.push_schema ?timeout db models
 let check_schema db models =
   Schema_ops.check_schema ~exec:(fun s -> exec db s) db models
 
-let transaction ?(timeout = Span.s 30) db f =
+let transaction ?(timeout = Cistern_core.Limits.transaction_timeout) db f =
   Tx.Private.transaction ~timeout db f
 
 let exec_exn ?timeout db s =

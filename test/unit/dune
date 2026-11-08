@@ -22,4 +22,5 @@
   ptime
   mirage-crypto-rng
   windtrap)
+ (deps %{project_root}/doc/limits.mld)
  (link_flags (-linkall)))

@@ -381,14 +381,16 @@ let end_command pool c ~deadline sql =
     let ns = Int64.sub (Span.to_ns deadline) (Span.to_ns (Pool.now pool)) in
     Span.of_ns
       (Int64.max
-         (Span.to_ns (Span.s 5))
-         (Int64.min (Span.to_ns (Span.s 30)) ns) )
+         (Span.to_ns Cistern_core.Limits.end_min)
+         (Int64.min (Span.to_ns Cistern_core.Limits.end_max) ns) )
   in
   Fiber.shield (fun () ->
       Connection.set_deadline c (Time.add Clock.Mono (Time.now Clock.Mono) left) ;
       ( match
           Fiber.with_timeout Clock.Mono
-            (Span.of_ns (Int64.add (Span.to_ns left) (Span.to_ns (Span.s 1))))
+            (Span.of_ns
+               (Int64.add (Span.to_ns left)
+                  (Span.to_ns Cistern_core.Limits.commit_guard) ) )
             (fun () -> Connection.exec c (Raw.sql sql))
         with
       | r ->
