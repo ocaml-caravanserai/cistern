@@ -183,6 +183,23 @@ let kill id =
   in
   wait 100
 
+(* The killed idle connection of a pool of 1 (DESIGN.md, "Pool"): the facts of
+   the test as one text, so that a failure shows each of them. A direct
+   connection, killed at the same time, tells the side of the server (its stale
+   check) from the side of the pool (the counters). [id1] is the id of the pool
+   connection before the kill, [id2] the id after it. *)
+let killed_idle_text ~direct_stale
+    ~(counters : Cistern.Private.Pool.Private.counters) ~select ~id1 ~id2 ~tx =
+  Printf.sprintf
+    "direct stale=%b, stale_at_checkout=%d, expired_at_checkout=%d, \
+     cancel_in_stale=%d, SELECT 5=%s, new connection=%b, Tx=%s"
+    direct_stale counters.stale_at_checkout counters.expired_at_checkout
+    counters.cancel_in_stale select (id1 <> id2) tx
+
+let killed_idle_expected =
+  "direct stale=true, stale_at_checkout=1, expired_at_checkout=0, \
+   cancel_in_stale=0, SELECT 5=Int 5, new connection=true, Tx=Int 6"
+
 let gate =
   "Connect the server asks for full authentication; use VERIFY_IDENTITY with \
    ssl-ca, a pinned certificate (ssl-fingerprint), or allow-cleartext=socket"
