@@ -1,0 +1,5 @@
+File "default_type.ml", line 8, characters 49-50:
+8 | type t = {id: int64 [@key]; flag: bool [@default 1]} [@@deriving cistern]
+                                                     ^
+Error: The constant 1 has type int but an expression was expected of type
+         bool

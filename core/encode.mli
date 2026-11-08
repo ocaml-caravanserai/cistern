@@ -36,6 +36,17 @@ val cut : Ptime.t -> Ptime.t
 val cut_opt : Ptime.t option -> Ptime.t option
 (** {!cut} of the value, if one. *)
 
+val some : 'a -> 'a option
+(** [some x] is [Some x]: the value of [get_by] of a nullable [[@unique]] field.
+*)
+
+val set : ('m, 'a) Field.t -> 'a option -> 'm Update.t option
+(** [set f v] is [Update.set f x] for [v = Some x], and [None] for [None]: a
+    label of [update]. *)
+
+val updates : 'm Update.t option list -> 'm Update.t list
+(** [updates l] is the list of the values of [l], in order. *)
+
 val auto : 'k option -> 'k
 (** [auto k] is the key from the server in [of_draft] of a model with an
     [[@auto]] key. [Model.create] always gives [Some]. [auto None] raises

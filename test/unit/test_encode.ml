@@ -35,6 +35,29 @@ let tests =
             (Option.equal Ptime.equal
                (Some (time 999_999_000_000L))
                (Encode.cut_opt (Some (time 999_999_999_999L))) ) )
+    ; test "some" (fun () -> equal (option int) (Some 3) (Encode.some 3))
+    ; test "set and updates: the labels of update, in order" (fun () ->
+          let module Q = Cistern_test_models.Person.Person.Q in
+          let r =
+            { Cistern_test_models.Person.id= 1L
+            ; email= "e"
+            ; nick= None
+            ; city= "c"
+            ; age= None
+            ; active= true }
+          in
+          equal bool true (Encode.set Q.city None = None) ;
+          let us =
+            Encode.updates
+              [ Encode.set Q.city (Some "d")
+              ; Encode.set Q.age None
+              ; Encode.set Q.email (Some "f") ]
+          in
+          equal (list string) ["city"; "email"]
+            (List.concat_map (fun u -> List.map fst (Update.assignments u)) us) ;
+          equal bool true
+            ( List.fold_left (fun r u -> Update.apply u r) r us
+            = {r with city= "d"; email= "f"} ) )
     ; test "auto: the key from the server" (fun () ->
           equal int64 4L (Encode.auto (Some 4L)) )
     ; test "auto: no key raises Invalid_argument" (fun () ->

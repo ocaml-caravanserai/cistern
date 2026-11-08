@@ -17,5 +17,5 @@ module Private : sig
     -> Ppxlib.structure
   (** [expand ~loc (rec_flag, tds)] is the code that the deriver puts after the
       group [tds], after the checks of {!Desc.group}. It raises the located
-      error of the first fault. Phase 3b gives stage 1 ({!Gen.stage1}). *)
+      error of the first fault. It is {!Gen.all} of the group. *)
 end

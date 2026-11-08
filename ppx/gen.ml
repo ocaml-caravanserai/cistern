@@ -40,7 +40,8 @@ let module_item ~loc name expr =
     { (module_binding ~loc ~name:{txt= Some name; loc} ~expr) with
       pmb_attributes= [warning ~loc] }
 
-(* Item 0: the alias and the default thunks (D7, D10). *)
+(* Item 0: the default thunks and the alias (D10, D7). The thunks come first, so
+   that a type error of a payload comes before any use of the library. *)
 
 let item0 ~loc g =
   let alias_item =
@@ -65,7 +66,7 @@ let item0 ~loc g =
           t.fields )
       g
   in
-  alias_item :: thunks
+  thunks @ [alias_item]
 
 (* Item 1: the lifted models and the typed fields (D2, D8). *)
 
@@ -359,3 +360,213 @@ let item3 g (t : Desc.typ) =
 let stage1 g =
   let loc = (List.hd g : Desc.typ).loc in
   item0 ~loc g @ [item1 ~loc g; item2 ~loc g] @ List.map (item3 g) g
+
+(* Items 4 and 5: stages 2 and 3 (D9). *)
+
+let gen_module (g : Desc.typ list) = "Cistern_gen__" ^ (List.hd g).name
+
+(* A function with the parameters [params] and the body [body], with the return
+   type [ret] if any, as the parser makes it from [let f p1 p2 : ret = body]. *)
+let func ~loc ?ret params body =
+  pexp_function ~loc params
+    (Option.map (fun t -> Pconstraint t) ret)
+    (Pfunction_body body)
+
+let param ~loc ?default label name =
+  pparam_val ~loc label default (pvar ~loc name)
+
+let value ~loc name expr =
+  pstr_value ~loc Nonrecursive [value_binding ~loc ~pat:(pvar ~loc name) ~expr]
+
+(* The labels of [draft] and [create]: [~f] for a field with no default and no
+   option, [?f] for an option field or a field with a default (D9). *)
+let draft_label (f : Desc.field) =
+  if f.nullable || f.default <> None then Optional f.name else Labelled f.name
+
+let item4 ~loc g =
+  let typ (t : Desc.typ) =
+    let loc = t.loc in
+    let model = pexp_pack ~loc (pmod_ident ~loc (lid ~loc (model_module t))) in
+    let model_fn name = lib g ~loc ("Model." ^ name) in
+    let q (f : Desc.field) = evar ~loc:f.loc ("Q." ^ f.name) in
+    let user = ptyp_constr ~loc (lid ~loc t.name) [] in
+    let q_module =
+      pstr_module ~loc
+        (module_binding ~loc ~name:{txt= Some "Q"; loc}
+           ~expr:
+             (pmod_structure ~loc
+                ( List.map
+                    (fun (f : Desc.field) ->
+                      let loc = f.loc in
+                      value ~loc f.name
+                        (evar ~loc
+                           (fields_module g ^ "." ^ sub_module t ^ "." ^ f.name) ) )
+                    t.fields
+                @ [ pstr_include ~loc
+                      (include_infos ~loc
+                         (pmod_ident ~loc (lid ~loc (alias g ^ ".Expr.Ops"))) )
+                  ] ) ) )
+    in
+    let key = key_field t in
+    let by_key =
+      let loc = key.loc in
+      [ value ~loc ("get_by_" ^ key.name)
+          (func ~loc
+             [param ~loc Nolabel "cistern__k"]
+             [%expr [%e model_fn "get"] [%e model] cistern__k] )
+      ; value ~loc ("find_by_" ^ key.name)
+          (func ~loc
+             [param ~loc Nolabel "cistern__k"]
+             [%expr [%e model_fn "find"] [%e model] cistern__k] ) ]
+    in
+    let by_unique =
+      List.concat_map
+        (fun (f : Desc.field) ->
+          let loc = f.loc in
+          let v =
+            if f.nullable then [%expr [%e lib g ~loc "Encode.some"] cistern__v]
+            else [%expr cistern__v]
+          in
+          [ value ~loc ("get_by_" ^ f.name)
+              (func ~loc
+                 [param ~loc Nolabel "cistern__v"]
+                 [%expr [%e model_fn "get_by"] [%e model] [%e q f] [%e v]] )
+          ; value ~loc ("find_by_" ^ f.name)
+              (func ~loc
+                 [param ~loc Nolabel "cistern__v"]
+                 [%expr [%e model_fn "find_by"] [%e model] [%e q f] [%e v]] ) ] )
+        (List.filter (fun (f : Desc.field) -> f.unique) t.fields)
+    in
+    let by_index =
+      List.map
+        (fun (f : Desc.field) ->
+          let loc = f.loc in
+          let eq =
+            pexp_ident ~loc
+              { txt= Ldot (Ldot (Ldot (Lident (alias g), "Expr"), "Ops"), "==.")
+              ; loc }
+          in
+          value ~loc ("filter_by_" ^ f.name)
+            (func ~loc
+               [param ~loc Nolabel "cistern__v"]
+               [%expr
+                 [%e model_fn "where"] [%e model] ([%e eq] [%e q f] cistern__v)] ) )
+        (List.filter (fun (f : Desc.field) -> f.index) t.fields)
+    in
+    let others = List.filter (fun (f : Desc.field) -> not f.key) t.fields in
+    let update =
+      value ~loc "update"
+        (func ~loc
+           ( List.map
+               (fun (f : Desc.field) ->
+                 param ~loc:f.loc (Optional f.name) f.name )
+               others
+           @ [param ~loc Nolabel "cistern__r"] )
+           [%expr
+             [%e model_fn "update"] [%e model]
+               ([%e lib g ~loc "Encode.updates"]
+                  [%e
+                    elist ~loc
+                      (List.map
+                         (fun (f : Desc.field) ->
+                           let loc = f.loc in
+                           [%expr
+                             [%e lib g ~loc "Encode.set"] [%e q f]
+                               [%e evar ~loc f.name]] )
+                         others )] )
+               cistern__r] )
+    in
+    let draft_type =
+      ptyp_constr ~loc (lid ~loc (drafts_module g ^ "." ^ t.name)) []
+    in
+    let draft =
+      match draft_fields t with
+      | [] ->
+          value ~loc "draft"
+            (func ~loc ~ret:draft_type
+               [pparam_val ~loc Nolabel None (punit ~loc)]
+               [%expr ()] )
+      | fs ->
+          let draft_param (f : Desc.field) =
+            let loc = f.loc in
+            match f.default with
+            | Some _ ->
+                param ~loc (Optional f.name) f.name
+                  ~default:(eapply ~loc (evar ~loc (thunk g f)) [eunit ~loc])
+            | None ->
+                param ~loc (draft_label f) f.name
+          in
+          value ~loc "draft"
+            (func ~loc ~ret:draft_type
+               ( List.map draft_param fs
+               @ [pparam_val ~loc Nolabel None (punit ~loc)] )
+               (pexp_record ~loc
+                  (List.map
+                     (fun (f : Desc.field) ->
+                       (lid ~loc:f.loc f.name, evar ~loc:f.loc f.name) )
+                     fs )
+                  None ) )
+    in
+    pstr_module ~loc
+      (module_binding ~loc
+         ~name:{txt= Some (sub_module t); loc}
+         ~expr:
+           (pmod_structure ~loc
+              ( ([%stri type nonrec t = [%t user]] :: q_module :: by_key)
+              @ by_unique @ by_index
+              @ [ value ~loc "all" [%expr [%e model_fn "all"] [%e model]]
+                ; value ~loc "where"
+                    (func ~loc
+                       [param ~loc Nolabel "cistern__e"]
+                       [%expr [%e model_fn "where"] [%e model] cistern__e] )
+                ; update
+                ; value ~loc "delete"
+                    (func ~loc
+                       [param ~loc Nolabel "cistern__r"]
+                       [%expr [%e model_fn "delete"] [%e model] cistern__r] )
+                ; draft ] ) ) )
+  in
+  module_item ~loc (gen_module g) (pmod_structure ~loc (List.map typ g))
+
+let item5 g (t : Desc.typ) =
+  let loc = t.loc in
+  let model = pexp_pack ~loc (pmod_ident ~loc (lid ~loc (model_module t))) in
+  let draft_fn = evar ~loc (gen_module g ^ "." ^ sub_module t ^ ".draft") in
+  let create =
+    match draft_fields t with
+    | [] ->
+        func ~loc
+          [pparam_val ~loc Nolabel None (punit ~loc)]
+          [%expr [%e lib g ~loc "Model.create"] [%e model] ([%e draft_fn] ())]
+    | fs ->
+        func ~loc
+          ( List.map
+              (fun (f : Desc.field) -> param ~loc:f.loc (draft_label f) f.name)
+              fs
+          @ [pparam_val ~loc Nolabel None (punit ~loc)] )
+          [%expr
+            [%e lib g ~loc "Model.create"] [%e model]
+              [%e
+                pexp_apply ~loc draft_fn
+                  ( List.map
+                      (fun (f : Desc.field) ->
+                        (draft_label f, evar ~loc:f.loc f.name) )
+                      fs
+                  @ [(Nolabel, eunit ~loc)] )]]
+  in
+  module_item ~loc (sub_module t)
+    (pmod_structure ~loc
+       [ pstr_include ~loc
+           (include_infos ~loc
+              (pmod_ident ~loc (lid ~loc (gen_module g ^ "." ^ sub_module t))) )
+       ; pstr_module ~loc
+           (module_binding ~loc ~name:{txt= Some "Drafts"; loc}
+              ~expr:(pmod_ident ~loc (lid ~loc (drafts_module g))) )
+       ; [%stri
+           type draft = [%t ptyp_constr ~loc (lid ~loc ("Drafts." ^ t.name)) []]]
+       ; [%stri let model : (module Cistern.MODEL) = [%e model]]
+       ; value ~loc "create" create ] )
+
+let all g =
+  let loc = (List.hd g : Desc.typ).loc in
+  stage1 g @ [item4 ~loc g] @ List.map (item5 g) g
