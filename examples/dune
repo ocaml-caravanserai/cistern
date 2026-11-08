@@ -1,0 +1,12 @@
+; The examples of README.md (phase 5b). Each region
+; (* README begin: <name> *) ... (* README end *) is the text of one block of
+; README.md: test/readme makes the expected README.md from the regions, and
+; dune runtest compares it with README.md. The library only compiles in the
+; default checks. The integration suite runs each example on the three
+; servers (test/integration/example_tests.ml).
+
+(library
+ (name cistern_examples)
+ (libraries cistern weft weft.os mirage-crypto-rng.unix)
+ (preprocess
+  (pps ppx_cistern)))
