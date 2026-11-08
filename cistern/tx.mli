@@ -42,7 +42,11 @@ val savepoint : t -> (t -> 'a) -> ('a, Cistern_core.Error.t) result
     [ROLLBACK TO SAVEPOINT], then the exception again. After a failure of the
     transaction in the scope, no command goes, and the first error (or the
     exception of [g]) comes back. An [Error] that [g] handled does not roll back
-    the scope. *)
+    the scope.
+
+    A cancel in the scope fails the transaction with [Connection_lost], and goes
+    up. If the callback catches it, each later step gives the error, and the end
+    sends [ROLLBACK]: no part of the scope is committed. *)
 
 (** For the library ({!Db.transaction}). It can change in each version. *)
 module Private : sig
