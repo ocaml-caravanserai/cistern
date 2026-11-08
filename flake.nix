@@ -256,6 +256,8 @@
                 ./doc
                 # The README rule of test/readme reads the examples.
                 ./examples
+                # test/soak checks tools/soak.sh.
+                ./tools/soak.sh
               ]
               ++ libraryDirs
             );

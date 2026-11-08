@@ -1,0 +1,8 @@
+; The check of tools/soak.sh (phase 5c; the plan of phase 5, F7): a soak keeps
+; the output of each failed run after the next run.
+
+(rule
+ (alias runtest)
+ (deps %{project_root}/tools/soak.sh fake.sh check.sh)
+ (action
+  (run bash check.sh %{project_root}/tools/soak.sh fake.sh)))

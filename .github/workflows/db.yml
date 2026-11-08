@@ -19,6 +19,7 @@ on:
       - test/db/**
       - test/certgen/**
       - test/integration/**
+      - tools/soak.sh
       - Makefile
       - flake.nix
       - flake.lock
@@ -55,6 +56,12 @@ jobs:
       # not in the integration job of a pull request (DESIGN.md, "CI jobs").
       - name: Timing claims
         run: make integration-timing SERVER=${{ matrix.server }}
+      # The soak of the flaky TLS test of cistern#39 and its socket sibling
+      # (phase 5c): each night and on request, on mysql84 only, on the two
+      # systems (ubuntu and macOS). A failed run keeps its output in .soak/.
+      - name: Soak of the KILL of an idle connection
+        if: ${{ matrix.server == 'mysql84' && github.event_name != 'pull_request' }}
+        run: make soak SERVER=mysql84 N=50
       - name: Shutdown claim
         run: make integration-shutdown SERVER=${{ matrix.server }}
       - name: Stop the server
@@ -74,6 +81,7 @@ jobs:
             .db/${{ matrix.server }}/error.log
             .db/${{ matrix.server }}/init.log
             .db/${{ matrix.server }}/server.out
+            .soak/
 
   # The names of the error numbers (make db-errors). No server runs, and the
   # tools of the dev shell are not necessary.
