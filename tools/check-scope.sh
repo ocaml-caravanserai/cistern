@@ -13,11 +13,15 @@
 #
 # Rule 2: each dune file outside test/ has one library stanza, with a
 # public_name and the mutation backend. If the directory has a .ml file, a
-# test stanza of a suite has the library in its libraries. The one exception
-# is the file dune at the root (phase 5a): its one stanza is exactly
-# (env (_ (odoc (warnings fatal)))), and it has no other stanza. An env stanza
-# applies to each directory, test/ included, thus another field (for example
-# env-vars or flags) could change the tests or the warnings.
+# test stanza of a suite has the library in its libraries. Two files are
+# exceptions, and each must be exactly one stanza:
+#
+# - The file dune at the root (phase 5a): (env (_ (odoc (warnings fatal)))).
+#   An env stanza applies to each directory, test/ included, thus another
+#   field (for example env-vars or flags) could change the tests or the
+#   warnings.
+# - The file doc/dune: (documentation (package cistern)), the pages of the
+#   doc of the user.
 #
 # The check fails closed: a dune file that it cannot read gives a failure,
 # not a pass. It refuses enabled_if, build_if and include_subdirs in these
@@ -109,6 +113,11 @@ for d in $files; do
   if [ "$d" = dune ]; then
     [ "$all" = "(env (_ (odoc (warnings fatal))))" ] ||
       fail "cannot read $d: the file dune at the root is not exactly (env (_ (odoc (warnings fatal))))"
+    continue
+  fi
+  if [ "$d" = doc/dune ]; then
+    [ "$all" = "(documentation (package cistern))" ] ||
+      fail "cannot read $d: the file doc/dune is not exactly (documentation (package cistern))"
     continue
   fi
   seen=1

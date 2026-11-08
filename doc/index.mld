@@ -1,0 +1,104 @@
+{0 Cistern}
+
+Cistern is an ORM for OCaml 5 on weft, for MySQL 8.4 and MariaDB 11.4 and
+11.8. The README of the repository has the install and a quick start.
+
+{1 The order of reading}
+
++ Models: {!Cistern.MODEL}, [[@@deriving cistern]] (the package
+  [ppx_cistern]), {!Cistern.Field} and {!Cistern.Deferred}.
++ Queries and filters: {!Cistern.Query}, {!Cistern.Expr} and
+  {!Cistern.Update}.
++ Statements and the pool: {!Cistern.Db} and {!Cistern.Stmt}.
++ Transactions: {!Cistern.Db.transaction} and {!Cistern.Tx}.
++ Relations: {!Cistern.Relation} and {!Cistern.Query.include_}.
++ Raw SQL: {!Cistern.Raw}.
++ Errors: {!Cistern.Error}. Its doc has a table of each error and what to do.
++ Events: {!Cistern.Event}, and the [?on_query] hook of
+  {!Cistern.Db.with_db}.
++ Configuration: {!Cistern.Config}.
++ {{!servers}Servers and session} and {{!operations}Operations}, on this
+  page.
++ {{!page-limits}Limits and defaults}.
++ {{!page-security}Security notes}.
+
+{!Cistern.Private} is for the generated code and the tests. It can change in
+each version. The libraries [cistern.core], [cistern.mysql], [cistern.sql],
+[cistern.schema] and [cistern.names] are internal: use the modules of
+{!Cistern}. Some pages of {!Cistern} link to them, because the public modules
+are aliases.
+
+{1:servers Servers and session}
+
+{2 The servers}
+
+- MySQL 8.4, MariaDB 11.4 and MariaDB 11.8. MySQL 5.7 refuses the session
+  setup (error 1273).
+- The authenticators: [caching_sha2_password] and [mysql_native_password].
+
+{2 The session}
+
+Each connection sets these values:
+
+- [SET NAMES utf8mb4] with a binary collation: text compares in binary, thus
+  [=] and [ORDER BY] are case-sensitive.
+- [time_zone = '+00:00']: the times are UTC.
+- A strict [sql_mode] ([STRICT_ALL_TABLES], [NO_BACKSLASH_ESCAPES],
+  [NO_ZERO_IN_DATE], [NO_ZERO_DATE], [ERROR_FOR_DIVISION_BY_ZERO] and
+  [NO_ENGINE_SUBSTITUTION]): a value that does not fit gives
+  [Invalid_value], not a cut value.
+- [autocommit = 1] and [completion_type = 'NO_CHAIN'].
+
+The pool resets the session after a raw statement. A database that has
+data from other programs can have values that Cistern does not read: for
+example a zero [DATETIME] gives [Decode].
+
+{2 The types}
+
+- An indexed [string] field is [VARCHAR(255)]. A longer value gives
+  [Invalid_value] (1406).
+- A [Ptime.t] field is [DATETIME(6)], from the year 1000. Cistern cuts a
+  value to microseconds.
+- A [float] cannot be NaN or infinite: it gives [Invalid_value].
+
+{2 The rules of models that the ppx cannot check}
+
+- An attribute after the [;] of a field belongs to that field, also on a line
+  of its own. The ppx refuses only an attribute on the line of the next
+  field.
+- With another deriver that reads a bare name ([[@key]], [[@default]]), use
+  the long forms ([[@cistern.key]]).
+- The ppx does not know a type alias of the program. Use the type itself.
+- Two names that differ only in the case of a non-ASCII letter ([é] and [É],
+  or [i] and [ı] on MariaDB 11.8) pass the ppx, and the server refuses the DDL.
+- Give all the models together to {!Cistern.Db.push_schema}: the ppx sees
+  only its group.
+
+{1:operations Operations: the cancel with KILL}
+
+When the program cancels a statement that runs (a deadline or a cancel of its
+fiber), the server continues it. Thus each pool has a killer: a control
+connection that sends [KILL CONNECTION] for the session. [kill=true] is the
+default of the URL.
+
+- The killer sends [KILL] only after an exact check of the identity of the
+  server (its id and its start time).
+- On MySQL, the check reads [performance_schema.global_status]. With
+  [performance_schema = OFF], [KILL] goes off for the pool.
+- A cloned MySQL data directory needs a new [auto.cnf]. Else two servers have
+  the same [@@server_uuid].
+- Each MariaDB server needs a unique [@@server_id] or [@@hostname]. The
+  defaults (server id 1, a fixed host name of a container) are not unique.
+- The control connection counts toward [max_connections] and
+  [max_user_connections]: one pool has at most [pool_size] + 1 sessions.
+- A user with a direct grant of [SUPER] (or the admin grant), or a session
+  with an enabled role, turns [KILL] off.
+- The event [Kill_off {reason}] tells that [KILL] went off for the pool (at
+  most one for each pool). Then a cancelled statement runs on the server until
+  it ends. The event [Kill_dropped {reason}] tells that no [KILL] went for one
+  session.
+- Behind a proxy (ProxySQL, MaxScale, MySQL Router), use [kill=false]. The
+  check finds some proxies ([Kill_off `Proxy]), but not each proxy is
+  verified.
+- An outer cancel of {!Cistern.Db.with_db} can wait about 52 s before it
+  ends ({{!page-limits}Limits and defaults}).

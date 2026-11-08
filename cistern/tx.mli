@@ -22,8 +22,15 @@ val exec :
       [Outcome_unknown], [Connection_lost], [Read_only], …). The errors of the
       statement alone (a constraint, [Invalid_value], [Statement_timeout],
       [Not_found], [Decode]) leave it usable.
-    - A cancel aborts the connection, fails the transaction and raises
-      [Weft.Fiber.Cancelled].
+    - A cancel in a command aborts the connection, fails the transaction and
+      raises [Weft.Fiber.Cancelled].
+    - A cancel between two commands (for example in a [savepoint], or in an
+      atomic statement: a create with children, a query with [include_]) leaves
+      the connection usable. If the callback catches the cancel, the transaction
+      fails with [Connection_lost]: each later step and the result of
+      [Db.transaction] give it, and the end sends [ROLLBACK]. The connection is
+      healthy and goes back to the pool. The error tells only that nothing is
+      committed.
 
     It raises [Invalid_argument] from another fiber than the fiber of the
     callback, after the end of the transaction, and for a raw statement whose

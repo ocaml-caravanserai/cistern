@@ -2,7 +2,71 @@
    v. 2.0. If a copy of the MPL was not distributed with this file, You can
    obtain one at https://mozilla.org/MPL/2.0/. *)
 
-(** The errors of Cistern (DESIGN.md, "Core user types"). *)
+(** The errors of Cistern (DESIGN.md, "Core user types").
+
+    What each error tells, and what to do. "The [Tx] fails" tells that each
+    later step of the [Tx] gives the error, and that [Db.transaction] rolls
+    back. "The [Tx] stays usable" tells that the callback can continue. The
+    rules are in [Cistern.Private.Tx_rules.classify]
+    ([test/unit/test_tx_rules.ml], [test/sim/test_tx.ml]).
+
+    - [Retryable `Deadlock] and [Retryable `Rolled_back]: the server rolled back
+      the whole transaction (1213, 3101 on MySQL, 1020 on MariaDB). The [Tx]
+      fails. Run the whole transaction again. Cistern has no helper for this. A
+      [COMMIT] that gives a [Retryable] error (1205 too) or 1180 gives
+      [Retryable `Rolled_back].
+    - [Retryable `Lock_timeout] (1205): with [innodb_rollback_on_timeout] on,
+      the server rolled back the whole transaction, and the [Tx] fails: run it
+      again. With [innodb_rollback_on_timeout] off (the default), the server
+      rolled back only the statement, and the [Tx] stays usable: a retry of the
+      statement is enough. Out of a [Tx], retry the statement.
+    - [Outcome_unknown]: a write (or a [COMMIT]) was sent, and its reply was
+      lost. The server can have committed it or not. Do not retry it blindly:
+      read the data again to find the result. The [Tx] fails. For [`Statement],
+      when each write of the [Tx] was DML, [Db.transaction] gives [Timeout] or
+      [Connection_lost] in its place, because the server rolled back when the
+      connection closed.
+    - [Implicit_commit]: in a [Tx], a statement (for example DDL) committed the
+      transaction before its end. The writes before the statement are committed.
+      The [Tx] fails. The server error that came with the statement is not kept:
+      a ping found that the transaction had ended, and that is the fact that the
+      caller needs. The event of the statement has [Implicit_commit] too. Do not
+      use DDL in a [Tx].
+    - [Timeout]: a deadline of Cistern passed, in a read or before a statement
+      was sent. The [Tx] fails, except in one case: the [?timeout] of the
+      statement, shorter than the deadline of the [Tx], stops the statement
+      before Cistern sends it (the margin). A [?timeout] that passes while the
+      server runs the statement breaks the connection, and the [Tx] fails
+      ([Timeout] for a read, [Outcome_unknown] for a write). Give a longer
+      [?timeout], or make the task smaller.
+    - [Statement_timeout]: the server stopped the statement (its own limit). The
+      connection is good, and the [Tx] stays usable.
+    - [Connection_lost]: the connection broke during a read, or before a write
+      was sent. Nothing is committed, and the [Tx] fails. In a [Tx], a cancel
+      between two commands that the callback catches also gives
+      [Connection_lost], on a healthy connection: it tells only that nothing is
+      committed ([Cistern.Tx.exec]).
+    - [Pool_exhausted]: no connection came before [checkout_timeout]. Use a
+      larger pool, or hold the connections for less time.
+    - [Constraint_violation]: a unique key, a foreign key, [NOT NULL] or a check
+      refused the statement. The [Tx] stays usable.
+    - [Invalid_value]: the server or the client refused a value (too long, out
+      of range, NaN). The [Tx] stays usable, except for 1153 (a packet larger
+      than [max_allowed_packet]): then the [Tx] fails.
+    - [Not_found]: [get], [update] or [delete] of a key found no row. Use [find]
+      for a row that can be missing. The [Tx] stays usable.
+    - [Read_only]: the server or the transaction is read-only. The [Tx] fails.
+    - [Connect]: the pool cannot connect. The text is the last connect error.
+    - [Decode]: the client cannot decode a reply, for example a zero [DATETIME].
+      The [Tx] stays usable, except when the connection breaks (a packet of 16
+      MiB or more, a [LOCAL INFILE] request): then the [Tx] fails.
+    - [Driver]: another error of the server. Its number is in the manual of the
+      server. In a [Tx], a ping follows: the [Tx] stays usable if the
+      transaction is open, else it fails with [Implicit_commit].
+
+    On MariaDB 11.8 ([innodb_snapshot_isolation], its default), a [Tx] that
+    reads a row, then writes or locks it after another session changed it, gives
+    [Retryable `Rolled_back] (error 1020). *)
 
 type kind = Unique | Foreign_key | Not_null | Check | Other_constraint
 

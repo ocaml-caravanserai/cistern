@@ -49,7 +49,7 @@ let read ast decode ~rows ~finish ~for_update =
 let locked t = t.q.lock = For_update
 
 (* The keys of the chunks of include_ (E8). *)
-let chunk_size = 1000
+let chunk_size = Cistern_core.Limits.in_keys
 
 let rec chunks l =
   let rec take n acc = function

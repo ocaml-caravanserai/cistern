@@ -67,13 +67,13 @@ type ('c, 'w) t =
   ; next_waiter: int
   ; next_token: int }
 
-let first_step () = Span.ms 100
+let first_step () = Cistern_core.Limits.backoff_first
 
-let max_step () = Span.s 5
+let max_step () = Cistern_core.Limits.backoff_max
 
-let max_connects = 2
+let max_connects = Cistern_core.Limits.concurrent_connects
 
-let age_limit () = Span.s 30
+let age_limit () = Cistern_core.Limits.killing_age
 
 let create ~size ~max_lifetime =
   if size < 1 || size > 1000 then
@@ -249,7 +249,12 @@ type ('c, 'w) opened =
   | Opened_close of 'c
 
 (* The idle limit of a server whose @@wait_timeout is [w] seconds. *)
-let idle_limit w = max_span (Span.s 1) (min_span (Span.s 30) (Span.s (w - 5)))
+let idle_limit w =
+  let module L = Cistern_core.Limits in
+  max_span L.idle_min
+    (min_span L.idle_max
+       (Span.of_ns
+          (Int64.sub (Span.to_ns (Span.s w)) (Span.to_ns L.idle_offset)) ) )
 
 let opened s now c ~wait_timeout ~dialect ~u =
   let s = expire s now in
@@ -258,7 +263,8 @@ let opened s now c ~wait_timeout ~dialect ~u =
   else
     (* NaN gives 0, the middle of the range: Float.max of NaN is NaN. *)
     let u =
-      if Float.is_nan u then 0. else Float.min 0.15 (Float.max (-0.15) u)
+      let j = Cistern_core.Limits.jitter in
+      if Float.is_nan u then 0. else Float.min j (Float.max (-.j) u)
     in
     (* The jitter is at most 15 % of the life, thus its product has no
        overflow. *)

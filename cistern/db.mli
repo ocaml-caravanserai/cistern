@@ -29,8 +29,11 @@ val with_db :
     them). [random] gives the jitter of the lives of the connections; the
     default is a split of the generator of the domain.
 
-    Phase 1.2 has no [KILL]: a cancelled statement keeps running on the server
-    until it ends, and its session stays until then.
+    A cancelled statement keeps running on the server, thus the killer of the
+    pool sends [KILL CONNECTION] for its session ([kill=true], the default of
+    the configuration). With [kill=false], or after [Kill_off], the statement
+    and its session stay until the statement ends. The
+    {{!page-index.operations}operations} section has the rules.
 
     TLS (phase 1.4) takes its randomness from the default generator of
     mirage-crypto-rng. Set it one time before [with_db], with

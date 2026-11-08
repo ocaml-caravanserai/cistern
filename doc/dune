@@ -1,0 +1,6 @@
+; The pages of the doc of the user (phase 5a): index, limits and security.
+; test/unit/test_limits.ml compares the rows of limits.mld with
+; Cistern_core.Limits.
+
+(documentation
+ (package cistern))

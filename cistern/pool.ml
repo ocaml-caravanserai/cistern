@@ -159,7 +159,7 @@ module Private = struct
         , P.waiting s ) )
 end
 
-let margin () = Span.ms 50
+let margin () = Cistern_core.Limits.margin
 
 let create ?random ?(on_query = ignore) ~pool_size ~max_lifetime
     ~checkout_timeout config =
@@ -189,7 +189,10 @@ let create ?random ?(on_query = ignore) ~pool_size ~max_lifetime
   ; drained= false
   ; control= None
   ; control_sockets= Atomic.make 0
-  ; killer= {step= Span.ms 100; retry_at= None; failed_once= None}
+  ; killer=
+      { step= Cistern_core.Limits.backoff_first
+      ; retry_at= None
+      ; failed_once= None }
   ; txs= Atomic.make Fibers.empty }
 
 (* The time of the pool: the span since its origin. *)
@@ -430,7 +433,8 @@ let connect t =
       let now = now t in
       let r, wake =
         op t (fun s ->
-            let u = Random.State.float t.random 0.3 -. 0.15 in
+            let j = Cistern_core.Limits.jitter in
+            let u = Random.State.float t.random (2. *. j) -. j in
             let s, r, wake =
               P.opened s now conn ~wait_timeout:info.wait_timeout
                 ~dialect:info.dialect ~u
@@ -852,11 +856,11 @@ let exec t ~timeout stmt =
 
 (* The killer (D5 to D9). *)
 
-let kill_limit () = Span.s 2
+let kill_limit () = Cistern_core.Limits.kill_limit
 
-let first_step () = Span.ms 100
+let first_step () = Cistern_core.Limits.backoff_first
 
-let max_step () = Span.s 5
+let max_step () = Cistern_core.Limits.backoff_max
 
 (* The abort of the control connection: its state is not known. *)
 let drop_control t =
@@ -1051,7 +1055,7 @@ let killer t =
   in
   loop ()
 
-let drain_limit () = Span.s 15
+let drain_limit () = Cistern_core.Limits.drain_limit
 
 (* The drain at the end of with_db (D10, D10a): after close_all and the join of
    the scope, in a shield with the limit of 15 s. It sends the entries with the
@@ -1154,7 +1158,7 @@ let shutdown t =
      wait raises at once, and its close closes the flow. *)
   Fiber.shield (fun () ->
       match
-        Fiber.with_timeout Clock.Mono (Span.s 2) (fun () ->
+        Fiber.with_timeout Clock.Mono Cistern_core.Limits.close_limit (fun () ->
             List.iter (polite_close t) entries ;
             close_control t )
       with
