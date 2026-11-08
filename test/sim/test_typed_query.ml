@@ -8,6 +8,7 @@
 
 open Windtrap
 open Cistern_test_models
+open Cistern_test_models_ppx
 module D = Fake_db
 module Db = Cistern.Db
 module Tx = Cistern.Tx

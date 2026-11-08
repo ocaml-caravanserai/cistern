@@ -8,7 +8,6 @@
    field. Then the checks of Model.update that need no statement. *)
 
 open Windtrap
-open Cistern_test_models
 open Cistern_test_models_ppx
 module Field = Cistern_core.Field
 module Schema = Cistern_core.Schema
