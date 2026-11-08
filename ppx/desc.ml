@@ -19,11 +19,23 @@ type field =
   ; default: expression option
   ; number: int }
 
+type kind =
+  | Has_many of {target: string}
+  | Belongs_to of
+      { target: string
+      ; key: string * Location.t
+      ; references: string * Location.t
+      ; nullable: bool }
+
+type relation =
+  {name: string; loc: Location.t; ty: core_type; attr: Location.t; kind: kind}
+
 type typ =
   { name: string
   ; loc: Location.t
   ; table: (string * Location.t) option
-  ; fields: field list }
+  ; fields: field list
+  ; relations: relation list }
 
 let q = Cistern_names.quote
 
@@ -57,8 +69,6 @@ let () =
     ( Attribute.declare "cistern.table" Attribute.Context.type_declaration
         Ast_pattern.__ Fun.id
       : (type_declaration, payload) Attribute.t )
-
-let relations = "relations come in phase 4"
 
 (* The spelling of an attribute in a message. *)
 let spell x = if x = "table" then "[@@table]" else "[@" ^ x ^ "]"
@@ -263,7 +273,60 @@ let where_field ~typ (ld : label_declaration) =
   Printf.sprintf "the field %s of the type %s" (q ld.pld_name.txt) (q typ)
 
 (* The payload of a Cistern attribute of a field, parsed one time. *)
-type payload = Flag | Column of string | Default of expression
+type payload =
+  | Flag
+  | Column of string
+  | Default of expression
+  | Refs of {key: string * Location.t; references: string * Location.t}
+
+(* The payload of [@belongs_to] (E12): the record { key = <field>; references =
+   <field> }, each label one time, with no other label. *)
+let belongs_to_payload ~where (a : attribute) =
+  let form = "takes the record { key = <field>; references = <field> }" in
+  match a.attr_payload with
+  | PStr
+      [ { pstr_desc= Pstr_eval ({pexp_desc= Pexp_record (labels, base); _}, [])
+        ; _ } ] ->
+      ( match base with
+      | Some (e : expression) ->
+          fail ~loc:e.pexp_loc "[@belongs_to] on %s %s, with no \"with\"" where
+            form
+      | None ->
+          () ) ;
+      let value label (e : expression) =
+        match e.pexp_desc with
+        | Pexp_ident {txt= Lident x; _} ->
+            (x, e.pexp_loc)
+        | _ ->
+            fail ~loc:e.pexp_loc
+              "[@belongs_to] on %s: the value of %s must be the name of a field"
+              where label
+      in
+      let found =
+        List.fold_left
+          (fun acc (({txt; loc} : longident loc), e) ->
+            match txt with
+            | Lident (("key" | "references") as l) ->
+                if List.mem_assoc l acc then
+                  fail ~loc "[@belongs_to] on %s has the label %s two times"
+                    where l ;
+                acc @ [(l, value l e)]
+            | _ ->
+                fail ~loc "[@belongs_to] on %s has an unknown label: it %s"
+                  where form )
+          [] labels
+      in
+      let get l =
+        match List.assoc_opt l found with
+        | Some v ->
+            v
+        | None ->
+            fail ~loc:a.attr_loc "[@belongs_to] on %s has no label %s: it %s"
+              where l form
+      in
+      Refs {key= get "key"; references= get "references"}
+  | _ ->
+      fail ~loc:a.attr_loc "[@belongs_to] on %s %s" where form
 
 (* OCaml gives an attribute after the ";" of a field to that field. An attribute
    on a later line than its field and on the line of the name of the next field
@@ -309,11 +372,10 @@ let label_attributes ~typ ~next (ld : label_declaration) =
       if x = "table" then
         fail ~loc:a.attr_name.loc
           "the attribute [@@table] is for a type, not for %s" where ;
-      if List.mem x relation_names then
-        fail ~loc:a.attr_name.loc "%s on %s: %s" (spell x) where relations ;
       let payload =
         if x = "column" then Column (string_payload ~where x a)
         else if x = "default" then Default (expression_payload ~where x a)
+        else if x = "belongs_to" then belongs_to_payload ~where a
         else (flag_payload ~where x a ; Flag)
       in
       (x, (a, payload)) )
@@ -339,6 +401,14 @@ let scalar_of = function
   | _ ->
       None
 
+(* [Deferred.t] or [Cistern.Deferred.t], by syntax only (E12). *)
+let deferred = function
+  | Ldot (Lident "Deferred", "t")
+  | Ldot (Ldot (Lident "Cistern", "Deferred"), "t") ->
+      true
+  | _ ->
+      false
+
 let field_type ~group ~where (ld : label_declaration) =
   let loc = ld.pld_type.ptyp_loc in
   let relation (t : core_type) =
@@ -352,7 +422,11 @@ let field_type ~group ~where (ld : label_declaration) =
         false
   in
   let base (t : core_type) =
-    if relation t then fail ~loc "%s: %s" where relations ;
+    if relation t then
+      fail ~loc
+        "%s has a type of the group or a Deferred.t, with no relation \
+         attribute: give [@has_many] or [@belongs_to]"
+        where ;
     match t.ptyp_desc with
     | Ptyp_constr ({txt; _}, []) ->
         scalar_of txt
@@ -387,9 +461,9 @@ let ops =
   ; "contains_opt"
   ; "not" ]
 
-let field ~group ~typ ~number (ld : label_declaration) attrs =
+(* The checks of the name of each field, a column or a relation. *)
+let field_name ~where (ld : label_declaration) =
   let name = ld.pld_name.txt and loc = ld.pld_name.loc in
-  let where = where_field ~typ ld in
   if List.mem name ops then
     fail ~loc "the name of %s is a name of the filters of Q (Expr.OPS)" where ;
   if String.starts_with ~prefix:"cistern__" name then
@@ -400,7 +474,99 @@ let field ~group ~typ ~number (ld : label_declaration) attrs =
   if ld.pld_mutable = Mutable then
     fail ~loc
       "%s is mutable: a mutable field is not supported (Field.set gives a copy)"
+      where
+
+(* A relation field is also a value of the model module (the scope): these names
+   are values of stage 2 and 3 (DESIGN.md, "Model definition"). *)
+let refused_relation =
+  ["all"; "where"; "update"; "delete"; "draft"; "create"; "model"]
+
+let refused_prefixes = ["get_by_"; "find_by_"; "filter_by_"]
+
+(* A relation field (E12): [<t> list Deferred.t] with [@has_many], [<t>
+   Deferred.t] or [<t> option Deferred.t] with [@belongs_to], [<t>] a type of
+   the group. No other Cistern attribute. *)
+let relation ~group ~typ (ld : label_declaration) attrs =
+  let name = ld.pld_name.txt and loc = ld.pld_name.loc in
+  let where = where_field ~typ ld in
+  field_name ~where ld ;
+  if
+    List.mem name refused_relation
+    || List.exists
+         (fun prefix -> String.starts_with ~prefix name)
+         refused_prefixes
+  then
+    fail ~loc
+      "the name of %s, a relation field, is a value of the model module (all, \
+       where, update, delete, draft, create, model, get_by_*, find_by_*, \
+       filter_by_*)"
       where ;
+  List.iter
+    (fun (x, ((a : attribute), _)) ->
+      if not (List.mem x relation_names) then
+        fail ~loc:a.attr_name.loc
+          "%s on %s, a relation field: a relation field is not a column"
+          (spell x) where )
+    attrs ;
+  let attr, payload =
+    match List.filter (fun (x, _) -> List.mem x relation_names) attrs with
+    | [(_, ((a : attribute), p))] ->
+        (a, p)
+    | _ :: (_, ((a : attribute), _)) :: _ ->
+        fail ~loc:a.attr_name.loc "%s has [@has_many] and [@belongs_to]" where
+    | [] ->
+        assert false
+  in
+  let tloc = ld.pld_type.ptyp_loc in
+  let many = "<t> list Deferred.t, with <t> a type of the group"
+  and one =
+    "<t> Deferred.t or <t> option Deferred.t, with <t> a type of the group"
+  in
+  let bad x form =
+    fail ~loc:tloc "%s on %s: the type of the field must be %s" (spell x) where
+      form
+  in
+  (* The type of the group in [t], or the error of the form. *)
+  let target x form (t : core_type) =
+    match t.ptyp_desc with
+    | Ptyp_constr ({txt= Lident n; _}, []) when List.mem n group ->
+        n
+    | Ptyp_constr ({txt= Lident n; _}, []) ->
+        fail ~loc:t.ptyp_loc "%s on %s: the type %s is not a type of the group"
+          (spell x) where (q n)
+    | _ ->
+        bad x form
+  in
+  let kind =
+    match (payload, ld.pld_type.ptyp_desc) with
+    | ( Flag
+      , Ptyp_constr
+          ( {txt; _}
+          , [{ptyp_desc= Ptyp_constr ({txt= Lident "list"; _}, [t]); _}] ) )
+      when deferred txt ->
+        Has_many {target= target "has_many" many t}
+    | Flag, _ ->
+        bad "has_many" many
+    | Refs {key; references}, Ptyp_constr ({txt; _}, [t]) when deferred txt -> (
+      match t.ptyp_desc with
+      | Ptyp_constr ({txt= Lident "option"; _}, [t]) ->
+          Belongs_to
+            {target= target "belongs_to" one t; key; references; nullable= true}
+      | _ ->
+          Belongs_to
+            {target= target "belongs_to" one t; key; references; nullable= false}
+      )
+    | Refs _, _ ->
+        bad "belongs_to" one
+    | (Column _ | Default _), _ ->
+        assert false
+  in
+  {name; loc; ty= ld.pld_type; attr= attr.attr_loc; kind}
+
+let field ~group ~typ ~number (ld : label_declaration) attrs =
+  let name = ld.pld_name.txt and loc = ld.pld_name.loc in
+  let where = where_field ~typ ld in
+  field_name ~where ld ;
   let scalar, nullable = field_type ~group ~where ld in
   let has x = List.mem_assoc x attrs in
   ( match List.assoc_opt "default" attrs with
@@ -457,7 +623,19 @@ let schema g =
               ; unique= f.unique
               ; index= f.index } )
             t.fields
-      ; relations= [] } )
+      ; relations=
+          List.map
+            (fun (r : relation) ->
+              match r.kind with
+              | Has_many {target} ->
+                  Schema.Has_many {name= r.name; target}
+              | Belongs_to {target; key; references; _} ->
+                  Schema.Belongs_to
+                    { name= r.name
+                    ; target
+                    ; key= fst key
+                    ; references= fst references } )
+            t.relations } )
     g
 
 (* The second model of the fault of the list [f], as a type of [g]: the type
@@ -484,6 +662,42 @@ let column_cause (t : typ) (x : field) c =
          && Cistern_names.fold (column y) = Cistern_names.fold c )
        t.fields
 
+(* A fault of the list with one type two times in its models: two foreign key
+   names of the type [t] that are equal after the fold (rule 11; the hash of a
+   long name can collide). The place is the attribute of the second belongs_to
+   of the two (the review of 4f, L1). *)
+let collision g (f : Schema.fault) =
+  match f.models with
+  | n :: (_ :: _ as rest) when List.for_all (String.equal n) rest -> (
+      let t = List.find (fun (t : typ) -> t.name = n) g in
+      let m = List.find (fun (m : Schema.model) -> m.name = n) (schema g) in
+      let fks = Schema.foreign_keys (schema g) m in
+      let rec second seen = function
+        | (k : Schema.foreign_key) :: rest ->
+            let name = Cistern_names.fold k.name in
+            if List.mem name seen then Some k.column
+            else second (name :: seen) rest
+        | [] ->
+            None
+      in
+      match second [] fks with
+      | Some c ->
+          List.find_map
+            (fun (r : relation) ->
+              match r.kind with
+              | Belongs_to {key= k, _; _}
+                when List.exists
+                       (fun (x : field) -> x.name = k && column x = c)
+                       t.fields ->
+                  Some r.attr
+              | _ ->
+                  None )
+            t.relations
+      | None ->
+          None )
+  | _ ->
+      None
+
 let place ~loc g (f : Schema.fault) =
   let table_loc (t : typ) =
     match t.table with Some (_, loc) -> loc | None -> t.loc
@@ -494,13 +708,27 @@ let place ~loc g (f : Schema.fault) =
         (String.concat ", " (List.map q f.fields))
     else ""
   in
+  let relation_of (t : typ) =
+    List.find_opt (fun (r : relation) -> Some r.name = f.relation) t.relations
+  in
   match List.find_opt (fun (t : typ) -> Some t.name = f.model) g with
+  | Some t when Option.is_some (relation_of t) -> (
+    (* E15: a fault of a relation goes to its field; for a belongs_to, to its
+       attribute (the payload names the key and the referenced field). Rule 7
+       cannot come from a record, which has unique labels. *)
+    match relation_of t with
+    | Some {kind= Belongs_to _; attr; _} ->
+        fail ~loc:attr "%s" f.text
+    | Some r ->
+        fail ~loc:r.loc "%s" f.text
+    | None ->
+        assert false )
   | None -> (
     match second g f with
     | Some t ->
         fail ~loc:(if f.table then table_loc t else t.loc) "%s" f.text
     | None ->
-        fail ~loc "%s" f.text )
+        fail ~loc:(Option.value (collision g f) ~default:loc) "%s" f.text )
   | Some t when f.table ->
       let long =
         t.table = None
@@ -555,21 +783,53 @@ let group ~loc tds =
       names lds
   in
   let number = ref 0 in
+  let is_relation a = List.exists (fun (x, _) -> List.mem x relation_names) a in
   let g =
     List.map2
       (fun (td : type_declaration) (lds, (table, attrs)) ->
         let typ = td.ptype_name.txt in
+        let pairs = List.combine lds attrs in
         { name= typ
         ; loc= td.ptype_name.loc
         ; table
         ; fields=
-            List.map2
-              (fun ld a ->
-                let f = field ~group:names ~typ ~number:!number ld a in
-                incr number ; f )
-              lds attrs } )
+            List.filter_map
+              (fun (ld, a) ->
+                if is_relation a then None
+                else
+                  let f = field ~group:names ~typ ~number:!number ld a in
+                  incr number ; Some f )
+              pairs
+        ; relations=
+            List.filter_map
+              (fun (ld, a) ->
+                if is_relation a then Some (relation ~group:names ~typ ld a)
+                else None )
+              pairs } )
       tds
       (List.combine lds (List.combine tables attrs))
   in
+  (* The key of a belongs_to is nullable exactly for <t> option Deferred.t (E12,
+     E13). *)
+  List.iter
+    (fun (t : typ) ->
+      List.iter
+        (fun (r : relation) ->
+          match r.kind with
+          | Belongs_to {key= k, _; nullable; _} -> (
+            match List.find_opt (fun (f : field) -> f.name = k) t.fields with
+            | Some f when f.nullable <> nullable ->
+                fail ~loc:r.ty.ptyp_loc
+                  "the relation field %s of the type %s: the key %s is %s, \
+                   thus the type is <t> %sDeferred.t"
+                  (q r.name) (q t.name) (q k)
+                  (if f.nullable then "an option" else "not an option")
+                  (if f.nullable then "option " else "")
+            | _ ->
+                () )
+          | Has_many _ ->
+              () )
+        t.relations )
+    g ;
   (match Schema.faults (schema g) with [] -> () | f :: _ -> place ~loc g f) ;
   g

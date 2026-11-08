@@ -108,6 +108,17 @@ let desc src =
       | None ->
           "" )
   in
+  let relation (r : Desc.relation) =
+    Printf.sprintf "  relation %s (%s) [%s]: %s" r.name (place r.loc)
+      (place r.attr)
+      ( match r.kind with
+      | Has_many {target} ->
+          "has_many " ^ target
+      | Belongs_to {target; key= k, kl; references= x, xl; nullable} ->
+          Printf.sprintf "belongs_to %s%s key %s (%s) references %s (%s)" target
+            (if nullable then " option" else "")
+            k (place kl) x (place xl) )
+  in
   let typ (t : Desc.typ) =
     Printf.sprintf "type %s (%s)%s\n%s" t.name (place t.loc)
       ( match t.table with
@@ -115,7 +126,8 @@ let desc src =
           Printf.sprintf " table %s (%s)" x (place loc)
       | None ->
           "" )
-      (String.concat "\n" (List.map field t.fields))
+      (String.concat "\n"
+         (List.map field t.fields @ List.map relation t.relations) )
   in
   String.concat "\n" (List.map typ (Desc.group ~loc tds))
 
@@ -130,10 +142,18 @@ let models_text models =
          ; flag f.unique "unique"
          ; flag f.index "index" ] )
   in
+  let relation : Schema.relation -> string = function
+    | Has_many {name; target} ->
+        Printf.sprintf "  %s: has_many %s" name target
+    | Belongs_to {name; target; key; references} ->
+        Printf.sprintf "  %s: belongs_to %s key %s references %s" name target
+          key references
+  in
   let model (m : Schema.model) =
     Printf.sprintf "%s table %s, %d relations\n%s" m.name m.table
       (List.length m.relations)
-      (String.concat "\n" (List.map field m.fields))
+      (String.concat "\n"
+         (List.map field m.fields @ List.map relation m.relations) )
   in
   String.concat "\n" (List.map model models)
 
