@@ -31,6 +31,13 @@ val get_by : (module M : MODEL) -> (M.t, 'a) Field.t -> 'a -> M.t Stmt.t
 val find_by : (module M : MODEL) -> (M.t, 'a) Field.t -> 'a -> M.t option Stmt.t
 (** [find_by] is [get_by] with [None] for no row. *)
 
+val all : (module M : MODEL) -> M.t Query.t
+(** [all (module M)] is the query of all the rows of [M]. *)
+
+val where : (module M : MODEL) -> (M.t, bool) Expr.t -> M.t Query.t
+(** [where (module M) e] is [Query.where e (all (module M))]. The generated
+    [filter_by_<field>] of an [[@index]] field is [where] with [==.]. *)
+
 val create : (module M : MODEL) -> M.draft -> M.t Stmt.t
 (** [create (module M) d] inserts the row of [d], and gives it with the key: for
     an [[@auto]] key, the last insert id ([Decode] if it is 0), else the key of

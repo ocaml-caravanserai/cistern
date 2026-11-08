@@ -8,7 +8,8 @@
     not mark its connection dirty. *)
 
 val make :
-     Stmt.Private.kind
+     ?for_update:bool
+  -> Stmt.Private.kind
   -> (Cistern_sql.Ast.t, string) result
   -> run:
        (   Exec.ctx
@@ -18,7 +19,8 @@ val make :
   -> rows:('r -> int)
   -> finish:('r -> 'a)
   -> 'a Stmt.t
-(** [make kind ast ~run ~rows ~finish] is the statement of [ast].
+(** [make kind ast ~run ~rows ~finish] is the statement of [ast]. [for_update]
+    (default [false]) marks a read with [FOR UPDATE] ({!Stmt.Private.meta}).
     [run ctx ~kind sql] runs the SQL of the dialect of the connection, with the
     command kind of [kind] for {!Exec}. [Error msg] of the compiler gives
     [Invalid_value {code = None; message = msg}], with no byte sent. A read

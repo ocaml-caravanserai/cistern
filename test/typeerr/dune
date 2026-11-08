@@ -1,4 +1,5 @@
-; The type-error tests of cistern.core (DESIGN.md, "Tests"). Each rule types
+; The type-error tests of cistern.core and of the hand-written models
+; (DESIGN.md, "Tests"). Each rule types
 ; one file that the compiler must refuse (exit status 2), and keeps the
 ; message. test_typeerr.ml compares each message with its .expected file. A
 ; file that types makes its rule fail.
@@ -113,6 +114,111 @@
      %{project_root}/names/.cistern_names.objs/byte
      starts_with_opt_string.ml)))))
 
+(rule
+ (deps
+  model_where.ml
+  (glob_files %{project_root}/core/.cistern_core.objs/byte/*.cmi)
+  (glob_files %{project_root}/names/.cistern_names.objs/byte/*.cmi)
+  (glob_files %{project_root}/sql/.cistern_sql.objs/byte/*.cmi)
+  (glob_files %{project_root}/mysql/.cistern_mysql.objs/byte/*.cmi)
+  (glob_files %{project_root}/cistern/.cistern.objs/byte/*.cmi)
+  (glob_files
+   %{project_root}/test/model/.cistern_test_models.objs/byte/*.cmi))
+ (action
+  (with-outputs-to
+   model_where.out
+   (with-accepted-exit-codes
+    2
+    (run
+     %{ocamlc}
+     -color
+     never
+     -stop-after
+     typing
+     -I
+     %{project_root}/core/.cistern_core.objs/byte
+     -I
+     %{project_root}/names/.cistern_names.objs/byte
+     -I
+     %{project_root}/sql/.cistern_sql.objs/byte
+     -I
+     %{project_root}/mysql/.cistern_mysql.objs/byte
+     -I
+     %{project_root}/cistern/.cistern.objs/byte
+     -I
+     %{project_root}/test/model/.cistern_test_models.objs/byte
+     model_where.ml)))))
+
+(rule
+ (deps
+  query_private.ml
+  (glob_files %{project_root}/core/.cistern_core.objs/byte/*.cmi)
+  (glob_files %{project_root}/names/.cistern_names.objs/byte/*.cmi)
+  (glob_files %{project_root}/sql/.cistern_sql.objs/byte/*.cmi)
+  (glob_files %{project_root}/mysql/.cistern_mysql.objs/byte/*.cmi)
+  (glob_files %{project_root}/cistern/.cistern.objs/byte/*.cmi)
+  (glob_files
+   %{project_root}/test/model/.cistern_test_models.objs/byte/*.cmi))
+ (action
+  (with-outputs-to
+   query_private.out
+   (with-accepted-exit-codes
+    2
+    (run
+     %{ocamlc}
+     -color
+     never
+     -stop-after
+     typing
+     -I
+     %{project_root}/core/.cistern_core.objs/byte
+     -I
+     %{project_root}/names/.cistern_names.objs/byte
+     -I
+     %{project_root}/sql/.cistern_sql.objs/byte
+     -I
+     %{project_root}/mysql/.cistern_mysql.objs/byte
+     -I
+     %{project_root}/cistern/.cistern.objs/byte
+     -I
+     %{project_root}/test/model/.cistern_test_models.objs/byte
+     query_private.ml)))))
+
+(rule
+ (deps
+  model_order_by.ml
+  (glob_files %{project_root}/core/.cistern_core.objs/byte/*.cmi)
+  (glob_files %{project_root}/names/.cistern_names.objs/byte/*.cmi)
+  (glob_files %{project_root}/sql/.cistern_sql.objs/byte/*.cmi)
+  (glob_files %{project_root}/mysql/.cistern_mysql.objs/byte/*.cmi)
+  (glob_files %{project_root}/cistern/.cistern.objs/byte/*.cmi)
+  (glob_files
+   %{project_root}/test/model/.cistern_test_models.objs/byte/*.cmi))
+ (action
+  (with-outputs-to
+   model_order_by.out
+   (with-accepted-exit-codes
+    2
+    (run
+     %{ocamlc}
+     -color
+     never
+     -stop-after
+     typing
+     -I
+     %{project_root}/core/.cistern_core.objs/byte
+     -I
+     %{project_root}/names/.cistern_names.objs/byte
+     -I
+     %{project_root}/sql/.cistern_sql.objs/byte
+     -I
+     %{project_root}/mysql/.cistern_mysql.objs/byte
+     -I
+     %{project_root}/cistern/.cistern.objs/byte
+     -I
+     %{project_root}/test/model/.cistern_test_models.objs/byte
+     model_order_by.ml)))))
+
 (test
  (name test_typeerr)
  (modules test_typeerr)
@@ -127,4 +233,10 @@
   starts_with_option.out
   starts_with_option.expected
   starts_with_opt_string.out
-  starts_with_opt_string.expected))
+  starts_with_opt_string.expected
+  model_where.out
+  model_where.expected
+  model_order_by.out
+  model_order_by.expected
+  query_private.out
+  query_private.expected))

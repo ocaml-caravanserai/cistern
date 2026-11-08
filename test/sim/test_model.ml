@@ -433,7 +433,8 @@ let tests =
               ; kind= Cistern.Stmt.Private.Read
               ; raw= None
               ; sql= (fun _ -> ["ROWS"])
-              ; text= None }
+              ; text= None
+              ; for_update= false }
               ~run:(fun ctx ->
                 Cistern.Private.Exec.rows ctx (Cistern.Raw.sql "ROWS") (fun _ ->
                     incr decoded ; Ok () ) )

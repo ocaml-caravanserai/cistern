@@ -759,6 +759,8 @@ let exec t ~timeout stmt =
   (* Before each other check: a misuse emits no event. *)
   check_open t ;
   if in_tx t then invalid_arg "Db.exec in the fiber of a Tx" ;
+  if (Stmt.Private.meta stmt).for_update then
+    invalid_arg "Db.exec: a query with for_update runs only in a Tx" ;
   match Stmt.Private.pure_value stmt with
   | Some v ->
       Ok (v ())

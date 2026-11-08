@@ -292,8 +292,7 @@ module Cistern_model__todo :
     ; note= d.note }
 end
 
-(* Stage 2: the namespace module. Query, all, where and filter_by_* come with
-   the queries (phase 2d2). *)
+(* Stage 2: the namespace module. *)
 module Cistern_gen__user = struct
   module M = Cistern.Private.Model
   module U = Cistern.Update
@@ -343,6 +342,10 @@ module Cistern_gen__user = struct
 
     let delete r = M.delete (module Cistern_model__user) r
 
+    let all = M.all (module Cistern_model__user)
+
+    let where e = M.where (module Cistern_model__user) e
+
     let draft ~name ~email ?nick ?age ?(active = true) () :
         Cistern_drafts__user.user =
       {name; email; nick; age; active}
@@ -380,6 +383,15 @@ module Cistern_gen__user = struct
         r
 
     let delete r = M.delete (module Cistern_model__todo) r
+
+    let all = M.all (module Cistern_model__todo)
+
+    let where e = M.where (module Cistern_model__todo) e
+
+    (* An [@index] field, and the key of a Belongs_to (which acts as one). *)
+    let filter_by_title v = where Q.(title ==. v)
+
+    let filter_by_user_id v = where Q.(user_id ==. v)
 
     let draft ?user_id ~title ?(done_ = false) ?note () :
         Cistern_drafts__user.todo =

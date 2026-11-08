@@ -1,0 +1,11 @@
+File "model_where.ml", line 10, characters 27-39:
+10 | let _ = Todo.where User.Q.(name ==. "x")
+                                ^^^^^^^^^^^^
+Error: This expression has type
+         (Cistern_test_models.User_todo.user, bool) Cistern_core.Expr.t
+       but an expression was expected of type
+         (Cistern_test_models.User_todo.Cistern_model__todo.t, bool)
+         Cistern_core.Expr.t
+       Type Cistern_test_models.User_todo.user is not compatible with type
+         Cistern_test_models.User_todo.Cistern_model__todo.t =
+           Cistern_test_models.User_todo.todo

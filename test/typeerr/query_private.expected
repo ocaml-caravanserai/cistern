@@ -1,0 +1,4 @@
+File "query_private.ml", line 8, characters 8-29:
+8 | let _ = Cistern.Query.Private.make
+            ^^^^^^^^^^^^^^^^^^^^^
+Error: Unbound module Cistern.Query.Private

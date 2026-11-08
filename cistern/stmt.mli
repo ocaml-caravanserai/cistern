@@ -32,7 +32,10 @@ module Private : sig
     ; text: (string, string) result option
           (** The SQL text of a raw statement, made once. [Error msg]: a value
               with no literal; the pool gives [Invalid_value] before the
-              checkout. *) }
+              checkout. *)
+    ; for_update: bool
+          (** A read with [FOR UPDATE]: [Db.exec] raises [Invalid_argument]
+              before any event, and [Tx.exec] runs it. {!map} keeps it. *) }
 
   val make :
        meta

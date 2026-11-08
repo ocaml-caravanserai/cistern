@@ -10,7 +10,7 @@ let command = function
   | Write ->
       Cistern_mysql.Outcome.Write
 
-let make kind ast ~run ~rows ~finish =
+let make ?(for_update = false) kind ast ~run ~rows ~finish =
   let text f d =
     match ast with Ok a -> [f d a] | Error m -> ["<Invalid_value: " ^ m ^ ">"]
   in
@@ -19,7 +19,8 @@ let make kind ast ~run ~rows ~finish =
     ; kind
     ; raw= None
     ; sql= text Print.to_sql
-    ; text= (match ast with Ok _ -> None | Error m -> Some (Error m)) }
+    ; text= (match ast with Ok _ -> None | Error m -> Some (Error m))
+    ; for_update }
   in
   Stmt.Private.make meta
     ~run:(fun ctx ->

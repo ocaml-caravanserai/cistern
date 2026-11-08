@@ -12,7 +12,10 @@ let files =
   ; "mix_update"
   ; "starts_with_int"
   ; "starts_with_option"
-  ; "starts_with_opt_string" ]
+  ; "starts_with_opt_string"
+  ; "model_where"
+  ; "model_order_by"
+  ; "query_private" ]
 
 let read path = In_channel.with_open_bin path In_channel.input_all
 
