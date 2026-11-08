@@ -163,16 +163,26 @@ let only_kills events =
 (* The time from the end of the body to the end of with_db, in seconds (review C
    of 1.5c1a, L2). A pool of 1 with kill=true: a connection, then a cancel at
    about 11 ms; the body ends at 300 ms. [after_cancel] runs after the cancel,
-   and [at_end] in a fiber of an outer scope at the end of the body. *)
-let join_case ?(setup = ignore) ?(after_cancel = ignore) ?(at_end = ignore) () =
+   and [at_end] in a fiber of an outer scope at the end of the body. [events]
+   gets the events of the pool, the newest first. With [size], the body cancels
+   that number of statements. *)
+let join_case ?(size = 1) ?(events = ref []) ?(setup = ignore)
+    ?(after_cancel = ignore) ?(at_end = ignore) () =
   D.run (fun _ db ->
       setup db ;
       let body_end = ref (Time.now Mono) and since = ref 0. in
       Fiber.scope (fun s ->
-          Db.with_db ~pool_size:1 (D.config ~kill:true ()) (fun pool ->
+          Db.with_db ~pool_size:size
+            ~on_query:(fun e -> events := T.event_text e :: !events)
+            (D.config ~kill:true ())
+            (fun pool ->
               wait 1 ;
               ignore (Db.exec pool (q "SELECT 1")) ;
-              ignore (cancelled pool "SLEEP 100000") ;
+              Fiber.scope (fun c ->
+                  for _ = 1 to size do
+                    Fiber.fork c (fun () ->
+                        ignore (cancelled pool "SLEEP 100000") )
+                  done ) ;
               after_cancel db ;
               wait 289 ;
               Fiber.fork s (fun () -> at_end db) ;
@@ -182,6 +192,44 @@ let join_case ?(setup = ignore) ?(after_cancel = ignore) ?(at_end = ignore) () =
               (Span.to_ns (Time.diff Mono (Time.now Mono) !body_end))
             /. 1e9 ) ;
       !since )
+
+(* The end of with_db with an entry in the queue (the plan of 1.5, D10 and
+   D10a). A pool of [size] with kill=true. [outer] runs in a fiber of an outer
+   scope from 1 ms, with the pool. The body: an exec (a connection of the pool),
+   then the faults refuse and kill_close=1, then a cancel at about 11 ms: the
+   first try fails and the control connection cannot open again. The body ends
+   at about 311 ms. [around] runs with_db. It gives the time of the end of
+   with_db in seconds, the queue, the Killing slots and the control connections
+   after with_db, the events, and the text of [outer]. *)
+let drain_case ?(size = 1) ?(outer = fun _ _ -> "") ?(around = fun f -> f ()) ()
+    =
+  D.run (fun _ db ->
+      let evs = ref [] and pr = ref None and o = ref "" and ended = ref 0. in
+      let t0 = Time.now Mono in
+      Fiber.scope (fun s ->
+          around (fun () ->
+              Db.with_db ~pool_size:size
+                ~on_query:(fun e -> evs := T.event_text e :: !evs)
+                (D.config ~kill:true ())
+                (fun pool ->
+                  pr := Some (pool_of pool) ;
+                  wait 1 ;
+                  Fiber.fork s (fun () -> o := outer db pool) ;
+                  ignore (Db.exec pool (q "SELECT 1")) ;
+                  db.D.faults.refuse <- true ;
+                  db.D.faults.kill_close <- 1 ;
+                  ignore (cancelled pool "SLEEP 5000") ;
+                  wait 300 ) ;
+              ended :=
+                Int64.to_float (Span.to_ns (Time.diff Mono (Time.now Mono) t0))
+                /. 1e9 ) ) ;
+      let p = Option.get !pr in
+      ( !ended
+      , [ Pool.Private.queue p
+        ; List.init (Pool.Private.killing p) Int64.of_int
+        ; List.init (Pool.Private.control p) Int64.of_int ]
+      , List.rev !evs
+      , !o ) )
 
 let tests =
   group "KILL"
@@ -420,6 +468,44 @@ let tests =
           is_true
             ~msg:(Printf.sprintf "%.3f s after the body" since)
             (since < 0.2) )
+    ; test "the drain uses the state of the killer" (fun () ->
+          (* The first try fails in the killer, and its reopen is refused: the
+             killer waits for its retry at about 311 ms. The drain must wait for
+             that time (not connect at once), and it gives the entry only its
+             last try, which fails too (review C of 1.5c1b, L1). *)
+          let events = ref [] in
+          let since =
+            join_case ~events
+              ~setup:(fun db -> db.D.faults.kill_close <- 2)
+              ~after_cancel:(fun db -> db.D.faults.refuse <- true)
+              ~at_end:(fun db -> db.D.faults.refuse <- false)
+              ()
+          in
+          is_true
+            ~msg:(Printf.sprintf "%.3f s after the body" since)
+            (since >= 0.005 && since < 0.1) ;
+          equal (list string) ["kill dropped 2 failed"]
+            (only_kills (List.rev !events)) )
+    ; test "a try at the limit of the drain: the end at most 2 s later"
+        (fun () ->
+          (* Each KILL reply is late (3 s): each try ends at its limit of 2 s.
+             The killer holds the join until about 2 s; then the drain gives the
+             5 entries their tries of 2 s each, and the try that runs at the
+             limit of the drain (about 17 s) ends at about 18 s (review C of
+             1.5c1b, L2). *)
+          let events = ref [] in
+          let since =
+            join_case ~size:5 ~events
+              ~setup:(fun db -> db.D.faults.kill_ms <- 3000)
+              ()
+          in
+          is_true
+            ~msg:(Printf.sprintf "%.3f s after the body" since)
+            (since >= 16.5 && since < 19.0) ;
+          let kills = only_kills (List.rev !events) in
+          equal int 5 (List.length kills) ;
+          is_true ~msg:(String.concat "; " kills)
+            (String.ends_with ~suffix:"drain_timeout" (List.nth kills 4)) )
     ; test "the control connection: a failed connect, then the backoff"
         (fun () ->
           let r, events =
@@ -611,40 +697,99 @@ let tests =
             (List.filter
                (fun e -> String.starts_with ~prefix:"kill" e)
                (kill_events events) ) )
-    ; test "the end of with_db while the killer cannot connect" (fun () ->
-          let r, after, events =
-            D.run (fun _ db ->
-                let evs = ref [] and pr = ref None in
-                let r =
-                  Db.with_db ~pool_size:1
-                    ~on_query:(fun e -> evs := T.event_text e :: !evs)
-                    (D.config ~kill:true ())
-                    (fun pool ->
-                      pr := Some (pool_of pool) ;
-                      wait 1 ;
-                      (* A connection of the pool first. *)
-                      ignore (Db.exec pool (q "SELECT 1")) ;
-                      db.D.faults.refuse <- true ;
-                      db.D.faults.kill_close <- 1 ;
-                      let o = cancelled pool "SLEEP 5000" in
-                      wait 300 ;
-                      (o, Pool.Private.queue (pool_of pool)) )
-                in
-                let p = Option.get !pr in
-                ( r
-                , [ Pool.Private.queue p
-                  ; List.init (Pool.Private.killing p) Int64.of_int
-                  ; List.init (Pool.Private.control p) Int64.of_int ]
-                , List.rev !evs ) )
+    ; test "the drain past its limit of 15 s" (fun () ->
+          let ended, after, events, outer =
+            drain_case ~size:2
+              ~outer:(fun _ pool ->
+                (* A cancel after the drain: its slot is free at once. *)
+                cancelled ~ms:16_000 pool "SLEEP 100000" )
+              ()
           in
-          equal string "cancelled" (fst r) ;
-          equal (list int64) [2L] (snd r) ;
+          equal string "cancelled" outer ;
+          (* The body ends at about 311 ms: the limit of the drain ends it at
+             about 15.3 s. *)
+          is_true
+            ~msg:(Printf.sprintf "the end at %.3f s" ended)
+            (ended >= 15.0 && ended < 16.0) ;
           (* After with_db: no entry, no Killing slot, no control connection. *)
           equal (list (list int64)) [[]; []; []] after ;
-          equal (list string) ["kill dropped 2 closed"]
-            (List.filter
-               (fun e -> String.starts_with ~prefix:"kill" e)
-               (kill_events events) ) )
+          equal (list string)
+            ["kill dropped 2 drain_timeout"; "kill dropped 3 closed"]
+            (only_kills events) )
+    ; test "the drain sends the entries that remain" (fun () ->
+          let ended, after, events, _ =
+            drain_case
+              ~outer:(fun db _ ->
+                wait 400 ;
+                db.D.faults.refuse <- false ;
+                "" )
+              ()
+          in
+          is_true
+            ~msg:(Printf.sprintf "the end at %.3f s" ended)
+            (ended >= 0.4 && ended < 1.5) ;
+          equal (list (list int64)) [[]; []; []] after ;
+          equal (list string) ["kill 2 killed"] (only_kills events) )
+    ; test "the drain in an outer cancel" (fun () ->
+          let ended, after, events, _ =
+            drain_case
+              ~around:(fun f ->
+                match Fiber.with_timeout Mono (Span.ms 350) f with
+                | () ->
+                    ()
+                | exception Fiber.Timeout ->
+                    () )
+              ~outer:(fun db _ ->
+                wait 400 ;
+                db.D.faults.refuse <- false ;
+                "" )
+              ()
+          in
+          (* The cancel at 350 ms does not stop the drain (its shield). *)
+          is_true
+            ~msg:(Printf.sprintf "the end at %.3f s" ended)
+            (ended >= 0.4 && ended < 1.5) ;
+          equal (list (list int64)) [[]; []; []] after ;
+          equal (list string) ["kill 2 killed"] (only_kills events) )
+    ; test "a waiter of an outer scope fails at once, before the drain (C-M1)"
+        (fun () ->
+          let ended, _, events, outer =
+            drain_case
+              ~outer:(fun _ pool ->
+                wait 20 ;
+                (* The only slot is Killing: the exec waits. *)
+                let t0 = Time.now Mono in
+                let r = T.result_text (Db.exec pool (q "SELECT 2")) in
+                let s = Span.to_ns (Time.diff Mono (Time.now Mono) t0) in
+                Printf.sprintf "%s %b" r (s < 320_000_000L) )
+              ()
+          in
+          equal string "Connection_lost true" outer ;
+          is_true (ended >= 15.0) ;
+          equal (list string)
+            ["kill dropped 2 drain_timeout"]
+            (only_kills events) )
+    ; test "a Kill during the drain: the drain takes it (C-M2)" (fun () ->
+          let _, after, events, outer =
+            drain_case ~size:2
+              ~outer:(fun db pool ->
+                let r = ref "" in
+                Fiber.scope (fun s ->
+                    Fiber.fork s (fun () ->
+                        r := cancelled ~ms:350 pool "SLEEP 5000" ) ;
+                    wait 400 ;
+                    db.D.faults.refuse <- false ) ;
+                (* The drain opens its control connection at the end of its
+                   backoff. *)
+                wait 1000 ;
+                !r ^ " " ^ string_of_int db.D.killed )
+              ()
+          in
+          equal string "cancelled 2" outer ;
+          equal (list (list int64)) [[]; []; []] after ;
+          equal (list string)
+            ["kill 2 killed"; "kill 3 killed"]
+            (List.sort compare (only_kills events)) )
     ; test "a cancel after the shutdown: Kill_dropped Closed" (fun () ->
           let after, events =
             D.run (fun _ _ ->
