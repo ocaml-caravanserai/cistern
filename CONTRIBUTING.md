@@ -36,6 +36,8 @@ make db-down                   # stop each server that runs
 - `make integration-timing` and `make integration-shutdown` run the groups `timing` and `shutdown`. The group `shutdown` stops the server.
 - `make db-errors` compares the error names of the error mapping with `perror` of the three servers.
 
+`make soak SERVER=mysql84 N=50` runs the flaky TLS test of cistern#39 and its socket sibling 50 times. Each soak writes to a new directory `.soak/soak.XXXXXX`, and a failed run keeps its log (`soak-<i>.log`) and the test outputs that the run wrote (`soak-<i>.tests`). `SOAK_ARGS` gives other windtrap filters (`-f "<name>"`).
+
 The workflow `db.yml` runs these targets each night, on request, and on a pull request that changes the files of the test servers. The server targets run on Linux and macOS. `make db-errors` runs only on Linux.
 
 ## Commits

@@ -1,5 +1,6 @@
 _build/
 .db/
+.soak/
 .direnv/
 *.install
 result

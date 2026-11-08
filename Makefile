@@ -31,6 +31,14 @@
 #                       The timing claims (C8a, C8b, C9).
 #   make integration-shutdown SERVER=...
 #                       The claim C8c. It stops the server.
+#   make soak SERVER=... [N=50] [SOAK_ARGS=...]
+#                       Run the tests of SOAK_ARGS (windtrap filters) N
+#                       times. Each soak writes to a new directory
+#                       SOAK_DIR/soak.XXXXXX (SOAK_DIR: default .soak), and
+#                       keeps the output of each failed run: soak-<i>.log,
+#                       and the test outputs of the run in soak-<i>.tests. The default
+#                       tests are the flaky TLS test of cistern#39 and its
+#                       socket sibling.
 #   make db-errors      Compare the names of test/db/errors.tsv with perror
 #                       of the server packages (no server runs).
 #
@@ -117,7 +125,7 @@ OCAML55_MUTANTS := \
 
 .PHONY: help check-windtrap check-scope mutate mutate-all mutate-report \
   mutate-arm check-ocaml55 doc sim-slow db-up db-check db-down db-errors integration \
-  integration-timing integration-shutdown
+  integration-timing integration-shutdown soak
 
 help:
 	@sed -n '1,/^$$/p' Makefile | sed 's/^# \{0,1\}//'
@@ -222,3 +230,19 @@ integration integration-timing integration-shutdown:
 	echo "CISTERN_DB_ENV=$$dir/$(SERVER)/env CISTERN_GROUP=$(GROUP)"; \
 	CISTERN_DB_ENV="$$dir/$(SERVER)/env" CISTERN_GROUP=$(GROUP) \
 	  ./_build/default/test/integration/integration.exe
+
+# The soak of a flaky test (phase 5c, tools/soak.sh). The nightly db.yml runs
+# it on mysql84. A failed run keeps its output, so that a later run does not
+# write over it (cistern#39 lost the message of its one failure).
+N ?= 50
+SOAK_DIR ?= .soak
+SOAK_ARGS ?= -f "the pool on TLS: KILL CONNECTION of an idle connection" -f "a killed idle connection: a new connection, no error"
+soak:
+	@test -n "$(SERVER)" || { echo "Give SERVER=mysql84, mariadb114 or mariadb118."; exit 2; }
+	$(DUNE) build test/integration/integration.exe
+	@dir="$(or $(DB_DIR),.db)"; \
+	case "$$dir" in /*) ;; *) dir="$$(pwd)/$$dir" ;; esac; \
+	echo "CISTERN_DB_ENV=$$dir/$(SERVER)/env N=$(N)"; \
+	tools/soak.sh "$(SOAK_DIR)" "$(N)" _build/_tests/integration \
+	  env CISTERN_DB_ENV="$$dir/$(SERVER)/env" CISTERN_GROUP=deterministic \
+	  ./_build/default/test/integration/integration.exe $(SOAK_ARGS)
