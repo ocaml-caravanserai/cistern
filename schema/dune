@@ -1,0 +1,9 @@
+; DESIGN.md, "Libraries". The description of the models and its checks, with
+; no dependency but cistern.names, so that ppx_cistern (phase 3) can link it.
+
+(library
+ (name cistern_schema)
+ (public_name cistern.schema)
+ (libraries cistern.names)
+ (instrumentation
+  (backend ppx_windtrap.mutate)))

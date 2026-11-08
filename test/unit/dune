@@ -9,6 +9,7 @@
   cistern.core
   cistern_test_models
   cistern.names
+  cistern.schema
   cistern.mysql
   weft
   weft.flow

@@ -243,7 +243,8 @@ CI jobs:
 cistern/
   flake.nix, flake.lock, dune-project, Makefile, test/certgen
   names/    (cistern.names)   The rules of names, the names of indexes (only the stdlib)
-  core/     (cistern.core)    Value, Dialect, literals, Schema, model AST, Decoder, Error, Event, MODEL
+  schema/   (cistern.schema)  Schema: the description of the models and its checks (only cistern.names)
+  core/     (cistern.core)    Value, Dialect, literals, Schema (an alias), model AST, Decoder, Error, Event, MODEL
   sql/      (cistern.sql)     SQL AST, compiler from the model AST, serializer for each dialect, DDL
   mysql/    (cistern.mysql)   Config and URL parser, Tls_setup, connect, TLS, authentication, text protocol, sessions
   cistern/  (cistern)         Typed API, Raw, pool, killer, Tx, execution  (depends on core, sql, mysql)
@@ -251,8 +252,9 @@ cistern/
   test/  unit, prop, stateful, expect, sim, integration, nounix, readme, typeerror, ocaml55
 ```
 
-- Two opam packages: `cistern` (the five libraries) and `ppx_cistern`.
+- Two opam packages: `cistern` (the six libraries) and `ppx_cistern`.
 - `cistern.names` has an empty `libraries` field, thus dune refuses a dependency. The ppx of phase 3 can link it with no weft and no ptime. An application links `cistern`.
+- `cistern.schema` (phase 3a0) holds `Schema` with no dependency but `cistern.names`, so that the ppx runs the same `Schema.check` at compile time as `push_schema` at run time. `Cistern_core.Schema` is an alias of it, so no path changes.
 - With one client, version 1 has no `CONN` interface and no `Driver.t`. A later PostgreSQL driver brings the abstraction back.
 
 ## User API
@@ -647,6 +649,8 @@ Error 1153 (packet too large): the server did not run the statement, but it clos
   9. `has_many`: the other model is in the list, with exactly one `belongs_to` to this model (version 1 has no `via`).
   10. The names of the unique and plain indexes of a table are unique after the ASCII fold.
   11. The foreign key names of all the models are unique after the ASCII fold, because a constraint name is unique in the database. `check` cannot see the foreign keys of tables outside the list.
+
+  `Schema.faults` gives the same messages as structured faults (phase 3a0): each fault has the model (or none, for a fault of the list), the models of its cause (the model, or for a fault of the list each model of the cause: two models with one name, two equal table names, two equal foreign key names), the list of the fields of its cause (none, one, or more: two columns equal after the fold, several keys, two equal index names), and a flag for a fault of the table name. `check` formats them. The ppx puts each fault at the location of its first field, of the `[@@table]` attribute, or of the type.
 
   A group of equal names gives one message with all the members. A rule that needs a part that another rule refuses does not run. The fold is ASCII only: the servers also fold other letters (`É` to `é`), thus two such names pass `check`, and the server refuses the DDL with 1060 (documented). An index name with a non-ASCII character always has the hash, thus no 1061. The fold of the servers differs: MariaDB 11.8 accepts the Kelvin sign (U+212A) and `k` as two columns. The messages quote names with `Cistern_names.quote`: valid UTF-8 stays as it is, and control characters and invalid bytes become escapes.
 - The typed API builds a model-level untyped AST. `cistern.sql` compiles it to a SQL AST and serializes it for the dialect of the connection.
@@ -1287,5 +1291,7 @@ Phase 0 is done (2026-11-07): ocaml-caravanserai/cistern#1 (the skeleton), #2, #
 Phases 1.1, 1.2 and 1.3 are done (2026-11-07): ocaml-caravanserai/cistern#6 to #20. Phase 1.4 (TLS): 1.4a is cistern#21, 1.4b1 (TLS on `Connection`) is cistern#22, and 1.4b2 (the pool and the storm on TLS) is cistern#23 (merged 2026-11-08). 1.4c (the integration tests, the claims C29 to C31, and MariaDB 11.4 on each PR) is cistern#24 (merged 2026-11-08), and it completes phase 1.4. Phase 1.5 (cancel with `KILL`): 1.5a (the `Killing` slots of `Pool_state`) is cistern#25, 1.5b (round trip 3 with the identity and the privilege check, `Connection.kill` and the events of `KILL`) is cistern#26, 1.5c1a (the kill queue, the killer with its control connection, and the kill requests of `Pool.exec` and `Tx`) is cistern#27, 1.5c1b (the drain at the end of `with_db`) is cistern#28, and 1.5c2 (the storms with `KILL`) is cistern#29 (all merged 2026-11-08). 1.5d (the integration tests of `KILL` and the claims C32 to C35) completes phase 1.5 and phase 1.
 
 Phase 2 (the typed API with hand-written models): 2a0 (the events with no message of a server error) is cistern#31, 2a (`Field`, the model AST, `Expr` with the two-valued filters, `Update`, `module type MODEL` and the rule of lowercase table names) is cistern#32, 2b (the SQL AST, the compiler and the serializer of `cistern.sql`, with the suite `test/expect`) is cistern#33, 2c (the DDL text and the comparison of `check_schema`) is cistern#34, 2d1 (`Model`, the one-row operations, the typed statements and the hand-written models of `test/model`) is cistern#35, 2d2 (`Query`, `all`, `where`, `filter_by_*`, the finishers, the bulk forms and the check of `for_update`) is cistern#36, and 2e (`Db.push_schema` and `Db.check_schema`) is cistern#37 (all merged 2026-11-08). 2f (the integration tests of the typed API and the claim C36) completes phase 2.
+
+Phase 3 (`ppx_cistern` for models without relations): 3a0 moves `Schema` into the library `cistern.schema`, with the structured faults of `Schema.faults`.
 
 Round 5 found 3 critical defects. Two of them were in fixes of round 4 (the session reset and the killer drain), and one was a gap from an earlier draft (`Decimal`). Most of the critical and major findings are in the cancel path with `KILL`. Thus phases 1.1 to 1.4 ship without `KILL` (`kill=false`), and phase 1.5 adds it. The remaining risk is in server behavior that only a real server can show (the "not verified" claims). Phase 1.1 tests these claims first.
