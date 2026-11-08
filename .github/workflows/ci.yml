@@ -68,6 +68,10 @@ jobs:
       - name: Format
         if: ${{ steps.nix.outcome == 'success' && !cancelled() && runner.os == 'Linux' }}
         run: nix develop -c dune build @fmt
+      # The odoc of the packages (phase 5a): each odoc warning is an error.
+      - name: Doc
+        if: ${{ steps.nix.outcome == 'success' && !cancelled() && runner.os == 'Linux' }}
+        run: nix develop -c make doc
       - name: Format of flake.nix
         if: ${{ steps.nix.outcome == 'success' && !cancelled() && runner.os == 'Linux' }}
         run: nix fmt -- --check flake.nix

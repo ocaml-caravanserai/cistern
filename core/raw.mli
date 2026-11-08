@@ -16,16 +16,16 @@ val sql : string -> t
     never text from a user. *)
 
 val v : Value.t -> t
-(** [v x] is the literal of [x] ({!Literal.add}), with a space before and after
-    it. Thus [sql "LIMIT" ++ v (Int 5L)] gives ["LIMIT 5 "]. *)
+(** [v x] is the literal of [x] ({!Cistern_core.Literal.add}), with a space
+    before and after it. Thus [sql "LIMIT" ++ v (Int 5L)] gives ["LIMIT 5 "]. *)
 
 val ( ++ ) : t -> t -> t
 (** [a ++ b] is [a], then [b]. It takes constant time. *)
 
 val to_string : t -> (string, string) result
 (** [to_string r] is the SQL text of [r]. It is [Error msg] if a value has no
-    literal (see {!Literal.add}). The first such value gives [msg], which never
-    contains the value. The caller makes
+    literal (see {!Cistern_core.Literal.add}). The first such value gives [msg],
+    which never contains the value. The caller makes
     [Invalid_value {code = None; message = msg}] from it. *)
 
 val redacted : t -> string

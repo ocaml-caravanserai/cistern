@@ -13,15 +13,17 @@ val create_table : Dialect.t -> Schema.model list -> Schema.model -> string
 
     - One column for each field, in order:
       [`c` <type> NULL|NOT NULL [AUTO_INCREMENT]], with the type of
-      {!Schema.column_type}. No [DEFAULT] clause.
-    - [PRIMARY KEY], then the [UNIQUE KEY] and [KEY] of {!Schema.indexes}.
-    - The foreign keys of {!Schema.foreign_keys} [models m]:
+      {!Cistern_schema.Schema.val-column_type}. No [DEFAULT] clause.
+    - [PRIMARY KEY], then the [UNIQUE KEY] and [KEY] of
+      {!Cistern_schema.Schema.indexes}.
+    - The foreign keys of {!Cistern_schema.Schema.foreign_keys} [models m]:
       [CONSTRAINT `n` FOREIGN KEY (`c`) REFERENCES `t` (`k`) ON DELETE RESTRICT].
     - [ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=<collation>
-       ROW_FORMAT=DYNAMIC], with {!Dialect.collation}.
+       ROW_FORMAT=DYNAMIC], with {!Cistern_core.Dialect.collation}.
 
     The text has no value, thus it is also the SQL of the event. Call
-    {!Schema.check} first: [create_table] does not check the models. *)
+    {!Cistern_schema.Schema.check} first: [create_table] does not check the
+    models. *)
 
 (** A row of [information_schema.COLUMNS] (DESIGN.md, "DDL"). *)
 type column =

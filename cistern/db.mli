@@ -38,10 +38,9 @@ val with_db :
     domains, and a Fortuna generator is not (the pool connects from fibers on
     many domains).
 
-    @raise Invalid_argument
-      if [pool_size] is not 1 to 1000, or [max_lifetime] or [checkout_timeout]
-      is not positive, or if [config] needs TLS and no default generator is set
-      (before any fiber starts). *)
+    It raises [Invalid_argument] if [pool_size] is not 1 to 1000, or
+    [max_lifetime] or [checkout_timeout] is not positive, or if [config] needs
+    TLS and no default generator is set (before any fiber starts). *)
 
 val exec :
   ?timeout:Weft.Span.t -> t -> 'a Stmt.t -> ('a, Cistern_core.Error.t) result
@@ -80,9 +79,9 @@ val push_schema :
     the statements before the error exist, and [push_schema] can run again. An
     empty list does nothing.
 
-    @raise Invalid_argument
-      after {!with_db}, in the fiber of a [Tx] (DDL commits the transaction and
-      waits for its metadata lock), or for a model that the checks refuse. *)
+    It raises [Invalid_argument] after {!with_db}, in the fiber of a [Tx] (DDL
+    commits the transaction and waits for its metadata lock), or for a model
+    that the checks refuse. *)
 
 val check_schema :
   t -> (module Cistern_core.Model_intf.MODEL) list -> (unit, string list) result
@@ -97,8 +96,8 @@ val check_schema :
 
     @raise Cistern_error
       for an error of the pool, the connection or the server: it is not a
-      difference.
-    @raise Invalid_argument after {!with_db} or in the fiber of a [Tx]. *)
+      difference. It raises [Invalid_argument] after {!with_db} or in the fiber
+      of a [Tx]. *)
 
 val transaction :
   ?timeout:Weft.Span.t -> t -> (Tx.t -> 'a) -> ('a, Cistern_core.Error.t) result
@@ -126,8 +125,8 @@ val transaction :
     waits for a second connection (with [pool_size = 1], until
     [checkout_timeout]).
 
-    @raise Invalid_argument
-      in the fiber of a transaction, and after the end of {!with_db}. *)
+    It raises [Invalid_argument] in the fiber of a transaction, and after the
+    end of {!with_db}. *)
 
 val exec_exn : ?timeout:Weft.Span.t -> t -> 'a Stmt.t -> 'a
 (** [exec_exn] is {!exec}, and raises [Error.Cistern_error] for an error. *)

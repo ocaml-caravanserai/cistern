@@ -21,12 +21,12 @@ val order_by : ('m, _) Field.t -> [`Asc | `Desc] -> 'm t -> 'm t
     offset, the key of the model goes after the keys of the order. *)
 
 val limit : int -> 'm t -> 'm t
-(** @raise Invalid_argument for a negative limit. *)
+(** It raises [Invalid_argument] for a negative limit. *)
 
 val offset : int -> 'm t -> 'm t
 (** Without a limit: [LIMIT 18446744073709551615].
 
-    @raise Invalid_argument for a negative offset. *)
+    It raises [Invalid_argument] for a negative offset. *)
 
 val for_update : 'm t -> 'm t
 (** [FOR UPDATE]: only in a [Tx]. [Db.exec] raises [Invalid_argument] for a
@@ -52,9 +52,9 @@ val include_ : ('m, _) Relation.t -> 'm t -> 'm t
 
     The keys are compared with {!Value.equal}. [include_] never fills the
     inverse relation. Each command emits its own event ([?] for each key), with
-    no event of the statement ({!Stmt.Private.meta}). {!Stmt.to_sql} shows the
-    keys as [<keys>]. Two [include_] give two more queries, in order. {!count}
-    and {!exists} ignore [include_]. *)
+    no event of the statement ({!Stmt.Private.type-meta}). {!Stmt.to_sql} shows
+    the keys as [<keys>]. Two [include_] give two more queries, in order.
+    {!count} and {!exists} ignore [include_]. *)
 
 val to_list : 'm t -> 'm list Stmt.t
 (** The rows, in the order of the server. *)
@@ -74,17 +74,16 @@ val update : 'm Update.t -> 'm t -> int Stmt.t
     the limit of [q], and gives the matched rows. With no filter, it changes the
     whole table.
 
-    @raise Invalid_argument
-      when the statement is made: if [u] sets the key or one column two times,
-      or if [q] has an offset, [for_update], [for_share] or [include_]. *)
+    It raises [Invalid_argument] when the statement is made: if [u] sets the key
+    or one column two times, or if [q] has an offset, [for_update], [for_share]
+    or [include_]. *)
 
 val delete : 'm t -> int Stmt.t
 (** [delete q] deletes the rows of [q], with the order and the limit of [q], and
     gives the count of the rows. With no filter, it deletes all the rows.
 
-    @raise Invalid_argument
-      when the statement is made: if [q] has an offset, [for_update],
-      [for_share] or [include_]. *)
+    It raises [Invalid_argument] when the statement is made: if [q] has an
+    offset, [for_update], [for_share] or [include_]. *)
 
 (** For the library ([Model.all]). *)
 module Private : sig

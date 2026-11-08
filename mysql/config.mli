@@ -36,14 +36,20 @@ type tls =
 type t
 
 val address : t -> address
+(** The address of the server: a TCP host and port, or a Unix socket. *)
 
 val user : t -> string
+(** The user of the server. *)
 
 val password : t -> string
+(** The password. No printer of the library shows it. *)
 
 val database : t -> string
+(** The database of the session. The reset of a session (at the checkout of a
+    dirty connection) selects it again. *)
 
 val tls : t -> tls
+(** The TLS mode, with the CA and the fingerprint. *)
 
 val authenticator : t -> X509.Authenticator.t option
 (** The authenticator of {!make}. A URL has none. *)

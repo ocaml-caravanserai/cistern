@@ -24,10 +24,15 @@ module Field : sig
   type ('m, 'a) t = ('m, 'a) Cistern_core.Field.t
 
   val table : (_, _) t -> string
+  (** [table f] is the table of the model of [f]. *)
 
   val column : (_, _) t -> string
+  (** [column f] is the column of [f] ([[@column]], or the name of the field).
+  *)
 
   val nullable : (_, _) t -> bool
+  (** [nullable f] is true for a field with an [option] type ([NULL] in the
+      table). *)
 
   val get : ('m, 'a) t -> 'm -> 'a
   (** [get f r] is the value of [f] in the record [r]. *)
@@ -55,8 +60,11 @@ module Update : sig
   type 'm t = 'm Cistern_core.Update.t
 
   val set : ('m, 'a) Field.t -> 'a -> 'm t
+  (** [set f v] sets the field [f] to [v]. *)
 
   val ( & ) : 'm t -> 'm t -> 'm t
+  (** [a & b] sets the fields of [a] and of [b]. An update that sets one column
+      two times gives [Invalid_argument] when its statement is made. *)
 end
 
 (** The queries (DESIGN.md, "Core user types"), with no [Private]: only the
@@ -104,6 +112,8 @@ module Relation : sig
   type ('m, 'r) t = ('m, 'r) Private.Relation.t
 
   val name : (_, _) t -> string
+  (** [name r] is the name of the relation field. *)
 
   val kind : (_, _) t -> [`Has_many | `Belongs_to]
+  (** [kind r] is the kind of the relation. *)
 end

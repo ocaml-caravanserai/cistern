@@ -26,9 +26,8 @@ val create :
 (** [create ...] is an open pool with no connection. It reads [Time.now Mono]:
     call it in a fiber.
 
-    @raise Invalid_argument
-      if [pool_size] is not 1 to 1000, or [max_lifetime] or [checkout_timeout]
-      is not positive. *)
+    It raises [Invalid_argument] if [pool_size] is not 1 to 1000, or
+    [max_lifetime] or [checkout_timeout] is not positive. *)
 
 val opener : t -> unit
 (** [opener t] is the body of the opener daemon: it starts the connects (at most
@@ -92,8 +91,8 @@ val with_conn :
     the pool ({!now}). Only a bug of Cistern raises out of [f]: then the entry
     is discarded, and the exception goes up.
 
-    @raise Invalid_argument
-      "Db.t used after with_db" at a checkout on a closed pool. *)
+    It raises [Invalid_argument] "Db.t used after with_db" at a checkout on a
+    closed pool. *)
 
 val now : t -> Weft.Span.t
 (** The time of the pool: the span since its origin. *)
@@ -118,7 +117,7 @@ val address : Cistern_mysql.Config.t -> string
 (** The address of a [Connect] event: [host:port] or the path of the socket. *)
 
 val check_open : t -> unit
-(** @raise Invalid_argument "Db.t used after with_db" after {!shutdown}. *)
+(** It raises [Invalid_argument] "Db.t used after with_db" after {!shutdown}. *)
 
 (** {1 The fibers that hold a transaction (phase 1.3)} *)
 
@@ -141,9 +140,8 @@ val exec :
     statement"), and emits exactly one [Query] event, except on the paths of a
     misuse ([Invalid_argument]) or of a bug exception.
 
-    @raise Invalid_argument
-      "Db.t used after with_db" after {!shutdown}, and "Db.exec in the fiber of
-      a Tx" in the fiber of a [Tx]. *)
+    It raises [Invalid_argument] "Db.t used after with_db" after {!shutdown},
+    and "Db.exec in the fiber of a Tx" in the fiber of a [Tx]. *)
 
 val killer : t -> unit
 (** [killer t] is the body of the killer daemon (DESIGN.md, "Cancel"): it opens

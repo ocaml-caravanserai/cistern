@@ -13,8 +13,10 @@ module type MODEL = sig
   type draft
 
   val schema : Schema.model
+  (** The model of the type: its table, its fields and its relations. *)
 
   val key : (t, key) Field.t
+  (** The field of the [[@key]]. *)
 
   val fields : t Field.any list
   (** The column fields, in the order of the record and of [schema.fields]. *)

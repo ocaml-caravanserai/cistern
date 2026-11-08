@@ -10,6 +10,8 @@
 #                       Run SUITE with one mutant armed.
 #   make check-ocaml55  The OCaml 5.5 check of test/ocaml55/dune.
 #   make check-scope    The scope of the gate (tools/check-scope.sh).
+#   make doc            The odoc of the packages. Each warning of odoc is
+#                       an error (the file dune at the root). CI runs it.
 #   make sim-slow       The slow tests: the storm of 1000 fibers of the sim
 #                       suite, and random seeds in the stateful suite
 #                       (CISTERN_SLOW). Not in the gate.
@@ -114,7 +116,7 @@ OCAML55_MUTANTS := \
   test/ocaml55/ocaml55.ml:28:49:sub
 
 .PHONY: help check-windtrap check-scope mutate mutate-all mutate-report \
-  mutate-arm check-ocaml55 sim-slow db-up db-check db-down db-errors integration \
+  mutate-arm check-ocaml55 doc sim-slow db-up db-check db-down db-errors integration \
   integration-timing integration-shutdown
 
 help:
@@ -129,6 +131,11 @@ check-windtrap:
 
 check-scope:
 	@tools/check-scope.sh $(SUITES)
+
+# The odoc of the packages (phase 5a). The env stanza of the file dune at the
+# root makes each warning of odoc an error.
+doc:
+	$(DUNE) build @doc
 
 # The build comes first, thus a compile error stops the target. The run
 # removes the old verdict files. CI runs this target on each pull request.

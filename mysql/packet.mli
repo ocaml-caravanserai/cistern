@@ -40,7 +40,7 @@ val read : Weft_flow.Reader.t -> seq:int -> (string, error) result
 (** [read r ~seq] reads one packet, and gives its payload if its sequence id is
     [seq]. It consumes the packet also on an error, except [Too_long] (the
     connection is then broken). It raises the exceptions of
-    {!Weft_flow.Reader.ensure}, for example [End_of_file] at the end of the
+    [Weft_flow.Reader.ensure], for example [End_of_file] at the end of the
     stream. *)
 
 val write :
@@ -49,8 +49,8 @@ val write :
     It does not flush. If [body] raises, the packet is dropped and the exception
     goes up.
 
-    @raise Weft_flow.Writer.Too_large
-      if the payload has more than [0xFFFFFE] bytes. *)
+    It raises [Weft_flow.Writer.Too_large] if the payload has more than
+    [0xFFFFFE] bytes. *)
 
 val query_fits : max_allowed_packet:int -> sql_length:int -> bool
 (** [query_fits ~max_allowed_packet ~sql_length] is true if a [COM_QUERY] with

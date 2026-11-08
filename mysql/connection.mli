@@ -243,9 +243,9 @@ val stale : t -> bool
     [close_notify]). A TLS record with no data (a session ticket) is not stale.
     A stale connection is broken. It waits for nothing.
 
-    @raise Weft.Fiber.Cancelled
-      after the connection breaks, for a cancel in [read_now] (the lock of a TLS
-      session). Each other exception also breaks the connection first. *)
+    It raises [Weft.Fiber.Cancelled] after the connection breaks, for a cancel
+    in [read_now] (the lock of a TLS session). Each other exception also breaks
+    the connection first. *)
 
 val abort : t -> bool
 (** [abort t] breaks the connection and closes the flow. It sends nothing, never

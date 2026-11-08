@@ -33,7 +33,7 @@ val get_by : (module M : MODEL) -> (M.t, 'a) Field.t -> 'a -> M.t Stmt.t
     [get_by_<field>] of a nullable field takes the value with no [option] and
     gives [Some v] here.
 
-    @raise Invalid_argument if the value of [v] is [Null]. *)
+    It raises [Invalid_argument] if the value of [v] is [Null]. *)
 
 val find_by : (module M : MODEL) -> (M.t, 'a) Field.t -> 'a -> M.t option Stmt.t
 (** [find_by] is [get_by] with [None] for no row. *)
@@ -85,9 +85,8 @@ val update : (module M : MODEL) -> M.t Update.t list -> M.t -> M.t Stmt.t
     with [&] first. No matched row gives [Not_found]. An empty list gives [r]
     with no checkout, no command and no event ({!Stmt.Private.pure}).
 
-    @raise Invalid_argument
-      if [us] sets the key, or sets one column two times, also across the list.
-*)
+    It raises [Invalid_argument] if [us] sets the key, or sets one column two
+    times, also across the list. *)
 
 val delete : (module M : MODEL) -> M.t -> unit Stmt.t
 (** [delete (module M) r] deletes the row of the key of [r]. No row gives

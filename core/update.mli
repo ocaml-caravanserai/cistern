@@ -19,11 +19,11 @@ val assignments : 'm t -> (string * Value.t) list
     statement of an update calls it when it is made. A column occurs only one
     time, thus the order of the assignments on the server does not matter.
 
-    @raise Invalid_argument if [u] sets the key, or sets one column two times.
-*)
+    It raises [Invalid_argument] if [u] sets the key, or sets one column two
+    times. *)
 
 val apply : 'm t -> 'm -> 'm
 (** [apply u r] is [r] with the changes of [u], made with {!Field.set}.
 
-    @raise Invalid_argument
-      as {!assignments}: if [u] sets the key, or sets one column two times. *)
+    It raises [Invalid_argument] as {!assignments}: if [u] sets the key, or sets
+    one column two times. *)

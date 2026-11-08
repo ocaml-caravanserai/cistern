@@ -42,5 +42,5 @@ type error =
 val read : Weft_flow.Reader.t -> seq:int -> (reply * int, error) result
 (** [read r ~seq] reads one reply. Its first packet has the sequence id [seq].
     It gives the reply and the sequence id of the packet after it. It raises the
-    exceptions of {!Weft_flow.Reader.ensure}. After an [error], the connection
-    is broken. *)
+    exceptions of [Weft_flow.Reader.ensure]. After an [error], the connection is
+    broken. *)
