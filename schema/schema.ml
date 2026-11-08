@@ -142,23 +142,27 @@ type fault =
   { model: string option
   ; models: string list
   ; fields: string list
+  ; relation: string option
   ; table: bool
   ; text: string }
 
-(* A fault of the model [m], with the fields [fs] if any. *)
-let fault ?(fields = []) ?(table = false) (m : model) text =
+(* A fault of the model [m], with the fields [fs] and the relation of its cause,
+   if any. *)
+let fault ?(fields = []) ?relation ?(table = false) (m : model) text =
   { model= Some m.name
   ; models= [m.name]
   ; fields= List.map (fun (f : field) -> f.name) fields
+  ; relation
   ; table
   ; text }
 
 (* A fault of the list, not of one model, with the models of its cause. *)
 let global ?(table = false) models text =
-  {model= None; models; fields= []; table; text}
+  {model= None; models; fields= []; relation= None; table; text}
 
-(* Rule 8 and rule 9 for the relation [r] of [m]. *)
+(* Rule 8 and rule 9 for the relation [r] of [m]. Each fault has [r]. *)
 let relation_faults models (m : model) r =
+  let fault ?fields m text = fault ?fields ~relation:(relation_name r) m text in
   let here =
     Printf.sprintf "model %s, relation %s" (q m.name) (q (relation_name r))
   in
@@ -334,7 +338,7 @@ let model_faults models (m : model) =
         let field = field_named m name in
         if count > 1 || Option.is_some field then
           Some
-            (fault m ~fields:(Option.to_list field)
+            (fault m ~fields:(Option.to_list field) ~relation:name
                (Printf.sprintf "model %s: the name %s is used by %s" (q m.name)
                   (q name)
                   ( ( if count > 1 then Printf.sprintf "%d relations" count
@@ -344,13 +348,31 @@ let model_faults models (m : model) =
       (distinct (List.map relation_name m.relations))
   in
   let shared_keys =
-    List.map
+    List.concat_map
       (fun g ->
-        fault m
-          ~fields:(Option.to_list (field_named m (List.hd g)))
-          (Printf.sprintf "model %s: %d Belongs_to use the key %s" (q m.name)
-             (List.length g)
-             (q (List.hd g)) ) )
+        let key = List.hd g in
+        (* Each Belongs_to after the first on the key makes a conflict. *)
+        match
+          List.filter_map
+            (function
+              | Belongs_to {name; key= k; _} when k = key ->
+                  Some name
+              | _ ->
+                  None )
+            m.relations
+        with
+        | first :: rest ->
+            List.map
+              (fun r ->
+                fault m ~relation:r
+                  ~fields:(Option.to_list (field_named m key))
+                  (Printf.sprintf
+                     "model %s, relation %s: the key %s is also the key of the \
+                      Belongs_to %s"
+                     (q m.name) (q r) (q key) (q first) ) )
+              rest
+        | [] ->
+            [] )
       (groups Fun.id (belongs_to_keys m))
   in
   let named = names = [] && columns = [] in

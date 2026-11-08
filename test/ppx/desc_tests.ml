@@ -198,6 +198,7 @@ let tests =
             { Src.Schema.model= None
             ; models
             ; fields= []
+            ; relation= None
             ; table= false
             ; text= "text" }
           in

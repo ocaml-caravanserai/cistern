@@ -17,6 +17,8 @@ module Field = Cistern_core.Field
 module Expr = Cistern_core.Expr
 module Update = Cistern_core.Update
 module Query = Query
+module Deferred = Cistern_core.Deferred
+module Relation = Relation
 
 module type MODEL = Cistern_core.Model_intf.MODEL
 
@@ -33,6 +35,8 @@ module Private = struct
   module Schema = Cistern_core.Schema
   module Decoder = Cistern_core.Decoder
   module Encode = Cistern_core.Encode
+  module Deferred = Cistern_core.Deferred
+  module Relation = Relation
   module Model = Model
   module Query = Query
   module Schema_ops = Schema_ops

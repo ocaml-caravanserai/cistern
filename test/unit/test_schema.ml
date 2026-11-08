@@ -343,7 +343,19 @@ let checks =
     , [ simple "p"
       ; simple "q"
       ; model "b" [id; field "x" Int64] ~relations:[to_ "p" "x"; to_ "q" "x"] ]
-    , ["model \"b\": 2 Belongs_to use the key \"x\""] )
+    , [ "model \"b\", relation \"to_q\": the key \"x\" is also the key of the \
+         Belongs_to \"to_p\"" ] )
+  ; ( "rule 8: three Belongs_to on one key, a fault for each after the first"
+    , [ simple "p"
+      ; simple "q"
+      ; simple "r"
+      ; model "b"
+          [id; field "x" Int64]
+          ~relations:[to_ "p" "x"; to_ "q" "x"; to_ "r" "x"] ]
+    , [ "model \"b\", relation \"to_q\": the key \"x\" is also the key of the \
+         Belongs_to \"to_p\""
+      ; "model \"b\", relation \"to_r\": the key \"x\" is also the key of the \
+         Belongs_to \"to_p\"" ] )
   ; ( "names in messages keep UTF-8, and escape controls"
     , [model "café" []; model "a\nb" ~table:"ab" []; simple "café" ~table:"c2"]
     , [ "2 models have the name \"café\""
@@ -478,8 +490,9 @@ let checks =
       ; "model \"b\": the name \"b \" ends with white space" ] ) ]
 
 (* The place of each fault (phase 3a0): the model, the models of the cause, the
-   fields and the table flag, for each row of [checks], in the same order. A
-   case checks that the names are the names of [checks]. *)
+   fields, the table flag and the relation of the cause (phase 4a), for each row
+   of [checks], in the same order. A case checks that the names are the names of
+   [checks]. *)
 let places =
   [ ("user and todo", [])
   ; ("an optional Belongs_to", [])
@@ -503,30 +516,35 @@ let places =
   ; ("rule 6: a unique key", ["a (a) [id] false"])
   ; ("rule 6: an indexed key", ["a (a) [id] false"])
   ; ("rule 6: unique and index", ["a (a) [x] false"])
-  ; ("rule 7: relation names", ["a (a) [] false"])
-  ; ("rule 7: a relation with the name of a field", ["a (a) [u] false"])
-  ; ("rule 7: two relations and a field", ["a (a) [u] false"])
+  ; ("rule 7: relation names", ["a (a) [] false relation r"])
+  ; ( "rule 7: a relation with the name of a field"
+    , ["a (a) [u] false relation u"] )
+  ; ("rule 7: two relations and a field", ["a (a) [u] false relation u"])
   ; ( "rule 7: the names in the order of the relations"
-    , ["a (a) [] false"; "a (a) [] false"] )
+    , ["a (a) [] false relation z"; "a (a) [] false relation b"] )
   ; ("rule 5 comes before rule 6", ["a (a) [e1, e2] false"; "a (a) [y] false"])
-  ; ("rule 8: a Belongs_to on its own key", ["t (t) [id] false"])
+  ; ("rule 8: a Belongs_to on its own key", ["t (t) [id] false relation r"])
   ; ("rule 8: a Belongs_to to its own model", [])
   ; ( "rule 8: two Belongs_to on one key, and no rule 11 message"
-    , ["b (b) [x] false"] )
+    , ["b (b) [x] false relation to_q"] )
+  ; ( "rule 8: three Belongs_to on one key, a fault for each after the first"
+    , ["b (b) [x] false relation to_q"; "b (b) [x] false relation to_r"] )
   ; ( "names in messages keep UTF-8, and escape controls"
     , ["- (café, café) [] false"; "café (café) [] false"; "a\nb (a\nb) [] false"]
     )
-  ; ("rule 8: no key field", ["a (a) [] false"])
-  ; ("rule 8: no target", ["a (a) [] false"])
-  ; ("rule 8: no key field and no target", ["a (a) [] false"; "a (a) [] false"])
-  ; ("rule 8: references a field that is not the key", ["a (a) [u] false"])
+  ; ("rule 8: no key field", ["a (a) [] false relation to_a"])
+  ; ("rule 8: no target", ["a (a) [] false relation to_zz"])
+  ; ( "rule 8: no key field and no target"
+    , ["a (a) [] false relation to_zz"; "a (a) [] false relation to_zz"] )
+  ; ( "rule 8: references a field that is not the key"
+    , ["a (a) [u] false relation r"] )
   ; ( "rule 8: no key field, and not the key"
-    , ["a (a) [] false"; "a (a) [] false"] )
-  ; ("rule 8: different types", ["a (a) [u] false"])
+    , ["a (a) [] false relation r"; "a (a) [] false relation r"] )
+  ; ("rule 8: different types", ["a (a) [u] false relation to_p"])
   ; ("rule 8: a target with no key", ["p (p) [] false"])
-  ; ("rule 9: no target", ["a (a) [] false"])
-  ; ("rule 9: no opposite", ["a (a) [] false"])
-  ; ("rule 9: two opposites", ["a (a) [] false"])
+  ; ("rule 9: no target", ["a (a) [] false relation h"])
+  ; ("rule 9: no opposite", ["a (a) [] false relation h"])
+  ; ("rule 9: two opposites", ["a (a) [] false relation h"])
   ; ("rule 10: a collision of the hash", ["t (t) [x, y] false"])
   ; ( "rule 10: a collision of the hash, with names that differ in case"
     , ["t (t) [x, y] false"] )
@@ -544,11 +562,12 @@ let places =
       ; "b (b) [] true" ] ) ]
 
 let place (f : fault) =
-  Printf.sprintf "%s (%s) [%s] %b"
+  Printf.sprintf "%s (%s) [%s] %b%s"
     (Option.value f.model ~default:"-")
     (String.concat ", " f.models)
     (String.concat ", " f.fields)
     f.table
+    (match f.relation with Some r -> " relation " ^ r | None -> "")
 
 let tests =
   group "Schema"

@@ -95,6 +95,10 @@ type fault =
         (** The [name] of each field of the cause, in the order of the model:
             none, one, or more (two columns equal after the fold, several keys,
             two equal index names). *)
+  ; relation: string option
+        (** The name of the relation of the cause (rules 7 to 9, phase 4a): the
+            relation that a rule refuses, or each [Belongs_to] after the first
+            on one key. The ppx puts the fault at the relation field. *)
   ; table: bool
         (** The cause is the table name of the model, or of each model of
             [models] for a fault of the list. *)
