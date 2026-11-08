@@ -54,28 +54,10 @@ let run ?listen ?dns script client =
       X.at_2025 sim ; X.install () ; client sim )
 
 (* [with_tls_pool f]: a pool of 1 on the fake server of many connections with
-   TLS, and its events. After with_db, the checks of Test_pool.check_end. *)
+   TLS (Test_pool.with_pool ~tls), and its Query events. *)
 let with_tls_pool f =
-  X.seed () ;
-  let events = ref [] in
-  let r =
-    Fake_db.run (fun sim db ->
-        X.at_2025 sim ;
-        X.install () ;
-        db.faults.tls <- Some (X.server_config X.pki) ;
-        let last = ref None in
-        let r =
-          Cistern.Db.with_db ~pool_size:1
-            ~on_query:(fun e -> events := Test_pool.event_text e :: !events)
-            (X.config ~host:"10.0.0.9" ~ca:X.ca_file Verify_identity)
-            (fun pool ->
-              last := Some pool ;
-              f sim db pool )
-        in
-        Test_pool.check_end (Option.get !last) ;
-        r )
-  in
-  (r, Test_pool.queries (List.rev !events))
+  let r, events = Test_pool.with_pool ~tls:true ~size:1 f in
+  (r, Test_pool.queries events)
 
 (* A cancel that comes in the seam after the checkout, thus between the checkout
    and the stale check (the latch of 1.2). *)
@@ -581,15 +563,71 @@ let tests =
                 ignore (Cistern.Db.exec pool (Test_pool.clean ())) ;
                 db.faults.idle_4031_ms <- None ;
                 Time.sleep Mono (Span.ms 50) ;
+                Cistern.Private.Pool.Private.reset_counters () ;
                 let r = cancelled_in_checkout (fun () -> run pool) in
+                let in_stale =
+                  (Cistern.Private.Pool.Private.counters ()).cancel_in_stale
+                in
                 ignore (Cistern.Db.exec pool (Test_pool.clean ())) ;
-                (r, db.connects) )
+                ((r, in_stale), db.connects) )
           in
-          equal string "cancelled" r ;
+          equal string "cancelled" (fst r) ;
+          equal ~msg:"the counter cancel_in_stale" int 1 (snd r) ;
           equal int 2 connects ;
           is_true
             ~msg:("the event: " ^ String.concat "; " events)
             (List.mem expected events) )
+    ; test "the pool on TLS: Db.exec, Db.transaction and their events"
+        (fun () ->
+          let (a, b, sessions), events =
+            with_tls_pool (fun _ db pool ->
+                let a =
+                  Test_pool.result_text
+                    (Cistern.Db.exec pool (Test_pool.q "SELECT 5"))
+                in
+                let b =
+                  match
+                    Cistern.Db.transaction pool (fun tx ->
+                        Cistern.Tx.exec_exn tx
+                          (Cistern.Raw.exec (sql "UPDATE a")) )
+                  with
+                  | Ok _ ->
+                      "Ok"
+                  | Error e ->
+                      T.error_text e
+                in
+                (a, b, db.tls_sessions) )
+          in
+          equal string "5" a ;
+          equal string "Ok" b ;
+          equal int 1 sessions ;
+          equal (list string)
+            [ "query \"SELECT 5\" done 1"
+            ; "query \"START TRANSACTION\" done 0"
+            ; "query \"UPDATE a\" done 1"
+            ; "query \"COMMIT\" done 0" ]
+            events )
+    ; test "the pool on TLS: an idle connection that the server ends" (fun () ->
+          (* The server sends 4031 and ends the idle TLS session with no
+             close_notify. The stale check finds it, and the next exec takes a
+             new connection with no error. *)
+          let (r, connects, stale), _ =
+            with_tls_pool (fun _ db pool ->
+                db.faults.idle_4031_ms <- Some 20 ;
+                ignore (Cistern.Db.exec pool (Test_pool.clean ())) ;
+                db.faults.idle_4031_ms <- None ;
+                Time.sleep Mono (Span.ms 50) ;
+                Cistern.Private.Pool.Private.reset_counters () ;
+                let r =
+                  Test_pool.result_text
+                    (Cistern.Db.exec pool (Test_pool.q "SELECT 6"))
+                in
+                ( r
+                , db.connects
+                , (Cistern.Private.Pool.Private.counters ()).stale_at_checkout
+                ) )
+          in
+          equal string "6" r ; equal int 2 connects ; equal int 1 stale )
     ; test "close: the cancel in the TCP write of COM_QUIT" (fun () ->
           (* The deaf method of 1.2: the server sends the OK of the next
              command, then reads nothing. The command fills the receive buffer

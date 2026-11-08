@@ -1310,17 +1310,24 @@ let commit_faults =
    ; Some (D.Commit_delay_err (30, 1213))
    ; Some (D.Commit_delay 30) |]
 
-let tx_storm ~fibers ~seed ~seam =
+let tx_storm ?(tls = false) ~fibers ~seed ~seam () =
   Pool.Private.after_op :=
     if seam then fun () -> Fiber.shield (fun () -> Time.sleep Mono (Span.ms 1))
     else ignore ;
   Fun.protect
     ~finally:(fun () -> Pool.Private.after_op := ignore)
     (fun () ->
-      let (outcomes, commits, set, cmds), events =
-        T.with_pool ~size:8 ~seed ~domains:4 ~checkout_timeout:(Span.ms 20)
+      let (outcomes, commits, set, cmds, calls), events =
+        (* On TLS, the server ends a connection that is idle for 25 ms with
+           4031: a record comes to idle connections, thus the stale check can
+           take the lock of the session (review C of 1.4b2). *)
+        T.with_pool ~tls ~size:8 ~seed ~domains:4 ~checkout_timeout:(Span.ms 20)
+          ~setup:(fun db -> if tls then db.faults.idle_4031_ms <- Some 25)
           (fun _ db pool ->
             let outcomes = ref [] and commits = ref 0 in
+            (* The calls: [Some i] for the Db.exec of fiber i, [None] for a
+               Db.transaction. *)
+            let calls = ref [] in
             let ended = Atomic.make 0 in
             Fiber.scope (fun s ->
                 (* The fiber of the faults of COMMIT, until the last fiber of
@@ -1341,7 +1348,9 @@ let tx_storm ~fibers ~seed ~seam =
                       let wave = [|0; 60; 200|].(Random.State.int rs 3) in
                       Time.sleep Mono (Span.ms (wave + Random.State.int rs 30)) ;
                       let run () =
-                        if Random.State.bool rs then
+                        let exec = Random.State.bool rs in
+                        calls := (if exec then Some i else None) :: !calls ;
+                        if exec then
                           Result.map ignore
                             (Db.exec pool (x (Printf.sprintf "UPDATE e%d" i)))
                         else
@@ -1388,8 +1397,14 @@ let tx_storm ~fibers ~seed ~seam =
                       let o =
                         match
                           if Random.State.int rs 4 = 0 then
+                            (* On TLS, half of the cancels come in 0.1 to 2 ms:
+                               inside the seam after the checkout, thus before
+                               the stale check, or at the write lock of the
+                               first command (review C of 1.4b2). *)
                             Fiber.with_timeout Mono
-                              (Span.ms (1 + Random.State.int rs 60))
+                              ( if tls && Random.State.bool rs then
+                                  Span.us (100 + Random.State.int rs 1900)
+                                else Span.ms (1 + Random.State.int rs 60) )
                               run
                           else run ()
                         with
@@ -1409,16 +1424,21 @@ let tx_storm ~fibers ~seed ~seam =
                 done ) ;
             Pool.Private.after_op := ignore ;
             Time.sleep Mono (Span.ms 100) ;
+            (* With TLS, each connection of the storm ran TLS. *)
+            if tls then
+              equal ~msg:"each connection on TLS" int db.connects
+                db.tls_sessions ;
             ( !outcomes
             , !commits
             , Pool.tx_fibers (Db.Private.pool pool)
-            , List.rev db.log ) )
+            , List.rev db.log
+            , !calls ) )
       in
-      (outcomes, commits, set, cmds, T.queries events) )
+      (outcomes, commits, set, cmds, T.queries events, calls) )
 
 let count p l = List.length (List.filter p l)
 
-let check_tx_storm ~fibers (outcomes, commits, set, cmds, events) =
+let check_tx_storm ~fibers (outcomes, commits, set, cmds, events, calls) =
   equal ~msg:"one outcome for each fiber" int fibers (List.length outcomes) ;
   List.iter
     (fun o ->
@@ -1452,19 +1472,23 @@ let check_tx_storm ~fibers (outcomes, commits, set, cmds, events) =
           int 1
           (count (( = ) c) sqls) )
     cmds ;
+  (* A command that the fake server did not read has an event too: the margin
+     stopped it (Timeout), a cancel cut it before it went (sent=false), or the
+     server ended an idle connection with 4031 before it (R-SEQ0 gives
+     Connection_lost; in the storm no other path gives Connection_lost to these
+     commands, because its faults of COMMIT do not end the connection). *)
+  let went e =
+    not
+      ( String.ends_with ~suffix:"\" failed Timeout" e
+      || String.ends_with ~suffix:"\" cancelled sent=false" e
+      || String.ends_with ~suffix:"\" failed Connection_lost" e )
+  in
   List.iter
     (fun c ->
       equal ~msg:("the events of " ^ c) int
         (count (( = ) c) cmds)
-        (count (( = ) c) sqls) )
+        (count (fun e -> event_sql e = c && went e) events) )
     ["COMMIT"; "ROLLBACK"] ;
-  (* A savepoint command that the margin stopped, or that a cancel cut before it
-     went, did not reach the fake server. *)
-  let went e =
-    not
-      ( String.ends_with ~suffix:"\" failed Timeout" e
-      || String.ends_with ~suffix:"\" cancelled sent=false" e )
-  in
   List.iter
     (fun c ->
       equal ~msg:("the events of " ^ c) int
@@ -1482,23 +1506,58 @@ let check_tx_storm ~fibers (outcomes, commits, set, cmds, events) =
        (fun e ->
          e = "query \"START TRANSACTION\" done 0"
          || e = "query \"START TRANSACTION\" cancelled sent=true" )
-       events )
+       events ) ;
+  (* One event for each call, whatever its outcome: also a cancel at the
+     checkout (sent=false), Pool_exhausted and a failed reset. Each Db.exec has
+     a text of its own, and each Db.transaction gives one event of START
+     TRANSACTION. *)
+  List.iter
+    (function
+      | Some i ->
+          let c = Printf.sprintf "UPDATE e%d" i in
+          equal
+            ~msg:("one event for the call " ^ c)
+            int 1
+            (count (( = ) c) sqls)
+      | None ->
+          () )
+    calls ;
+  equal ~msg:"one event of START TRANSACTION for each Db.transaction" int
+    (count Option.is_none calls)
+    (count (( = ) "START TRANSACTION") sqls)
 
 (* The storm over [seeds] seeds. The first 2 seeds run with no seam. With the
    faults of COMMIT and the savepoints, the fewest commits of a seed were 60 of
    200 and 78 of 1000 (the record of PR 1.3b2): the bound is 50. *)
-let tx_storm_test ~fibers ~seeds () =
+let tx_storm_test ?tls ?(cancel_in_stale = false) ~fibers ~seeds () =
+  let in_stale = ref 0 in
   for seed = 0 to seeds - 1 do
-    check_tx_storm ~fibers (tx_storm ~fibers ~seed ~seam:(seed >= 2))
-  done
+    Pool.Private.reset_counters () ;
+    check_tx_storm ~fibers (tx_storm ?tls ~fibers ~seed ~seam:(seed >= 2) ()) ;
+    in_stale := !in_stale + (Pool.Private.counters ()).cancel_in_stale
+  done ;
+  (* The slow TLS storm reaches the cancel at the lock of the session in the
+     stale check (a sum over its seeds: a seed of 200 reaches it rarely). *)
+  if cancel_in_stale then
+    is_true
+      ~msg:(Printf.sprintf "cancels in the stale check: %d" !in_stale)
+      (!in_stale > 0)
 
 let storm_tests =
   group "Db.transaction and Db.exec, the storm"
-    [test "200 fibers, 8 seeds, 4 domains" (tx_storm_test ~fibers:200 ~seeds:8)]
+    [ test "200 fibers, 8 seeds, 4 domains" (tx_storm_test ~fibers:200 ~seeds:8)
+      (* Phase 1.4: the same storm on TLS. A seeded Fortuna is safe on the 4
+         virtual domains of Weft_sim, which run on one OS thread. *)
+    ; test "TLS: 200 fibers, 4 seeds, 4 domains"
+        (tx_storm_test ~tls:true ~fibers:200 ~seeds:4) ]
 
 (* The slow storm, outside the gate: make sim-slow (CISTERN_SLOW). *)
 let slow_tests =
   group "Db.transaction and Db.exec, the storm, slow"
     [ tag "slow"
         (test "1000 fibers, 20 seeds, 4 domains"
-           (tx_storm_test ~fibers:1000 ~seeds:20) ) ]
+           (tx_storm_test ~fibers:1000 ~seeds:20) )
+    ; tag "slow"
+        (test "TLS: 1000 fibers, 8 seeds, 4 domains"
+           (tx_storm_test ~tls:true ~cancel_in_stale:true ~fibers:1000 ~seeds:8) )
+    ]
