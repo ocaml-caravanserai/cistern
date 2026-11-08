@@ -49,7 +49,8 @@ let table =
   ; 1761
   ; 1762
   ; 3673
-  ; 1052 ]
+  ; 1052
+  ; 1020 ]
 
 let dialect = Gen.of_list [Dialect.Mysql; Dialect.Mariadb]
 
