@@ -32,6 +32,7 @@ module Private = struct
   module Update = Cistern_core.Update
   module Schema = Cistern_core.Schema
   module Decoder = Cistern_core.Decoder
+  module Encode = Cistern_core.Encode
   module Model = Model
   module Query = Query
   module Schema_ops = Schema_ops

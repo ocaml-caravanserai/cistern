@@ -12,6 +12,7 @@ let () =
        ; Test_literal.tests
        ; Test_raw.tests
        ; Test_decoder.tests
+       ; Test_encode.tests
        ; Test_error.tests
        ; Test_mapping.tests
        ; Test_event.tests

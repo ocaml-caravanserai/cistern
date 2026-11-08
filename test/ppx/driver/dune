@@ -1,9 +1,13 @@
 ; The driver of ppxlib with -check on a group of [@@deriving cistern] (the plan
 ; of phase 3, P2): the build fails if the ppx does not mark each of its
-; attributes as handled, or if the deriver is not registered.
+; attributes as handled, or if the deriver is not registered. Since phase 3b,
+; the generated stage 1 must also compile, with each warning as an error but
+; 70 (P3: the warning attribute of the generated code covers -w +a).
 
 (library
  (name ppx_driver_check)
- (libraries ptime)
+ (libraries cistern ptime)
+ (flags
+  (:standard -w @a-70))
  (preprocess
   (pps ppx_cistern -check)))

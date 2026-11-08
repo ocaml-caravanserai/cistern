@@ -13,6 +13,9 @@ open Ppxlib
 type field =
   { name: string  (** The OCaml name of the field. *)
   ; loc: Location.t  (** The location of the name of the field. *)
+  ; ty: core_type
+        (** The type of the field as the source has it. The generated code
+            copies it (D8). *)
   ; scalar: Cistern_schema.Schema.scalar
   ; nullable: bool  (** The type is an [option]. *)
   ; key: bool

@@ -20,3 +20,6 @@ type other =
   ; c: string [@cistern.column "cc"] [@cistern.unique]
   ; d: float [@cistern.index] [@cistern.default 1.0] }
 [@@cistern.table "others"] [@@deriving cistern]
+
+(* A key that is not the first field, with another type than the first. *)
+type late = {a: int; k: string [@key]} [@@deriving cistern]

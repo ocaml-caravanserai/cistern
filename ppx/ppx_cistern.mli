@@ -3,12 +3,13 @@
    obtain one at https://mozilla.org/MPL/2.0/. *)
 
 (** The deriver [[@@deriving cistern]] (DESIGN.md, "Model definition" and
-    "Generated code"). Phase 3a parses and checks a group; the generation of the
-    stages comes in phases 3b and 3c. *)
+    "Generated code"). Phase 3a parses and checks a group. Phase 3b generates
+    stage 1, and phase 3c generates stages 2 and 3. *)
 
 (** For the tests of the ppx. It can change in each version. *)
 module Private : sig
   module Desc = Desc
+  module Gen = Gen
 
   val expand :
        loc:Ppxlib.Location.t
@@ -16,5 +17,5 @@ module Private : sig
     -> Ppxlib.structure
   (** [expand ~loc (rec_flag, tds)] is the code that the deriver puts after the
       group [tds], after the checks of {!Desc.group}. It raises the located
-      error of the first fault. *)
+      error of the first fault. Phase 3b gives stage 1 ({!Gen.stage1}). *)
 end
