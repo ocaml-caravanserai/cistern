@@ -477,6 +477,79 @@ let checks =
          index is an index)"
       ; "model \"b\": the name \"b \" ends with white space" ] ) ]
 
+(* The place of each fault (phase 3a0): the model, the models of the cause, the
+   fields and the table flag, for each row of [checks], in the same order. A
+   case checks that the names are the names of [checks]. *)
+let places =
+  [ ("user and todo", [])
+  ; ("an optional Belongs_to", [])
+  ; ("rule 1: model names", ["- (a, a) [] false"])
+  ; ( "rule 1: table names"
+    , ["- (a, b, c) [] true"; "a (a) [] true"; "c (c) [] true"] )
+  ; ("rule 2: table name", ["a (a) [] true"])
+  ; ( "rule 2: an uppercase ASCII letter in a table name"
+    , ["a (a) [] true"; "b (b) [] true"] )
+  ; ("rule 2: a table name with a non-ASCII uppercase letter", [])
+  ; ("rule 2: column name", ["a (a) [x] false"])
+  ; ("rule 3: no key", ["a (a) [] false"])
+  ; ("rule 3: no field", ["a (a) [] false"])
+  ; ("rule 3: two keys", ["a (a) [id, x] false"])
+  ; ("rule 3: an option key", ["a (a) [id] false"])
+  ; ("rule 3: a float key", ["a (a) [id] false"])
+  ; ("rule 4: auto on a field that is not the key", ["a (a) [x] false"])
+  ; ("rule 4: auto on an int key", ["a (a) [id] false"])
+  ; ("rule 5: column names, and no rule 10", ["a (a) [e1, e2, e3] false"])
+  ; ("rule 5: é and É pass (the fold is ASCII only)", [])
+  ; ("rule 6: a unique key", ["a (a) [id] false"])
+  ; ("rule 6: an indexed key", ["a (a) [id] false"])
+  ; ("rule 6: unique and index", ["a (a) [x] false"])
+  ; ("rule 7: relation names", ["a (a) [] false"])
+  ; ("rule 7: a relation with the name of a field", ["a (a) [u] false"])
+  ; ("rule 7: two relations and a field", ["a (a) [u] false"])
+  ; ( "rule 7: the names in the order of the relations"
+    , ["a (a) [] false"; "a (a) [] false"] )
+  ; ("rule 5 comes before rule 6", ["a (a) [e1, e2] false"; "a (a) [y] false"])
+  ; ("rule 8: a Belongs_to on its own key", ["t (t) [id] false"])
+  ; ("rule 8: a Belongs_to to its own model", [])
+  ; ( "rule 8: two Belongs_to on one key, and no rule 11 message"
+    , ["b (b) [x] false"] )
+  ; ( "names in messages keep UTF-8, and escape controls"
+    , ["- (café, café) [] false"; "café (café) [] false"; "a\nb (a\nb) [] false"]
+    )
+  ; ("rule 8: no key field", ["a (a) [] false"])
+  ; ("rule 8: no target", ["a (a) [] false"])
+  ; ("rule 8: no key field and no target", ["a (a) [] false"; "a (a) [] false"])
+  ; ("rule 8: references a field that is not the key", ["a (a) [u] false"])
+  ; ( "rule 8: no key field, and not the key"
+    , ["a (a) [] false"; "a (a) [] false"] )
+  ; ("rule 8: different types", ["a (a) [u] false"])
+  ; ("rule 8: a target with no key", ["p (p) [] false"])
+  ; ("rule 9: no target", ["a (a) [] false"])
+  ; ("rule 9: no opposite", ["a (a) [] false"])
+  ; ("rule 9: two opposites", ["a (a) [] false"])
+  ; ("rule 10: a collision of the hash", ["t (t) [x, y] false"])
+  ; ( "rule 10: a collision of the hash, with names that differ in case"
+    , ["t (t) [x, y] false"] )
+  ; ("rule 10 does not run after rule 2", ["t (t) [z] false"])
+  ; ("rule 11: foreign key names", ["- (a, b) [] false"])
+  ; ("rule 11: foreign key names that differ in case", ["- (a, b) [] false"])
+  ; ("rule 11 does not run after rule 1", ["- (a, b) [] true"])
+  ; ("rule 11 does not run for a model that breaks rule 2", ["b (b) [z] false"])
+  ; ( "more faults, in order"
+    , [ "a (a) [] true"
+      ; "a (a) [] false"
+      ; "a (a) [x] false"
+      ; "a (a) [x] false"
+      ; "a (a) [y] false"
+      ; "b (b) [] true" ] ) ]
+
+let place (f : fault) =
+  Printf.sprintf "%s (%s) [%s] %b"
+    (Option.value f.model ~default:"-")
+    (String.concat ", " f.models)
+    (String.concat ", " f.fields)
+    f.table
+
 let tests =
   group "Schema"
     ( shapes
@@ -487,4 +560,17 @@ let tests =
             equal
               (result unit (list string))
               (if expected = [] then Ok () else Error expected)
-              (check models) ) ] )
+              (check models) )
+      ; cases "the texts of faults are the messages of check"
+          ~id:(fun (n, _, _) -> n)
+          checks
+          (fun (_, models, expected) ->
+            equal (list string) expected
+              (List.map (fun (f : fault) -> f.text) (faults models)) )
+      ; test "each row of check has its places" (fun () ->
+            equal (list string)
+              (List.map (fun (n, _, _) -> n) checks)
+              (List.map fst places) )
+      ; cases "the place of each fault" ~id:fst places (fun (name, expected) ->
+            let _, models, _ = List.find (fun (n, _, _) -> n = name) checks in
+            equal (list string) expected (List.map place (faults models)) ) ] )
