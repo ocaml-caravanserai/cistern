@@ -165,24 +165,29 @@ let deterministic =
               warm () ;
               Db.with_db ~pool_size:1 (on_tls ()) (fun db ->
                   let id1 = Db_tests.int_text (Db_tests.connection_id db) in
-                  kill (Int64.of_string id1) ;
-                  (* The counters are global: the suite runs one test at a
-                     time. *)
-                  Cistern.Private.Pool.Private.reset_counters () ;
-                  let r = Db_tests.first (Db.exec db (Db_tests.q "SELECT 5")) in
-                  (* The server ends the TLS session with no close_notify: the
-                     stale check finds the end at the checkout. *)
-                  equal ~msg:"the stale check" int 1
-                    (Cistern.Private.Pool.Private.counters ()).stale_at_checkout ;
-                  let id2 = Db_tests.int_text (Db_tests.connection_id db) in
-                  equal string "Int 5" r ;
-                  is_true ~msg:"a new connection" (id1 <> id2) ;
-                  let t =
-                    Db.transaction db (fun tx ->
-                        Db_tests.first (Tx.exec tx (Db_tests.q "SELECT 6")) )
-                  in
-                  equal (result string string) (Ok "Int 6")
-                    (Result.map_error error_text t) ) ) ) ]
+                  with_conn (on_tls ()) (fun direct ->
+                      kill (Int64.of_string id1) ;
+                      kill (Conn.info direct).connection_id ;
+                      (* The counters are global: the suite runs one test at a
+                         time. *)
+                      Cistern.Private.Pool.Private.reset_counters () ;
+                      (* The server ends the TLS session with no close_notify:
+                         the stale check finds the end at the checkout. *)
+                      let direct_stale = Conn.stale direct in
+                      let select =
+                        Db_tests.first (Db.exec db (Db_tests.q "SELECT 5"))
+                      in
+                      let counters = Cistern.Private.Pool.Private.counters () in
+                      let id2 = Db_tests.int_text (Db_tests.connection_id db) in
+                      let tx =
+                        Db.transaction db (fun tx ->
+                            Db_tests.first (Tx.exec tx (Db_tests.q "SELECT 6")) )
+                      in
+                      equal string killed_idle_expected
+                        (killed_idle_text ~direct_stale ~counters ~select ~id1
+                           ~id2
+                           ~tx:(Result.fold ~ok:Fun.id ~error:error_text tx) ) ) ) ) )
+    ]
 
 (* The timing tests (nightly). *)
 let timing =

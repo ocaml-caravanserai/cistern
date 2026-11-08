@@ -282,19 +282,27 @@ let deterministic =
               warm () ;
               Db.with_db ~pool_size:1 (config ()) (fun db ->
                   let id1 = int_text (connection_id db) in
-                  kill (Int64.of_string id1) ;
-                  (* The counters are global to the process. This holds, because
-                     the suite runs one test at a time, and only this pool runs
-                     now. *)
-                  Cistern.Private.Pool.Private.reset_counters () ;
-                  let r = first (Db.exec db (q "SELECT 5")) in
-                  (* The stale check finds the end of the stream at the
-                     checkout, before the reset of the dirty entry. *)
-                  equal ~msg:"the stale check" int 1
-                    (Cistern.Private.Pool.Private.counters ()).stale_at_checkout ;
-                  let id2 = int_text (connection_id db) in
-                  equal string "Int 5" r ;
-                  is_true ~msg:"a new connection" (id1 <> id2) ) ) )
+                  with_conn (config ()) (fun direct ->
+                      kill (Int64.of_string id1) ;
+                      kill (Conn.info direct).connection_id ;
+                      (* The counters are global to the process. This holds,
+                         because the suite runs one test at a time, and only
+                         this pool runs now. *)
+                      Cistern.Private.Pool.Private.reset_counters () ;
+                      (* The stale check finds the end of the stream at the
+                         checkout, before the reset of the dirty entry. *)
+                      let direct_stale = Conn.stale direct in
+                      let select = first (Db.exec db (q "SELECT 5")) in
+                      let counters = Cistern.Private.Pool.Private.counters () in
+                      let id2 = int_text (connection_id db) in
+                      let tx =
+                        Db.transaction db (fun tx ->
+                            first (Tx.exec tx (q "SELECT 6")) )
+                      in
+                      equal string killed_idle_expected
+                        (killed_idle_text ~direct_stale ~counters ~select ~id1
+                           ~id2
+                           ~tx:(Result.fold ~ok:Fun.id ~error:error_text tx) ) ) ) ) )
     ; test "a read deadline: Outcome_unknown, and the pool stays usable"
         (fun () ->
           in_weft (fun () ->
