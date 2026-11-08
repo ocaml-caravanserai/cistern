@@ -56,7 +56,9 @@ let on only name f =
       if List.mem server only then in_weft f
       else skip ~reason:("a claim of " ^ String.concat " and " only) () )
 
-let both = ["mysql84"; "mariadb118"]
+(* Phase 1.4: each claim of MySQL 8.4 and MariaDB 11.8 also runs on MariaDB 11.4
+   (it holds there: the probe T10 of the plan of phase 1.4). *)
+let both = ["mysql84"; "mariadb114"; "mariadb118"]
 
 let all = ["mysql84"; "mariadb114"; "mariadb118"]
 
@@ -713,6 +715,99 @@ let c28 =
                   database ) ) ;
           exec_ok c "DROP TABLE c28, c28b" ) )
 
+(* A raw TCP connection to the server, its greeting, and the SSL request
+   (sequence id 1), with Cistern's packet layer. [f flow reader greeting]. *)
+let after_ssl_request f =
+  let flow = Weft_flow.Tcp.connect (Weft.Net.Tcp ("127.0.0.1", port)) in
+  Fun.protect
+    ~finally:(fun () -> Weft_flow.Flow.close flow)
+    (fun () ->
+      let r = Cistern_mysql.Packet.reader flow
+      and w = Cistern_mysql.Packet.writer flow in
+      let g =
+        match Cistern_mysql.Packet.read r ~seq:0 with
+        | Ok p ->
+            Result.get_ok (Message.greeting p)
+        | Error _ ->
+            failwith "no greeting"
+      in
+      is_true ~msg:"CLIENT_SSL in the greeting" (Message.has g.capabilities Ssl) ;
+      let capabilities =
+        List.fold_left
+          (fun acc c -> acc lor Message.bit c)
+          0
+          [Message.Protocol_41; Secure_connection; Plugin_auth; Ssl]
+        land g.capabilities
+      in
+      Cistern_mysql.Packet.write w ~seq:1 (fun w ->
+          Message.write_ssl_request w ~capabilities ~charset:45 ) ;
+      Weft_flow.Writer.flush w ;
+      f flow r g )
+
+(* C29 (the probe T1 of the plan of phase 1.4): a raw check. *)
+let c29 =
+  on all "C29: no byte from the server after the SSL request" (fun () ->
+      warm () ;
+      after_ssl_request (fun flow r _ ->
+          Weft.Time.sleep Weft.Clock.Mono (Weft.Span.ms 300) ;
+          equal ~msg:"the reader" int 0 (Weft_flow.Reader.buffered r) ;
+          equal ~msg:"read_now" (option int) None
+            (Weft_flow.Flow.read_now flow (Bytes.create 1) 0 1) ) )
+
+(* C30 (the probe T8): the server ends a TLS session with no close_notify. The
+   session is killed before the authentication: the greeting gives its id (C6).
+   A read then gives the plaintext that came before the end (maybe an error
+   packet), then Flow.Closed: a truncation, not the end of the stream (0). *)
+let c30 =
+  on all "C30: no close_notify at the end of a TLS session" (fun () ->
+      warm () ;
+      let setup =
+        match
+          Cistern_mysql.Tls_setup.make ~time:Cistern_mysql.Tls_setup.now
+            ~cas:
+              (Result.get_ok
+                 (Cistern_mysql.Tls_setup.ca_certificates
+                    (In_channel.with_open_bin ca In_channel.input_all) ) )
+            (on_tls ())
+        with
+        | Ok s ->
+            s
+        | Error m ->
+            failwith m
+      in
+      let result =
+        after_ssl_request (fun flow _ g ->
+            let tls, _ = Weft_tls.client setup.config flow in
+            kill (Int64.of_int g.thread_id) ;
+            let b = Bytes.create 4096 in
+            let rec read n =
+              match Weft_flow.Flow.read tls b 0 4096 with
+              | 0 ->
+                  "the end of the stream (close_notify)"
+              | k ->
+                  read (n + k)
+              | exception Weft_flow.Flow.Closed ->
+                  "Flow.Closed (no close_notify)"
+            in
+            read 0 )
+      in
+      equal string "Flow.Closed (no close_notify)" result )
+
+(* C31 (the probe T7): each server sends two session tickets (records with no
+   data) after the handshake, before its first data. The client reads past them
+   in the authentication, thus a query works after them, and the connection is
+   not stale after a query. A record with no data at an idle time is tested in
+   the simulator ("stale on TLS", "session tickets after the handshake"). *)
+let c31 =
+  on all "C31: the tickets after the TLS handshake come before the data"
+    (fun () ->
+      warm () ;
+      with_conn (on_tls ()) (fun c ->
+          equal string "Int 1" (one_text c (sql "SELECT 1")) ;
+          Weft.Time.sleep Weft.Clock.Mono (Weft.Span.ms 100) ;
+          is_false ~msg:"stale" (Conn.stale c) ;
+          equal string "Int 2" (one_text c (sql "SELECT 2")) ) )
+
 let deterministic =
   group "claims"
     [ c1
@@ -735,7 +830,10 @@ let deterministic =
     ; c22
     ; c26
     ; c27
-    ; c28 ]
+    ; c28
+    ; c29
+    ; c30
+    ; c31 ]
 
 (* The timing claims. A connection A waits on a row lock that the admin holds;
    the killer polls the server until A waits, then acts. *)

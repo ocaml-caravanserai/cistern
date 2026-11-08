@@ -10,6 +10,11 @@
   cistern
   cistern.core
   cistern.mysql
+  weft-tls
+  tls
+  x509
+  mirage-crypto-rng
+  mirage-crypto-rng.unix
   ptime
   unix
   weft

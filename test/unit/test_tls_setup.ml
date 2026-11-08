@@ -145,6 +145,15 @@ let rows =
         run ~authenticator:any ~fingerprint:(pin pki.cert) ~host:"localhost"
           Verify_identity other.cert )
     , "fail verified" )
+  ; ( "VERIFY_IDENTITY with an authenticator that refuses"
+    , (fun () ->
+        run
+          ~authenticator:
+            (X509.Authenticator.chain_of_trust
+               ~time:(fun () -> Some today)
+               [pki.ca] )
+          ~host:"localhost" Verify_identity other.cert )
+    , "fail not verified" )
   ; ( "VERIFY_CA with an authenticator: not verified"
     , (fun () ->
         run

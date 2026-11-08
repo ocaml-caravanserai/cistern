@@ -53,9 +53,20 @@ let password = get "DB_PASSWORD"
 
 let database = get "DB_DATABASE"
 
-let config ?(user = user) ?(password = password) ?(database = database) address
-    tls =
-  match C.make ~tls ~address ~user ~password ~database () with
+let ca = get "DB_CA"
+
+let other_ca = get "DB_OTHER_CA"
+
+(* The 32 bytes of the SHA-256 of the server certificate (DB_FINGERPRINT has
+   them in hex). *)
+let fingerprint =
+  let h = get "DB_FINGERPRINT" in
+  String.init 32 (fun i ->
+      Char.chr (int_of_string ("0x" ^ String.sub h (2 * i) 2)) )
+
+let config ?(user = user) ?(password = password) ?(database = database)
+    ?authenticator address tls =
+  match C.make ~tls ?authenticator ~address ~user ~password ~database () with
   | Ok c ->
       c
   | Error m ->
@@ -66,8 +77,18 @@ let on_socket ?user ?password ?database ?(clear = false) () =
     (C.Socket {path= socket; allow_cleartext= clear})
     C.No_tls
 
+(* TCP with ssl-mode=DISABLED: the claims of phase 1.1, and the tests of the
+   clear-text rule. *)
 let on_tcp ?user ?password ?database () =
   config ?user ?password ?database (C.Tcp {host= "127.0.0.1"; port}) C.No_tls
+
+(* TCP with TLS (phase 1.4). The default is VERIFY_IDENTITY with the test CA on
+   127.0.0.1. *)
+let on_tls ?user ?password ?database ?(host = "127.0.0.1")
+    ?(mode = C.Verify_identity) ?(ca = Some ca) ?fingerprint ?authenticator () =
+  config ?user ?password ?database ?authenticator
+    (C.Tcp {host; port})
+    (C.Tls {mode; ca; fingerprint})
 
 (* Each test runs in its own weft world. *)
 let in_weft f = Weft.run (module Weft_os) f
