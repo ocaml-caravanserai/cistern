@@ -151,11 +151,17 @@ val killer : t -> unit
     after the shields. Only a cancel ends it. Start it only with [kill=true]. *)
 
 val shutdown : t -> unit
-(** [shutdown t] closes the pool, after the end of the opener: the waiters get
-    [Connection_lost], and the idle connections and those to close get a polite
-    close, in a shield with one limit of 2 s for all of them. After the limit, a
-    COM_QUIT that must wait raises at once, and its flow closes. A connection
-    that comes back later is aborted at its checkin. *)
+(** [shutdown t] closes the pool, after the end of the opener and the killer:
+    the waiters get [Connection_lost] at once. Then the drain (DESIGN.md,
+    "Cancel", step 10): in a shield with a limit of 15 s, it sends the entries
+    of the kill queue, also those that come during it, and then one mutex
+    section ends it (after the limit, the entries that remain get
+    [Kill_dropped Drain_timeout]). Then the idle connections, those to close and
+    the control connection get a polite close, in a shield with one limit of 2 s
+    for all of them. After the limit, a COM_QUIT that must wait raises at once,
+    and its flow closes. A connection that comes back later is aborted at its
+    checkin, and a kill request after the drain frees its slot with
+    [Kill_dropped Closed]. *)
 
 (** For the tests only. It can change in each version. [after_op], [trace] and
     the counters are global values: all the pools of a process share them, thus
