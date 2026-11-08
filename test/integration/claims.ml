@@ -1093,11 +1093,44 @@ let c37 =
         equal string "Int 1" (count ()) ) ;
       with_conn (user_conn ()) (fun o -> exec_ok o "DROP TABLE c37") )
 
+(* C38 (phase 4e, R3 of the plan of phase 4): in a transaction, the last insert
+   id of the OK of an INSERT is the id of the new row, also with another session
+   that inserts rows at the same time. The nested create takes the key of the
+   parent from it. *)
+let c38 =
+  on all "C38: the last insert id of an INSERT in a transaction" (fun () ->
+      warm () ;
+      with_conn (user_conn ()) (fun c ->
+          table c "c38"
+            "(id BIGINT AUTO_INCREMENT PRIMARY KEY, v INT) ENGINE=InnoDB" ;
+          exec_ok c "START TRANSACTION" ;
+          let insert v =
+            match
+              Conn.exec c
+                (sql (Printf.sprintf "INSERT INTO c38 (v) VALUES (%d)" v))
+            with
+            | Ok x ->
+                Printf.sprintf "Int %Ld" x.last_insert_id
+            | Error e ->
+                error_text e
+          in
+          let a = insert 1 in
+          (* Another session inserts a row between the two of the
+             transaction. *)
+          with_conn (user_conn ()) (fun o ->
+              exec_ok o "INSERT INTO c38 (v) VALUES (9)" ) ;
+          let b = insert 2 in
+          equal string (one_text c (sql "SELECT id FROM c38 WHERE v = 1")) a ;
+          equal string (one_text c (sql "SELECT id FROM c38 WHERE v = 2")) b ;
+          exec_ok c "COMMIT" ;
+          exec_ok c "DROP TABLE c38" ) )
+
 let deterministic =
   group "claims"
     [ c1
     ; c36
     ; c37
+    ; c38
     ; c2
     ; c3
     ; c4
