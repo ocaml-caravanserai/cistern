@@ -1310,26 +1310,46 @@ let commit_faults =
    ; Some (D.Commit_delay_err (30, 1213))
    ; Some (D.Commit_delay 30) |]
 
-let tx_storm ?(tls = false) ~fibers ~seed ~seam () =
+let tx_storm ?(tls = false) ?(kill = false) ~fibers ~seed ~seam () =
   Pool.Private.after_op :=
     if seam then fun () -> Fiber.shield (fun () -> Time.sleep Mono (Span.ms 1))
     else ignore ;
   Fun.protect
     ~finally:(fun () -> Pool.Private.after_op := ignore)
     (fun () ->
+      let control_max = ref 0 in
       let (outcomes, commits, set, cmds, calls), events =
         (* On TLS, the server ends a connection that is idle for 25 ms with
            4031: a record comes to idle connections, thus the stale check can
            take the lock of the session (review C of 1.4b2). *)
-        T.with_pool ~tls ~size:8 ~seed ~domains:4 ~checkout_timeout:(Span.ms 20)
-          ~setup:(fun db -> if tls then db.faults.idle_4031_ms <- Some 25)
+        T.with_pool ~tls ~kill ~size:8 ~seed ~domains:4
+          ~checkout_timeout:(Span.ms 20)
+          ~setup:(fun db ->
+            if tls then db.faults.idle_4031_ms <- Some 25 ;
+            (* With KILL (phase 1.5c2): each reply comes 2 ms late, so that more
+               cancels come while a command runs; an idle control connection
+               gets 4031 after 25 ms, and the killer opens it again; the seeds
+               of 1095 turn KILL off. *)
+            if kill then (
+              db.faults.idle_4031_ms <- Some 25 ;
+              db.faults.latency_ms <- 2 ;
+              if T.not_owner_seed seed then db.faults.kill_err <- Some 1095 ) )
           (fun _ db pool ->
+            let p = Db.Private.pool pool in
             let outcomes = ref [] and commits = ref 0 in
             (* The calls: [Some i] for the Db.exec of fiber i, [None] for a
                Db.transaction. *)
             let calls = ref [] in
             let ended = Atomic.make 0 in
             Fiber.scope (fun s ->
+                if kill then ignore (T.kill_fibers s pool ~seed ~fibers) ;
+                if kill then
+                  Fiber.fork s (fun () ->
+                      T.kill_faults db ~seed
+                        ~stop:(fun () -> Atomic.get ended >= fibers)
+                        ~sample:(fun () ->
+                          control_max :=
+                            Int.max !control_max (Pool.Private.control p) ) ) ;
                 (* The fiber of the faults of COMMIT, until the last fiber of
                    the storm ends. *)
                 Fiber.fork s (fun () ->
@@ -1396,7 +1416,8 @@ let tx_storm ?(tls = false) ~fibers ~seed ~seam () =
                       in
                       let o =
                         match
-                          if Random.State.int rs 4 = 0 then
+                          if Random.State.int rs (if kill then 2 else 4) = 0
+                          then
                             (* On TLS, half of the cancels come in 0.1 to 2 ms:
                                inside the seam after the checkout, thus before
                                the stale check, or at the write lock of the
@@ -1423,6 +1444,7 @@ let tx_storm ?(tls = false) ~fibers ~seed ~seam () =
                       Atomic.incr ended )
                 done ) ;
             Pool.Private.after_op := ignore ;
+            T.wait_killer p ;
             Time.sleep Mono (Span.ms 100) ;
             (* With TLS, each connection of the storm ran TLS. *)
             if tls then
@@ -1434,11 +1456,13 @@ let tx_storm ?(tls = false) ~fibers ~seed ~seam () =
             , List.rev db.log
             , !calls ) )
       in
-      (outcomes, commits, set, cmds, T.queries events, calls) )
+      ( (outcomes, commits, set, cmds, T.queries events, calls)
+      , T.kill_record ~control_max:!control_max events ) )
 
 let count p l = List.length (List.filter p l)
 
-let check_tx_storm ~fibers (outcomes, commits, set, cmds, events, calls) =
+let check_tx_storm ?(min_commits = 50) ~fibers
+    (outcomes, commits, set, cmds, events, calls) =
   equal ~msg:"one outcome for each fiber" int fibers (List.length outcomes) ;
   List.iter
     (fun o ->
@@ -1446,8 +1470,8 @@ let check_tx_storm ~fibers (outcomes, commits, set, cmds, events, calls) =
     outcomes ;
   equal ~msg:"no fiber in the set of Tx fibers" int 0 set ;
   is_true
-    ~msg:(Printf.sprintf "at least 50 commits (%d)" commits)
-    (commits >= 50) ;
+    ~msg:(Printf.sprintf "at least %d commits (%d)" min_commits commits)
+    (commits >= min_commits) ;
   (* One event for each command that the fake server got: each statement has a
      text of its own, and COMMIT and ROLLBACK are counted. *)
   let unique s =
@@ -1533,7 +1557,8 @@ let tx_storm_test ?tls ?(cancel_in_stale = false) ~fibers ~seeds () =
   let in_stale = ref 0 in
   for seed = 0 to seeds - 1 do
     Pool.Private.reset_counters () ;
-    check_tx_storm ~fibers (tx_storm ?tls ~fibers ~seed ~seam:(seed >= 2) ()) ;
+    check_tx_storm ~fibers
+      (fst (tx_storm ?tls ~fibers ~seed ~seam:(seed >= 2) ())) ;
     in_stale := !in_stale + (Pool.Private.counters ()).cancel_in_stale
   done ;
   (* The slow TLS storm reaches the cancel at the lock of the session in the
@@ -1543,13 +1568,43 @@ let tx_storm_test ?tls ?(cancel_in_stale = false) ~fibers ~seeds () =
       ~msg:(Printf.sprintf "cancels in the stale check: %d" !in_stale)
       (!in_stale > 0)
 
+(* The storm with kill=true (phase 1.5c2), also on TLS: the checks of the storm
+   and of KILL for each seed (Test_pool.check_kill). With the late replies, the
+   fibers of the kills and the Killing slots, fewer transactions commit: in the
+   record of PR 1.5c2 (with the faults of its review), the fewest commits were
+   17 of 200 (TLS: 21) and 6 of 1000 (TLS: 7), and the fewest kills of a seed
+   with no 1095 were 4 of 200 and 5 of 1000. Each bound is about half of its
+   record (8, 10, 3 and 3 commits; 2 kills). With [race], the race counters of
+   the killer, a sum over the seeds, must be above 0. *)
+let kill_tx_storm_test ?tls ?(race = false) ~fibers ~seeds ~min_kills
+    ~min_commits () =
+  T.with_refuse_control
+  @@ fun () ->
+  Pool.Private.reset_counters () ;
+  let records = ref [] in
+  for seed = 0 to seeds - 1 do
+    let before = (Pool.Private.counters ()).kill_requests in
+    let r, k = tx_storm ?tls ~kill:true ~fibers ~seed ~seam:(seed >= 2) () in
+    check_tx_storm ~min_commits ~fibers r ;
+    T.check_kill ~seed ~min_kills {k with requests= k.requests - before} ;
+    records := k :: !records
+  done ;
+  T.check_race ~race !records
+
 let storm_tests =
   group "Db.transaction and Db.exec, the storm"
     [ test "200 fibers, 8 seeds, 4 domains" (tx_storm_test ~fibers:200 ~seeds:8)
       (* Phase 1.4: the same storm on TLS. A seeded Fortuna is safe on the 4
          virtual domains of Weft_sim, which run on one OS thread. *)
     ; test "TLS: 200 fibers, 4 seeds, 4 domains"
-        (tx_storm_test ~tls:true ~fibers:200 ~seeds:4) ]
+        (tx_storm_test ~tls:true ~fibers:200 ~seeds:4)
+      (* Phase 1.5c2: with KILL. *)
+    ; test "KILL: 200 fibers, 8 seeds, 4 domains"
+        (kill_tx_storm_test ~race:true ~fibers:200 ~seeds:8 ~min_kills:2
+           ~min_commits:8 )
+    ; test "KILL on TLS: 200 fibers, 4 seeds, 4 domains"
+        (kill_tx_storm_test ~race:true ~tls:true ~fibers:200 ~seeds:4
+           ~min_kills:2 ~min_commits:10 ) ]
 
 (* The slow storm, outside the gate: make sim-slow (CISTERN_SLOW). *)
 let slow_tests =
@@ -1560,4 +1615,11 @@ let slow_tests =
     ; tag "slow"
         (test "TLS: 1000 fibers, 8 seeds, 4 domains"
            (tx_storm_test ~tls:true ~cancel_in_stale:true ~fibers:1000 ~seeds:8) )
-    ]
+    ; tag "slow"
+        (test "KILL: 1000 fibers, 20 seeds, 4 domains"
+           (kill_tx_storm_test ~race:true ~fibers:1000 ~seeds:20 ~min_kills:2
+              ~min_commits:3 ) )
+    ; tag "slow"
+        (test "KILL on TLS: 1000 fibers, 8 seeds, 4 domains"
+           (kill_tx_storm_test ~race:true ~tls:true ~fibers:1000 ~seeds:8
+              ~min_kills:2 ~min_commits:3 ) ) ]
