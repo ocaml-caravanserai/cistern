@@ -1,0 +1,8 @@
+; The odoc of the packages (phase 5a): each warning of odoc is an error, so
+; that `make doc` (and the CI job test) fails on an unresolved or ambiguous
+; reference.
+
+(env
+ (_
+  (odoc
+   (warnings fatal))))

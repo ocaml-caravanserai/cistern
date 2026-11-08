@@ -59,8 +59,8 @@ type greeting =
 val greeting : string -> (greeting, string) result
 (** [greeting payload] decodes a greeting of protocol 10. Another protocol is an
     [Error]. An ERR packet in place of the greeting is not a greeting: use
-    {!err}. A greeting with no [Secure_connection] can have no second part of
-    the auth data: it then gives "greeting: the packet is too short". The
+    {!val-err}. A greeting with no [Secure_connection] can have no second part
+    of the auth data: it then gives "greeting: the packet is too short". The
     connect checks the capabilities of a greeting that decodes. *)
 
 val write_ssl_request :
@@ -70,7 +70,7 @@ val write_ssl_request :
     the same function. Thus bytes 28 to 31 (the MariaDB extended capabilities)
     are 0 in the two packets.
 
-    @raise Invalid_argument if the capabilities do not have [Ssl]. *)
+    It raises [Invalid_argument] if the capabilities do not have [Ssl]. *)
 
 val write_handshake_response :
      Weft_flow.Writer.t
@@ -90,9 +90,8 @@ val write_handshake_response :
     must not have [PLUGIN_AUTH_LENENC_CLIENT_DATA] (0x200000) or [CONNECT_ATTRS]
     (0x100000): the auth length has 1 byte, and the response has no attributes.
 
-    @raise Invalid_argument
-      if [auth] has more than 255 bytes, if a string has a NUL, or if the
-      capabilities have one of the two bits. *)
+    It raises [Invalid_argument] if [auth] has more than 255 bytes, if a string
+    has a NUL, or if the capabilities have one of the two bits. *)
 
 (** {1 Replies} *)
 

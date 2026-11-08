@@ -49,10 +49,9 @@ val has_many :
     nullable key with no parent), and [set p cs] gives [p] with its children
     [cs] loaded.
 
-    @raise Invalid_argument
-      if the schema of [P] has no relation [name], or has it as a [Belongs_to],
-      or to another model than the model of [C]. The message names the relation
-      that the schema has. *)
+    It raises [Invalid_argument] if the schema of [P] has no relation [name], or
+    has it as a [Belongs_to], or to another model than the model of [C]. The
+    message names the relation that the schema has. *)
 
 val belongs_to :
      name:string
@@ -66,6 +65,5 @@ val belongs_to :
     gives [c] with its parent [p] loaded ([None] for a nullable key with no
     parent).
 
-    @raise Invalid_argument
-      if the schema of [C] has no relation [name], or has it as a [Has_many], or
-      to another model than the model of [P]. *)
+    It raises [Invalid_argument] if the schema of [C] has no relation [name], or
+    has it as a [Has_many], or to another model than the model of [P]. *)

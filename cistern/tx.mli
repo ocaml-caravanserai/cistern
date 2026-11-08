@@ -25,13 +25,12 @@ val exec :
     - A cancel aborts the connection, fails the transaction and raises
       [Weft.Fiber.Cancelled].
 
-    @raise Invalid_argument
-      from another fiber than the fiber of the callback, after the end of the
-      transaction, and for a raw statement whose first word is refused: [BEGIN],
-      [START], [COMMIT], [ROLLBACK], [SAVEPOINT], [RELEASE], [XA], [LOCK],
-      [UNLOCK], [SET], [EXECUTE], [PREPARE], or no word (a value, a comment or a
-      parenthesis first). A [CALL] of a procedure that commits is not detected.
-*)
+    It raises [Invalid_argument] from another fiber than the fiber of the
+    callback, after the end of the transaction, and for a raw statement whose
+    first word is refused: [BEGIN], [START], [COMMIT], [ROLLBACK], [SAVEPOINT],
+    [RELEASE], [XA], [LOCK], [UNLOCK], [SET], [EXECUTE], [PREPARE], or no word
+    (a value, a comment or a parenthesis first). A [CALL] of a procedure that
+    commits is not detected. *)
 
 val exec_exn : ?timeout:Weft.Span.t -> t -> 'a Stmt.t -> 'a
 (** [exec_exn] is {!exec}, and raises [Error.Cistern_error] for an error. *)

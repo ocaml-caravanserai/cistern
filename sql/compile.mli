@@ -75,7 +75,7 @@ val update :
   -> (Ast.t, string) result
 (** [update m ~key cols] is the [UPDATE] of the row with the key [key].
 
-    @raise Invalid_argument if [cols] is empty. *)
+    It raises [Invalid_argument] if [cols] is empty. *)
 
 val delete : Schema.model -> key:Value.t -> (Ast.t, string) result
 (** [delete m ~key] is the [DELETE] of the row with the key [key]. *)
@@ -84,12 +84,11 @@ val update_all : query -> (string * Value.t) list -> (Ast.t, string) result
 (** [update_all q cols] is the [UPDATE] of the rows of [q], with the order and
     the limit of [q]. With no filter, it changes the whole table.
 
-    @raise Invalid_argument
-      if [cols] is empty, or if [q] has an offset or a lock (MySQL has no
-      [UPDATE ... OFFSET]). *)
+    It raises [Invalid_argument] if [cols] is empty, or if [q] has an offset or
+    a lock (MySQL has no [UPDATE ... OFFSET]). *)
 
 val delete_all : query -> (Ast.t, string) result
 (** [delete_all q] is the [DELETE] of the rows of [q], with the order and the
     limit of [q]. With no filter, it deletes all the rows.
 
-    @raise Invalid_argument if [q] has an offset or a lock. *)
+    It raises [Invalid_argument] if [q] has an offset or a lock. *)

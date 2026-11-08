@@ -6,8 +6,8 @@
     length-encoded integers and strings, and strings that end with a NUL
     (DESIGN.md, "Commands and packets").
 
-    A {!cursor} reads the payload of one packet from its start. A read past the
-    end raises {!Truncated}, and a value that the protocol does not permit
+    A {!type-cursor} reads the payload of one packet from its start. A read past
+    the end raises {!Truncated}, and a value that the protocol does not permit
     raises {!Malformed}. The decoders of {!Message} catch the two and give
     [Error]. *)
 
@@ -88,4 +88,4 @@ val write_lenenc_string : Weft_flow.Writer.t -> string -> unit
 val write_string_nul : Weft_flow.Writer.t -> string -> unit
 (** [write_string_nul w s] writes [s] and a NUL.
 
-    @raise Invalid_argument if [s] has a NUL. *)
+    It raises [Invalid_argument] if [s] has a NUL. *)

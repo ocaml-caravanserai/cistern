@@ -39,22 +39,32 @@ val or_ : ('m, bool) t list -> ('m, bool) t
     have no guard. [in_ f []] is [FALSE] on each field. *)
 module type OPS = sig
   val ( ==. ) : ('m, 'a) Field.t -> 'a -> ('m, bool) t
+  (** [f ==. v]: the value of [f] is [v], with the equality of OCaml, also for
+      [None] ([f = v], or [f <=> v] on a nullable field, or [IS NULL] for
+      [None]). *)
 
   val ( <>. ) : ('m, 'a) Field.t -> 'a -> ('m, bool) t
+  (** [f <>. v] is [not (f ==. v)]. *)
 
   val ( <. ) : ('m, 'a) Field.t -> 'a -> ('m, bool) t
-  (** @raise Invalid_argument for [None]. The same for [>.], [<=.] and [>=.]. *)
+  (** It raises [Invalid_argument] for [None]. The same for [>.], [<=.] and
+      [>=.]. *)
 
   val ( >. ) : ('m, 'a) Field.t -> 'a -> ('m, bool) t
+  (** The order of OCaml. An order never selects [None]. *)
 
   val ( <=. ) : ('m, 'a) Field.t -> 'a -> ('m, bool) t
+  (** The order of OCaml. An order never selects [None]. *)
 
   val ( >=. ) : ('m, 'a) Field.t -> 'a -> ('m, bool) t
+  (** The order of OCaml. An order never selects [None]. *)
 
   val is_null : ('m, 'a option) Field.t -> ('m, bool) t
   (** [is_null f] is [f ==. None]. *)
 
   val in_ : ('m, 'a) Field.t -> 'a list -> ('m, bool) t
+  (** [in_ f vs]: the value of [f] is one of [vs], with the equality of
+      {!( ==. )}. [in_ f []] is [FALSE]. *)
 
   val starts_with : ('m, string) Field.t -> string -> ('m, bool) t
   (** [starts_with f s]: the value starts with [s]. The pattern escapes [!], [%]
@@ -72,10 +82,13 @@ module type OPS = sig
   (** {!contains} on a nullable field. A [NULL] row does not match. *)
 
   val ( && ) : ('m, bool) t -> ('m, bool) t -> ('m, bool) t
+  (** The two filters. Each filter is true or false, never [NULL]. *)
 
   val ( || ) : ('m, bool) t -> ('m, bool) t -> ('m, bool) t
+  (** One of the two filters. *)
 
   val not : ('m, bool) t -> ('m, bool) t
+  (** [not p] selects each row that [p] does not select. *)
 end
 
 module Ops : OPS

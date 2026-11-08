@@ -15,4 +15,4 @@ val get : 'a t -> 'a option
 val get_exn : 'a t -> 'a
 (** [get_exn (Loaded v)] is [v].
 
-    @raise Invalid_argument for [Unloaded]. *)
+    It raises [Invalid_argument] for [Unloaded]. *)

@@ -42,7 +42,7 @@ val make :
     [Error] for a host that is not a valid name, for [ssl-ca] with no
     certificate in [cas], and for an error of [Tls.Config.client].
 
-    @raise Invalid_argument if [config] has no TLS. *)
+    It raises [Invalid_argument] if [config] has no TLS. *)
 
 val now : unit -> Ptime.t option
 (** [now ()] is the time of the wall clock of weft ([Weft.Time.now Posix]), for

@@ -6,7 +6,7 @@
     or I/O, and no operation raises. The weft shell of the pool runs each
     operation under its mutex, and then does the effects that the result names.
 
-    A time is a {!Weft.Span.t} from the origin of the pool: the shell reads
+    A time is a [Weft.Span.t] from the origin of the pool: the shell reads
     [Weft.Time.now Mono] and gives the span since the time when the pool
     started. No operation assumes that the time grows from one operation to the
     next: two fibers can read the clock in one order and run their operations in
@@ -22,8 +22,8 @@
     its statement can still run on the server (DESIGN.md, "Cancel"). The slot
     stays until the killer sends [KILL] ({!killed}), or until its age limit of
     30 s. Each operation first removes the [Killing] slots whose age limit is at
-    or before its [now]. Thus each operation, {!next_timer} and [wake] see such
-    a slot as free, also when no operation ran since its age limit. *)
+    or before its [now]. Thus each operation, {!val-next_timer} and [wake] see
+    such a slot as free, also when no operation ran since its age limit. *)
 
 type time = Weft.Span.t
 
@@ -50,16 +50,16 @@ type ('c, 'w) t
 val create : size:int -> max_lifetime:Weft.Span.t -> ('c, 'w) t
 (** [create ~size ~max_lifetime] is an empty open pool.
 
-    @raise Invalid_argument
-      if [size] is not 1 to 1000, or [max_lifetime] is not positive. *)
+    It raises [Invalid_argument] if [size] is not 1 to 1000, or [max_lifetime]
+    is not positive. *)
 
 (** {1 The operations}
 
     Each operation takes the time [now] and gives the new state, its result, and
     [wake]: true if the opener has work now (a connect to start, or an entry to
-    close), or a timer to arm ({!next_timer} gives a time). The opener reads its
-    timer only in {!tick}, thus the shell then rings the doorbell of the opener.
-*)
+    close), or a timer to arm ({!val-next_timer} gives a time). The opener reads
+    its timer only in {!val-tick}, thus the shell then rings the doorbell of the
+    opener. *)
 
 type waiter_id
 
@@ -115,7 +115,7 @@ type ('c, 'w) tick =
   ; to_close: 'c entry list
         (** The entries for a polite close. They move to "in close", and keep
             their slots until {!closed_done}. *)
-  ; next_timer: time option  (** {!next_timer} of the new state. *) }
+  ; next_timer: time option  (** {!val-next_timer} of the new state. *) }
 
 val tick : ('c, 'w) t -> time -> ('c, 'w) t * ('c, 'w) tick
 (** [tick s now] is the work of the opener. *)
@@ -158,16 +158,16 @@ val open_aborted : ('c, 'w) t -> time -> ('c, 'w) t * bool
 (** [open_aborted s now]: a connect was cancelled. No error, no backoff. *)
 
 val closed_done : ('c, 'w) t -> time -> int -> ('c, 'w) t * bool
-(** [closed_done s now id]: the opener closed the entry [id] that {!tick} gave
-    to close. Its slot is free. Another [id] changes nothing. *)
+(** [closed_done s now id]: the opener closed the entry [id] that {!val-tick}
+    gave to close. Its slot is free. Another [id] changes nothing. *)
 
 val close_all : ('c, 'w) t -> time -> ('c, 'w) t * 'w list * 'c entry list
 (** [close_all s now] closes the pool. The [Killing] slots stay. It gives the
     waiters (the shell fails them with [Connection_lost]) and the idle entries,
     the entries to close and the entries in close (the shell closes them; a
     second close of an entry in close does nothing). The entries in use and the
-    running connects come back later: {!checkin} and {!opened} then give [Abort]
-    and [Opened_close]. *)
+    running connects come back later: {!checkin} and {!val-opened} then give
+    [Abort] and [Opened_close]. *)
 
 val killing : ('c, 'w) t -> time -> 'c entry -> ('c, 'w) t * token * bool
 (** [killing s now e]: the shell aborted the entry [e] in use, and its statement
@@ -198,7 +198,7 @@ val in_use : ('c, 'w) t -> int
 val opening : ('c, 'w) t -> int
 
 val to_close : ('c, 'w) t -> 'c entry list
-(** The entries to close that no {!tick} took, the oldest first. *)
+(** The entries to close that no {!val-tick} took, the oldest first. *)
 
 val closing : ('c, 'w) t -> int
 (** The entries to close and in close. *)
