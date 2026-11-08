@@ -18,7 +18,8 @@
    "SAVEPOINT n", "RELEASE SAVEPOINT n" and "ROLLBACK TO SAVEPOINT n" keep the
    savepoints (1305 for an unknown name). Each OK, the end of a result set and
    the OK of COM_PING carry SERVER_STATUS_IN_TRANS while it is open. The words
-   of the faults: "DEADLOCK" (1213, a rollback), "LOCKWAIT" (1205, a rollback
+   of the faults: "DEADLOCK" (1213, a rollback), "SNAPSHOT" (1020, a rollback,
+   as MariaDB 11.8 with innodb_snapshot_isolation), "LOCKWAIT" (1205, a rollback
    only with the fault [rollback_on_timeout]), "CREATE" and "TRUNCATE" (an
    implicit commit), "DDLFAIL" (an implicit commit, then 1050), "INFILE" (a
    LOCAL INFILE request), "FORGET" (the savepoints go, the transaction stays)
@@ -421,6 +422,9 @@ let reply db tx flow sql =
       | "DEADLOCK", _ ->
           end_tx tx ;
           send flow 1 (F.err 1213 "deadlock")
+      | "SNAPSHOT", _ ->
+          end_tx tx ;
+          send flow 1 (F.err 1020 "record has changed since last read")
       | "LOCKWAIT", _ ->
           if db.faults.rollback_on_timeout then end_tx tx ;
           send flow 1 (F.err 1205 "lock wait")

@@ -171,6 +171,67 @@ let tests =
           in
           is_true ~msg:"the event of the statement"
             (List.mem (Printf.sprintf "query %S failed %s" sql first) events) )
+    ; cases "1020 of MariaDB (phase 4a0)"
+        ~id:(fun (n, _, _, _, _) -> n)
+        [ ( "MariaDB: the server rolled back, the Tx fails, no ping"
+          , "11.8.8-MariaDB"
+          , "Retryable rolled back / Retryable rolled back"
+          , "Retryable rolled back"
+          , ["START TRANSACTION"; "SNAPSHOT"; "ROLLBACK"] )
+        ; ( "MySQL: 1020 is Driver, a ping decides"
+          , "8.4.11"
+          , "Implicit_commit / Implicit_commit"
+          , "Implicit_commit"
+          , ["START TRANSACTION"; "SNAPSHOT"; "ping"; "ROLLBACK"] ) ]
+        (fun (_, version, expected_inner, expected, expected_cmds) ->
+          let r, inner, cmds, _, _ =
+            run_tx
+              ~setup:(fun db -> db.faults.version <- version)
+              (fun _ note tx ->
+                step note (Tx.exec tx (x "SNAPSHOT")) ;
+                step note (Tx.exec tx (x "UPDATE b")) )
+          in
+          equal string expected_inner inner ;
+          equal string expected r ;
+          equal (list string) expected_cmds cmds )
+    ; test "1020 of MariaDB in a savepoint: no ROLLBACK TO SAVEPOINT" (fun () ->
+          let r, inner, cmds, _, _ =
+            run_tx
+              ~setup:(fun db -> db.faults.version <- "11.8.8-MariaDB")
+              (fun _ note tx ->
+                note
+                  (text
+                     (Tx.savepoint tx (fun tx ->
+                          ignore (Tx.exec tx (x "SNAPSHOT")) ) ) ) )
+          in
+          equal string "Retryable rolled back" inner ;
+          equal string "Retryable rolled back" r ;
+          equal (list string)
+            [ "START TRANSACTION"
+            ; "SAVEPOINT cistern_sp_1"
+            ; "SNAPSHOT"
+            ; "ROLLBACK" ]
+            cmds )
+    ; test "1020 of MariaDB as the reply to COMMIT" (fun () ->
+          let (r, cmds), _ =
+            T.with_pool ~size:1
+              ~setup:(fun db -> db.faults.version <- "11.8.8-MariaDB")
+              (fun _ db pool ->
+                ignore (Db.exec pool (T.clean ())) ;
+                let from = List.length db.log in
+                db.faults.commit <- Some (D.Commit_err 1020) ;
+                let r =
+                  text
+                    (Db.transaction pool (fun tx ->
+                         ignore (Tx.exec tx (x "UPDATE a")) ) )
+                in
+                db.faults.commit <- None ;
+                (r, log ~from db) )
+          in
+          equal string "Retryable rolled back" r ;
+          equal (list string)
+            ["START TRANSACTION"; "UPDATE a"; "COMMIT"; "ping"]
+            cmds )
     ; test "Tx.savepoint after a first error: the error, no I/O" (fun () ->
           let ran = ref false in
           let r, inner, cmds, _, events =
