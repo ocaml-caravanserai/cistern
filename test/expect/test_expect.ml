@@ -4,4 +4,7 @@
 
 (* The expect suite of cistern.sql. *)
 
-let () = exit (Windtrap.run "expect" [Expect_sql.tests; Prop_redacted.tests])
+let () =
+  exit
+    (Windtrap.run "expect"
+       [Expect_sql.tests; Expect_ddl.tests; Prop_redacted.tests] )

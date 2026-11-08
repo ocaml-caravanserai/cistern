@@ -5,6 +5,9 @@
 (** The text of a SQL AST (DESIGN.md, "Schema, AST and SQL"). One serializer
     gives the SQL of the statement and the redacted copy of the events. *)
 
+val ident : string -> string
+(** [ident s] is [s] between backquotes, with each backquote in it doubled. *)
+
 val to_sql : Cistern_core.Dialect.t -> Ast.t -> string
 (** [to_sql d s] is the SQL of [s] for the dialect [d], with the literals. Each
     identifier is between backquotes, with a backquote in it doubled. A literal
