@@ -21,6 +21,7 @@ let () =
        ; Test_schema.tests
        ; Test_relations.tests
        ; Test_relations.nested
+       ; Test_relations.scopes
        ; Test_expr.tests
        ; Test_models.tests
        ; Test_config.tests

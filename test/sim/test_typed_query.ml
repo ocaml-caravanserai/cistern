@@ -659,3 +659,100 @@ let nested_tests =
             ; "user"
             ; "COMMIT" ]
             cmds ) ]
+
+(* The relation scopes on Fake_db (phase 4c2, E11): the scope of a nullable
+   belongs_to with no key runs nothing, and a row that is gone gives
+   Not_found. *)
+let scope_tests =
+  let module Node = Tree.Node in
+  let ncols =
+    "SELECT `node`.`id`, `node`.`name`, `node`.`parent_id` FROM `node`"
+  in
+  let node ?parent_id id : Tree.node =
+    { id
+    ; name= "n"
+    ; parent_id
+    ; parent= Cistern.Deferred.Unloaded
+    ; children= Cistern.Deferred.Unloaded }
+  in
+  let get3 = ncols ^ " WHERE `node`.`id` = 3 LIMIT 1" in
+  group "the relation scopes"
+    [ test "a nullable key with None: None, no checkout, no event" (fun () ->
+          let (r, connects), events =
+            with_pool (fun _ db pool ->
+                let r = Db.exec pool (Node.parent (node 4L)) in
+                (r, db.D.connects) )
+          in
+          is_true (r = Ok None) ;
+          equal int 0 connects ;
+          equal (list string) [] events )
+    ; test "a nullable key with Some k: Some of the row" (fun () ->
+          let r, _ =
+            with_pool
+              ~setup:(script [(get3, D.Rows [[Some "3"; Some "n"; None]])])
+              (fun _ _ pool ->
+                Db.exec pool (Node.parent (node ~parent_id:3L 4L)) )
+          in
+          is_true (r = Ok (Some (node 3L))) )
+    ; test "Node.create ?children: the children of a self relation" (fun () ->
+          (* The ids: 40 for the root r, 41 for a, 42 for b. *)
+          let setup db =
+            let id n = Some (D.Counts {affected= 1L; insert= n}) in
+            db.D.faults.script <-
+              (fun sql ->
+                if not (String.starts_with ~prefix:"INSERT INTO `node`" sql)
+                then None
+                else if Test_atomic.contains sql "X'72'" then id 40L
+                else if Test_atomic.contains sql "X'61'" then id 41L
+                else id 42L )
+          in
+          let r, _ =
+            with_pool ~size:1 ~setup (fun _ _ pool ->
+                Db.exec pool
+                  (Node.create ~name:"r"
+                     ~children:[Node.draft ~name:"a" (); Node.draft ~name:"b" ()]
+                     () ) )
+          in
+          let child id name : Tree.node =
+            { id
+            ; name
+            ; parent_id= Some 40L
+            ; parent= Cistern.Deferred.Unloaded
+            ; children= Cistern.Deferred.Unloaded }
+          in
+          is_true
+            ( r
+            = Ok
+                { Tree.id= 40L
+                ; name= "r"
+                ; parent_id= None
+                ; parent= Cistern.Deferred.Unloaded
+                ; children=
+                    Cistern.Deferred.Loaded [child 41L "a"; child 42L "b"] } ) )
+    ; test "a row that is gone: Not_found" (fun () ->
+          let ucols =
+            "SELECT `user`.`id`, `user`.`name`, `user`.`email`, `user`.`nick`, \
+             `user`.`age`, `user`.`active` FROM `user` WHERE `user`.`id` = 7 \
+             LIMIT 1"
+          in
+          let r, _ =
+            with_pool
+              ~setup:(script [(get3, D.Rows []); (ucols, D.Rows [])])
+              (fun _ _ pool ->
+                let a =
+                  text (Db.exec pool (Node.parent (node ~parent_id:3L 4L)))
+                in
+                let b =
+                  text
+                    (Db.exec pool
+                       (Todo.user
+                          { User_todo.id= 1L
+                          ; user_id= 7L
+                          ; user= Cistern.Deferred.Unloaded
+                          ; title= "t"
+                          ; done_= false
+                          ; note= None } ) )
+                in
+                (a, b) )
+          in
+          equal (pair string string) ("Not_found", "Not_found") r ) ]

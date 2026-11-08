@@ -18,6 +18,13 @@ val get : (module M : MODEL) -> M.key -> M.t Stmt.t
 val find : (module M : MODEL) -> M.key -> M.t option Stmt.t
 (** [find (module M) k] is [get] with [None] for no row. *)
 
+val get_parent : (module M : MODEL) -> M.key option -> M.t option Stmt.t
+(** [get_parent (module M) k] is the scope of a belongs_to with a nullable key
+    (phase 4c2, the plan of phase 4, E11). [None] gives [None] with no checkout,
+    no command and no event ({!Stmt.Private.pure}). [Some k] gives [get] of [k]
+    as [Some], and [Not_found] if the row is gone. A key that is not nullable
+    uses {!get}. *)
+
 val get_by : (module M : MODEL) -> (M.t, 'a) Field.t -> 'a -> M.t Stmt.t
 (** [get_by (module M) f v] is the row with [v] in the field [f], a field with
     [[@unique]]: [Not_found] if none. The generated code makes [get_by_<field>]

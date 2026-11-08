@@ -35,6 +35,15 @@ let find : (module M : MODEL) -> M.key -> M.t option Stmt.t =
  fun (module M) k ->
   select (module M) (Compile.get M.schema (Field.encode M.key k)) first
 
+(* The scope of a belongs_to with a nullable key (phase 4c2, E11): no key gives
+   a pure None, with no checkout and no event. *)
+let get_parent : (module M : MODEL) -> M.key option -> M.t option Stmt.t =
+ fun (module M) -> function
+  | None ->
+      Stmt.Private.pure None
+  | Some k ->
+      Stmt.map Option.some (get (module M) k)
+
 (* The SQL of get_by and find_by. *)
 let by (m : Schema.model) f v =
   match Field.encode f v with

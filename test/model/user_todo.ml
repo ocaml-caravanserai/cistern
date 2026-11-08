@@ -426,8 +426,8 @@ module Cistern_gen__user = struct
   end
 end
 
-(* Stage 3: create (with the children of each has_many, E10), model and
-   Drafts. *)
+(* Stage 3: create (with the children of each has_many, E10), model, Drafts, the
+   relation scopes (E11) and Rel (E2). *)
 module User = struct
   include Cistern_gen__user.User
   module Drafts = Cistern_drafts__user
@@ -451,6 +451,21 @@ module User = struct
                 ~fk:Drafts.Set_todo.user_id
                 ~set:Cistern_fields__user.Set_user.todos cistern__ds ] )
       (draft ~name ~email ?nick ?age ?active ())
+
+  (* The scope of the has_many: the todos with the key of this user. *)
+  let todos (cistern__r : user) =
+    Cistern_gen__user.Todo.where
+      Cistern_gen__user.Todo.Q.(user_id ==. cistern__r.id)
+
+  module Rel = struct
+    let todos : (user, todo) Cistern.Relation.t =
+      Cistern.Private.Relation.has_many ~name:"todos"
+        (module Cistern_model__user)
+        (module Cistern_model__todo)
+        ~key:(fun (cistern__r : todo) ->
+          Cistern.Private.Encode.some cistern__r.user_id )
+        ~set:Cistern_fields__user.Set_user.todos
+  end
 end
 
 module Todo = struct
@@ -465,4 +480,25 @@ module Todo = struct
     Cistern.Private.Model.create
       (module Cistern_model__todo)
       (draft ?user_id ~title ?done_ ?note ())
+
+  (* The scope of the belongs_to: get of the key (Not_found if the row is
+     gone). *)
+  let user (cistern__r : todo) =
+    Cistern.Private.Model.get (module Cistern_model__user) cistern__r.user_id
+
+  module Rel = struct
+    (* The key is not nullable: no parent leaves the relation Unloaded (the
+       notes of the review of 4a). *)
+    let user : (todo, user) Cistern.Relation.t =
+      Cistern.Private.Relation.belongs_to ~name:"user"
+        (module Cistern_model__todo)
+        (module Cistern_model__user)
+        ~key:(fun (cistern__r : todo) ->
+          Cistern.Private.Encode.some cistern__r.user_id )
+        ~set:(fun (cistern__r : todo) -> function
+          | Some cistern__p ->
+              Cistern_fields__user.Set_todo.user cistern__r cistern__p
+          | None ->
+              {cistern__r with user= Cistern.Deferred.Unloaded} )
+  end
 end

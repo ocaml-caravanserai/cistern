@@ -410,3 +410,172 @@ let nested =
             && Cistern.Private.Encode.reset Cistern.Private.Encode.float 0.0
                  (-0.0) l
                = Deferred.Unloaded ) ) ]
+
+(* The relation scopes and Rel of the hand-written user, todo and node (phase
+   4c2, the plan of phase 4, E2 and E11). *)
+let scopes =
+  let module User = User_todo.User in
+  let module Todo = User_todo.Todo in
+  let module Node = Tree.Node in
+  let module Query = Cistern.Query in
+  let module F = Cistern.Private.Field in
+  let module V = Cistern.Value in
+  let sql s = Cistern.Stmt.to_sql Cistern_core.Dialect.Mysql s in
+  let user : User_todo.user =
+    { id= 2L
+    ; name= "Ann"
+    ; email= "a@x"
+    ; nick= None
+    ; age= None
+    ; active= true
+    ; todos= Deferred.Unloaded }
+  in
+  let todo : User_todo.todo =
+    { id= 5L
+    ; user_id= 2L
+    ; user= Deferred.Unloaded
+    ; title= "t"
+    ; done_= false
+    ; note= None }
+  in
+  let node ?parent_id id : Tree.node =
+    { id
+    ; name= "n"
+    ; parent_id
+    ; parent= Deferred.Unloaded
+    ; children= Deferred.Unloaded }
+  in
+  let tcols =
+    "SELECT `todo`.`id`, `todo`.`user_id`, `todo`.`title`, `todo`.`done`, \
+     `todo`.`note` FROM `todo`"
+  in
+  let ncols =
+    "SELECT `node`.`id`, `node`.`name`, `node`.`parent_id` FROM `node`"
+  in
+  (* The key of a relation of a record, encoded with the key of the parent. *)
+  let key_of : type m r. (m, r) Relation.t -> m -> r -> V.t option =
+   fun rel m r ->
+    match rel with
+    | Has_many h ->
+        let (module P) = h.parent in
+        Option.map (F.encode P.key) (h.key r)
+    | Belongs_to b ->
+        let (module P) = b.parent in
+        ignore r ;
+        Option.map (F.encode P.key) (b.key m)
+  in
+  group "The relation scopes and Rel"
+    [ test "User.todos: the todos of the key, with a filter and an order"
+        (fun () ->
+          equal (list string)
+            [ tcols
+              ^ " WHERE (`todo`.`user_id` = 2 AND `todo`.`done` = 0) ORDER BY \
+                 `todo`.`title` ASC" ]
+            (sql
+               ( User.todos user
+               |> Query.where Todo.Q.(done_ ==. false)
+               |> Query.order_by Todo.Q.title `Asc
+               |> Query.to_list ) ) )
+    ; test "Todo.user: get of the key" (fun () ->
+          equal (list string)
+            [ "SELECT `user`.`id`, `user`.`name`, `user`.`email`, \
+               `user`.`nick`, `user`.`age`, `user`.`active` FROM `user` WHERE \
+               `user`.`id` = 2 LIMIT 1" ]
+            (sql (Todo.user {todo with id= 9L})) )
+    ; test "Node.children: Some of the key on a nullable key" (fun () ->
+          equal (list string)
+            [ncols ^ " WHERE `node`.`parent_id` <=> 4"]
+            (sql (Query.to_list (Node.children (node 4L)))) )
+    ; test "Node.parent: None gives a pure None, Some k gives get" (fun () ->
+          ( match Cistern.Stmt.Private.pure_value (Node.parent (node 4L)) with
+          | Some v ->
+              is_true (v () = None)
+          | None ->
+              fail "not pure" ) ;
+          equal (list string) [] (sql (Node.parent (node 4L))) ;
+          let s = Node.parent (node ~parent_id:3L 4L) in
+          is_true (Cistern.Stmt.Private.pure_value s = None) ;
+          equal (list string) [ncols ^ " WHERE `node`.`id` = 3 LIMIT 1"] (sql s) )
+    ; test "Rel: the names, the kinds and the keys" (fun () ->
+          equal (list string)
+            ["todos"; "user"; "parent"; "children"]
+            [ Relation.name User.Rel.todos
+            ; Relation.name Todo.Rel.user
+            ; Relation.name Node.Rel.parent
+            ; Relation.name Node.Rel.children ] ;
+          is_true
+            ( Relation.kind User.Rel.todos = `Has_many
+            && Relation.kind Todo.Rel.user = `Belongs_to
+            && Relation.kind Node.Rel.parent = `Belongs_to
+            && Relation.kind Node.Rel.children = `Has_many ) ;
+          let some2 = Some (V.Int 2L) in
+          is_true (key_of User.Rel.todos user todo = some2) ;
+          is_true (key_of Todo.Rel.user todo user = some2) ;
+          is_true
+            (key_of Node.Rel.parent (node ~parent_id:2L 4L) (node 2L) = some2) ;
+          is_true (key_of Node.Rel.parent (node 4L) (node 2L) = None) ;
+          is_true
+            (key_of Node.Rel.children (node 2L) (node ~parent_id:2L 4L) = some2) ;
+          is_true (key_of Node.Rel.children (node 2L) (node 4L) = None) )
+    ; test "Rel: the setters" (fun () ->
+          ( match User.Rel.todos with
+          | Has_many h ->
+              let t2 = {todo with id= 6L} in
+              is_true
+                ((h.set user [todo; t2]).todos = Deferred.Loaded [todo; t2])
+          | Belongs_to _ ->
+              fail "kind" ) ;
+          ( match Todo.Rel.user with
+          | Belongs_to b ->
+              let t = {todo with user= Deferred.Loaded user} in
+              is_true ((b.set todo (Some user)).user = Deferred.Loaded user) ;
+              (* No parent on a key that is not nullable: Unloaded. *)
+              is_true ((b.set t None).user = Deferred.Unloaded)
+          | Has_many _ ->
+              fail "kind" ) ;
+          ( match Node.Rel.parent with
+          | Belongs_to b ->
+              let p = node 2L in
+              is_true
+                ((b.set (node 4L) (Some p)).parent = Deferred.Loaded (Some p)) ;
+              (* A nullable key with no parent: Loaded None. *)
+              is_true ((b.set (node 4L) None).parent = Deferred.Loaded None)
+          | Has_many _ ->
+              fail "kind" ) ;
+          match Node.Rel.children with
+          | Has_many h ->
+              is_true
+                ( (h.set (node 2L) [node 4L; node 5L]).children
+                = Deferred.Loaded [node 4L; node 5L] )
+          | Belongs_to _ ->
+              fail "kind" )
+    ; test "Node.create: the nullable key, and the children of a self relation"
+        (fun () ->
+          let ins name key =
+            Printf.sprintf
+              "INSERT INTO `node` (`name`, `parent_id`) VALUES (_utf8mb4 \
+               X'%s', %s)"
+              name key
+          in
+          equal (list string) [ins "72" "NULL"] (sql (Node.create ~name:"r" ())) ;
+          equal (list string)
+            [ins "72" "5"]
+            (sql (Node.create ~name:"r" ~parent_id:5L ())) ;
+          equal (list string)
+            [ ins "72" "5"
+            ; ins "61" "<last_insert_id>"
+            ; ins "62" "<last_insert_id>" ]
+            (sql
+               (Node.create ~name:"r" ~parent_id:5L
+                  ~children:[Node.draft ~name:"a" (); Node.draft ~name:"b" ()]
+                  () ) ) )
+    ; test "the tree: the schema check, and the reset of a nullable key"
+        (fun () ->
+          equal int 0
+            (List.length
+               (Cistern.Private.Schema.faults [Tree.Cistern_model__node.schema]) ) ;
+          let n = {(node ~parent_id:2L 4L) with parent= Deferred.Loaded None} in
+          let set v = (F.set Node.Q.parent_id n v).parent in
+          is_true (set (Some 2L) = Deferred.Loaded None) ;
+          is_true (set (Some 3L) = Deferred.Unloaded) ;
+          is_true (set None = Deferred.Unloaded) ) ]
