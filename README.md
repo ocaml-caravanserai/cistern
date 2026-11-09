@@ -12,6 +12,22 @@ Version 1 has these features:
 
 The odoc of the package `cistern` has the API and the pages [index](doc/index.mld) (the order of reading, the servers, the session and the operations), [limits](doc/limits.mld) and [security](doc/security.mld). [DESIGN.md](DESIGN.md) gives the design. [CONTRIBUTING.md](CONTRIBUTING.md) is for the developers of Cistern.
 
+Contents:
+
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Models](#models)
+- [Queries and filters](#queries-and-filters)
+- [Writes](#writes)
+- [Transactions](#transactions)
+- [Relations](#relations)
+- [Raw SQL](#raw-sql)
+- [Errors and events](#errors-and-events)
+- [TLS](#tls)
+- [Servers and session](#servers-and-session)
+- [Operations](#operations)
+- [License](#license)
+
 ## Install
 
 Cistern needs OCaml 5.5, and weft and weft-tls from their git repository (they are not in opam-repository). Use the commit of weft that `flake.lock` of Cistern gives.
