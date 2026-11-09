@@ -12,7 +12,7 @@ Version 1 has these features:
 
 The odoc of the package `cistern` has the API and the pages [index](doc/index.mld) (the order of reading, the servers, the session and the operations), [limits](doc/limits.mld) and [security](doc/security.mld). [DESIGN.md](DESIGN.md) gives the design. [CONTRIBUTING.md](CONTRIBUTING.md) is for the developers of Cistern.
 
-Contents:
+## Contents
 
 - [Install](#install)
 - [Quick start](#quick-start)
